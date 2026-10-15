@@ -1,13 +1,14 @@
 // Startup reconciliation: remove what a crashed worker left behind.
 // Safe ONLY while a single worker runs one job at a time: at boot, no candidate
-// container or temp clone can legitimately be in use. Revisit if that changes.
-import { readdir, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { docker, LABEL, removeQuietly } from './docker.js';
+// container, temp clone or in-progress deployment can legitimately be in use.
+import { readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { docker, LABEL, removeQuietly } from "./docker.js";
+import { interruptActive } from "./db.js";
 
 export async function reconcile(log = console.log) {
-  const report = { candidatesRemoved: 0, tempDirsRemoved: 0 };
+  const report = { candidatesRemoved: 0, tempDirsRemoved: 0, deploymentsInterrupted: 0 };
 
   // 1. Orphaned candidate containers. Scoped by ownership label AND role;
   //    live containers are never touched.
@@ -32,6 +33,14 @@ export async function reconcile(log = console.log) {
     }
   }
 
-  log(`Reconcile done: ${report.candidatesRemoved} candidate(s), ${report.tempDirsRemoved} temp dir(s) removed`);
+  // 3. Deployments the dead worker left mid-flight become 'interrupted' (never silently retried).
+  //    'queued' rows are untouched: their jobs are still in Redis and will run.
+  report.deploymentsInterrupted = await interruptActive();
+  if (report.deploymentsInterrupted)
+    log(`Reconcile: marked ${report.deploymentsInterrupted} deployment(s) interrupted`);
+
+  log(
+    `Reconcile done: ${report.candidatesRemoved} candidate(s), ${report.tempDirsRemoved} temp dir(s), ${report.deploymentsInterrupted} deployment(s) interrupted`,
+  );
   return report;
 }

@@ -31,6 +31,19 @@ export function run(cmd, args, opts = {}) {
   });
 }
 
+// Run a command and return its trimmed stdout (for short outputs like a commit SHA).
+export function capture(cmd, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "inherit"], ...opts });
+    let out = "";
+    p.stdout.on("data", (d) => {
+      out += d;
+    });
+    p.on("error", reject);
+    p.on("exit", (c) => (c === 0 ? resolve(out.trim()) : reject(new Error(`${cmd} exited ${c}`))));
+  });
+}
+
 export async function findContainers({ appId, role }) {
   const list = await docker.listContainers({
     all: true,
@@ -63,7 +76,7 @@ export async function hostPortOf(container, containerPort) {
 }
 
 // Fail fast if the container exits; otherwise poll HTTP until 200 or timeout.
-export async function waitHealthy(container, { containerPort, health, timeoutMs = 30_000 }) {
+export async function waitHealthy(container, { containerPort, health, timeoutMs = 120_000 }) {
   const deadline = Date.now() + timeoutMs;
   const port = await hostPortOf(container, containerPort);
   while (Date.now() < deadline) {

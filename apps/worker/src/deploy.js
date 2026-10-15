@@ -4,10 +4,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { assertRelativeDir, resolveBuildDir } from "./paths.js";
 import {
   docker,
   labelsFor,
   run,
+  capture,
   findContainers,
   createContainer,
   waitHealthy,
@@ -18,9 +20,11 @@ import {
 /**
  * @param {object} opts
  * @param {string} opts.repo            git clone URL
- * @param {string} opts.appId           stable app ID (used in labels and names)
+ * @param {string} opts.appId           stable app ID (used in Docker labels)
  * @param {number|string} opts.containerPort
  * @param {number|string} opts.hostPort
+ * @param {string} [opts.deploymentId]  database deployment ID; generated if absent (CLI use)
+ * @param {string} [opts.slug]          readable name for image tags and container names
  * @param {string} [opts.ref='main']
  * @param {string} [opts.dir='.']       app root inside the repo
  * @param {string} [opts.health]        HTTP health path, e.g. /health
@@ -28,19 +32,28 @@ import {
  * @param {number} [opts.cpus=1]
  * @param {string[]} [opts.env=[]]      ['KEY=VALUE', ...]
  * @param {(msg: string) => void} [opts.log]
+ * @param {(status: 'starting'|'validating') => void} [opts.onStatus]  progress hook
+ * @param {(sha: string) => void} [opts.onCommit]                      resolved commit hook
  * @returns {Promise<{ok: boolean, deploymentId: string, image: string, error?: string}>}
  */
-
 export async function deploy(opts) {
   const o = { ref: "main", dir: ".", memoryMb: 512, cpus: 1, env: [], ...opts };
   const log = o.log ?? ((m) => console.log(`[${new Date().toISOString()}] ${m}`));
-  const deploymentId = randomBytes(4).toString("hex");
-  const image = `shipdok/${o.appId}:${deploymentId}`;
+  const notify = (fn, ...args) => {
+    try {
+      fn?.(...args);
+    } catch {
+      /* hooks must never break a deploy */
+    }
+  };
+  const deploymentId = o.deploymentId ?? randomBytes(4).toString("hex");
+  const name = o.slug ?? o.appId;
+  const image = `shipdok/${name}:${deploymentId}`;
   const healthOpts = { containerPort: o.containerPort, health: o.health };
   const make = (role, hostPort) =>
     createContainer({
       image,
-      name: `shipdok-${o.appId}-${deploymentId}-${role}`,
+      name: `shipdok-${name}-${deploymentId}-${role}`,
       labels: labelsFor({ appId: o.appId, deploymentId, role }),
       containerPort: o.containerPort,
       hostPort,
@@ -60,6 +73,14 @@ export async function deploy(opts) {
     }
   };
 
+  // Reject an escaping root directory before any side effects (no temp dir, no Docker calls).
+  try {
+    assertRelativeDir(o.dir);
+  } catch (err) {
+    log(`Deployment FAILED: ${err.message}`);
+    return { ok: false, deploymentId, image, error: err.message };
+  }
+
   const workDir = await mkdtemp(join(tmpdir(), "shipdok-"));
   const previous = await findContainers({ appId: o.appId, role: "live" });
   let candidate;
@@ -68,6 +89,9 @@ export async function deploy(opts) {
   try {
     log(`Cloning ${o.repo}@${o.ref}`);
     await run("git", ["clone", "--depth", "1", "--branch", o.ref, o.repo, workDir]);
+    notify(o.onCommit, await capture("git", ["-C", workDir, "rev-parse", "HEAD"]));
+    // Resolve symlinks AFTER cloning: the API validates the string, but only the real path is trustworthy.
+    const buildDir = await resolveBuildDir(workDir, o.dir);
 
     log(`Building ${image}`);
     await run(
@@ -82,7 +106,7 @@ export async function deploy(opts) {
         `shipdok.app-id=${o.appId}`,
         "--label",
         `shipdok.deployment-id=${deploymentId}`,
-        join(workDir, o.dir),
+        buildDir,
       ],
       { env: { ...process.env, DOCKER_BUILDKIT: "1" } },
     );
@@ -92,8 +116,10 @@ export async function deploy(opts) {
     log(`Image arch: ${img.Architecture}, host: ${hostArch}`);
 
     log("Starting candidate on a temporary port");
+    notify(o.onStatus, "starting");
     candidate = await make("candidate", "");
     await candidate.start();
+    notify(o.onStatus, "validating");
     await checked(candidate, "candidate");
     log("Candidate healthy");
     await removeQuietly(candidate);
@@ -112,7 +138,7 @@ export async function deploy(opts) {
     }
 
     for (const old of previous) await removeQuietly(old);
-    log(`Deployed ${o.appId} (${deploymentId}) on :${o.hostPort}`);
+    log(`Deployed ${name} (${deploymentId}) on :${o.hostPort}`);
     return { ok: true, deploymentId, image };
   } catch (err) {
     log(`Deployment FAILED: ${err.message}`);

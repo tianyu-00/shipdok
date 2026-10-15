@@ -5,10 +5,12 @@ import connectPgSimple from "connect-pg-simple";
 import { config } from "./config.js";
 import { pool } from "./db/pool.js";
 import { originCheck } from "./middleware/originCheck.js";
+import { requireAuth } from "./middleware/requireAuth.js";
 import { authRouter } from "./routes/auth.js";
+import { appsRouter, deploymentsRouter } from "./routes/apps.js";
 
-// db is injectable so tests can pass a test pool.
-export function createApp({ db = pool } = {}) {
+// db and queue are injectable so tests can pass a test pool and a fake queue.
+export function createApp({ db = pool, queue } = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.use(helmet());
@@ -39,6 +41,8 @@ export function createApp({ db = pool } = {}) {
   });
 
   app.use("/api/auth", authRouter(db));
+  app.use("/api/apps", requireAuth, appsRouter({ db, queue }));
+  app.use("/api/deployments", requireAuth, deploymentsRouter({ db }));
 
   app.use((req, res) => res.status(404).json({ error: "Not found" }));
   // eslint-disable-next-line no-unused-vars

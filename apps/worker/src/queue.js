@@ -1,3 +1,5 @@
+// Shared queue settings for the worker and for whatever enqueues jobs.
+// The queue name must match apps/api/src/queue.js.
 import IORedis from "ioredis";
 
 export const DEPLOY_QUEUE = "deploy";
@@ -11,6 +13,7 @@ export function redisConnection() {
   });
 }
 
+// No automatic retries: the administrator retries manually (see spec section 7).
 export const defaultJobOptions = {
   attempts: 1,
   removeOnComplete: { count: 100 },
