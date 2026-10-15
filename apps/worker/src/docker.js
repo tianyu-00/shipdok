@@ -1,16 +1,12 @@
 // Docker helpers. No arg parsing, no process.exit, no knowledge of Express or BullMQ.
 import Docker from "dockerode";
 import { spawn } from "node:child_process";
+import { LABEL } from "@shipdok/shared";
 
 export const docker = new Docker(); // /var/run/docker.sock: treat as highly privileged
 
-// Ownership labels. Every lookup and cleanup filters on these.
-export const LABEL = {
-  managed: "shipdok.managed",
-  app: "shipdok.app-id",
-  deployment: "shipdok.deployment-id",
-  role: "shipdok.role", // candidate | live
-};
+// Ownership labels live in @shipdok/shared so the API and worker agree on them.
+export { LABEL };
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

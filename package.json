@@ -1,0 +1,12 @@
+{
+  "name": "shipdok",
+  "private": true,
+  "workspaces": [
+    "apps/api",
+    "apps/worker",
+    "packages/shared"
+  ],
+  "scripts": {
+    "test": "npm test -w apps/api -w packages/shared"
+  }
+}

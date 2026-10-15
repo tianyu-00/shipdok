@@ -1,8 +1,9 @@
 // Shared queue settings for the worker and for whatever enqueues jobs.
-// The queue name must match apps/api/src/queue.js.
+// The queue name comes from @shipdok/shared so it can never drift from the API's.
 import IORedis from "ioredis";
+import { DEPLOY_QUEUE } from "@shipdok/shared";
 
-export const DEPLOY_QUEUE = "deploy";
+export { DEPLOY_QUEUE };
 
 export function redisConnection() {
   return new IORedis({

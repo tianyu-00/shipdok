@@ -1,9 +1,10 @@
-// API-side producer for the deploy queue. The queue name and job options must match
-// apps/worker/src/queue.js. (TODO: move both into packages/shared once that exists.)
+// API-side producer for the deploy queue. The queue name comes from @shipdok/shared so it
+// can never drift from the worker's. Job options must match apps/worker/src/queue.js.
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
+import { DEPLOY_QUEUE } from "@shipdok/shared";
 
-export const DEPLOY_QUEUE = "deploy";
+export { DEPLOY_QUEUE };
 
 export function createDeployQueue() {
   const connection = new IORedis({

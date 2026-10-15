@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --env-file=../../infrastructure/.env --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
+    "test": "node --env-file=../../infrastructure/.env --experimental-vm-modules ../../node_modules/jest/bin/jest.js --runInBand",
     "migrate": "node --env-file=../../infrastructure/.env src/db/migrate.js",
     "dev": "node --env-file=../../infrastructure/.env src/server.js"
   },
@@ -23,6 +23,7 @@
   "type": "module",
   "dependencies": {
     "@node-rs/argon2": "^2.2.2",
+    "@shipdok/shared": "*",
     "bullmq": "^6.3.15",
     "connect-pg-simple": "^10.0.0",
     "express": "^5.3.0",

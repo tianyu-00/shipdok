@@ -21,6 +21,9 @@ beforeEach(async () => {
   agent = request.agent(app);
   await agent.post("/api/auth/setup").send({ username: "admin", password: PASSWORD });
 });
+afterEach(() => {
+  jest.restoreAllMocks();
+});
 afterAll(closeDb);
 
 const createApp = (over = {}) => agent.post("/api/apps").send({ ...VALID, ...over });
@@ -171,6 +174,7 @@ describe("requesting a deployment", () => {
   });
 
   test("if enqueueing fails the row is marked failed and the client gets a 503", async () => {
+    const logSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     queue.add.mockRejectedValueOnce(new Error("redis is down"));
     const res = await agent.post(`/api/apps/${created.id}/deployments`);
     expect(res.status).toBe(503);
@@ -181,6 +185,7 @@ describe("requesting a deployment", () => {
     expect(rows[0].error_summary).toMatch(/enqueue/i);
     expect(rows[0].finished_at).not.toBeNull();
     expect(JSON.stringify(res.body)).not.toMatch(/redis is down/); // internals are not leaked
+    expect(logSpy).toHaveBeenCalledWith("Enqueue failed:", "redis is down"); // but they are logged server-side
   });
 
   test("without a queue configured it is a 503 and creates no row", async () => {
