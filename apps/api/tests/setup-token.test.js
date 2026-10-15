@@ -1,8 +1,8 @@
 // Separate file because SETUP_TOKEN is read from the environment when the app loads.
-import request from 'supertest';
-import { makeApp, resetDb, closeDb, PASSWORD } from './helpers.js';
+import request from "supertest";
+import { makeApp, resetDb, closeDb, PASSWORD } from "./helpers.js";
 
-const TOKEN = 'a-test-setup-token-123';
+const TOKEN = "a-test-setup-token-123";
 let app;
 
 beforeAll(async () => {
@@ -14,19 +14,23 @@ beforeEach(async () => {
 });
 afterAll(closeDb);
 
-const body = (extra = {}) => ({ username: 'admin', password: PASSWORD, ...extra });
+const body = (extra = {}) => ({ username: "admin", password: PASSWORD, ...extra });
 
-test('setup without the token is refused', async () => {
-  const res = await request(app).post('/api/auth/setup').send(body());
+test("setup without the token is refused", async () => {
+  const res = await request(app).post("/api/auth/setup").send(body());
   expect(res.status).toBe(403);
 });
 
-test('setup with a wrong token is refused', async () => {
-  const res = await request(app).post('/api/auth/setup').send(body({ setupToken: 'nope' }));
+test("setup with a wrong token is refused", async () => {
+  const res = await request(app)
+    .post("/api/auth/setup")
+    .send(body({ setupToken: "nope" }));
   expect(res.status).toBe(403);
 });
 
-test('setup with the right token succeeds', async () => {
-  const res = await request(app).post('/api/auth/setup').send(body({ setupToken: TOKEN }));
+test("setup with the right token succeeds", async () => {
+  const res = await request(app)
+    .post("/api/auth/setup")
+    .send(body({ setupToken: TOKEN }));
   expect(res.status).toBe(201);
 });
