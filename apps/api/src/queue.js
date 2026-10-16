@@ -20,6 +20,11 @@ export function createDeployQueue() {
   });
   return {
     add: (name, data) => queue.add(name, data),
+    // Drops a job that has not started. A running job cannot be removed (BullMQ throws); callers ignore that.
+    remove: async (jobId) => {
+      const job = await queue.getJob(jobId);
+      if (job) await job.remove();
+    },
     close: async () => {
       await queue.close();
       await connection.quit();

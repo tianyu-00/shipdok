@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
+import { requestDeployment, cancelDeployment } from "../deployments.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (s) => typeof s === "string" && UUID_RE.test(s);
@@ -50,7 +51,7 @@ const UNIQUE_MESSAGES = {
 };
 
 const DEPLOYMENT_COLUMNS = `id, app_id, commit_sha, trigger, status, image_ref, config_snapshot,
-  error_summary, job_id, queued_at, started_at, finished_at`;
+  error_summary, job_id, queued_at, started_at, finished_at, cancel_status, superseded_by`;
 
 export function appsRouter({ db, queue }) {
   const r = Router();
@@ -59,12 +60,10 @@ export function appsRouter({ db, queue }) {
     try {
       const parsed = createSchema.safeParse(req.body ?? {});
       if (!parsed.success) {
-        return res
-          .status(400)
-          .json({
-            error: "Invalid app settings",
-            details: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`),
-          });
+        return res.status(400).json({
+          error: "Invalid app settings",
+          details: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`),
+        });
       }
       const a = parsed.data;
       const slug = slugify(a.name);
@@ -136,8 +135,7 @@ export function appsRouter({ db, queue }) {
     }
   });
 
-  // Request a deployment: persist the row FIRST, then enqueue. If enqueueing fails the
-  // row is marked failed so history never shows a deployment that no worker knows about.
+  // Request a deployment. Older deployments of this app are superseded (see ../deployments.js).
   r.post("/:id/deployments", async (req, res, next) => {
     try {
       if (!isUuid(req.params.id)) return res.status(404).json({ error: "App not found" });
@@ -146,57 +144,16 @@ export function appsRouter({ db, queue }) {
       if (!app) return res.status(404).json({ error: "App not found" });
       if (!queue) return res.status(503).json({ error: "Deployment queue unavailable" });
 
-      // The settings THIS deployment will use. No secret values belong here.
-      const snapshot = {
-        repo: app.repo,
-        branch: app.branch,
-        root_dir: app.root_dir,
-        container_port: app.container_port,
-        host_port: app.host_port,
-        health_path: app.health_path,
-        memory_mb: app.memory_mb,
-        cpus: Number(app.cpus),
-      };
-      // Which variable versions this deployment is meant to use (names and numbers only, never values).
-      const { rows: envRows } = await db.query(
-        "SELECT key, version::text AS version FROM app_env_vars WHERE app_id = $1",
-        [app.id],
-      );
-      snapshot.env = Object.fromEntries(envRows.map((r) => [r.key, r.version]));
-      const { rows } = await db.query(
-        `INSERT INTO deployments (app_id, trigger, config_snapshot) VALUES ($1, 'manual', $2) RETURNING id`,
-        [app.id, snapshot],
-      );
-      const deploymentId = rows[0].id;
-
-      try {
-        const job = await queue.add("deploy", {
-          deploymentId,
-          appId: app.id,
-          slug: app.slug,
-          repo: `https://github.com/${snapshot.repo}.git`,
-          ref: snapshot.branch,
-          dir: snapshot.root_dir,
-          containerPort: snapshot.container_port,
-          hostPort: snapshot.host_port,
-          health: snapshot.health_path ?? undefined,
-          memoryMb: snapshot.memory_mb,
-          cpus: snapshot.cpus,
-        });
-        await db.query("UPDATE deployments SET job_id = $2 WHERE id = $1", [deploymentId, String(job.id)]);
-      } catch (err) {
-        console.error("Enqueue failed:", err.message);
-        await db.query(
-          `UPDATE deployments SET status = 'failed', finished_at = now(), error_summary = $2 WHERE id = $1`,
-          [deploymentId, "Could not enqueue the deployment job"],
-        );
-        return res.status(503).json({ error: "Could not enqueue the deployment job", deploymentId });
+      const result = await requestDeployment({ db, queue }, app);
+      if (!result.ok) {
+        return res
+          .status(503)
+          .json({ error: "Could not enqueue the deployment job", deploymentId: result.deploymentId });
       }
-
-      const { rows: out } = await db.query(`SELECT ${DEPLOYMENT_COLUMNS} FROM deployments WHERE id = $1`, [
-        deploymentId,
+      const { rows } = await db.query(`SELECT ${DEPLOYMENT_COLUMNS} FROM deployments WHERE id = $1`, [
+        result.deploymentId,
       ]);
-      res.status(202).json(out[0]);
+      res.status(202).json(rows[0]);
     } catch (err) {
       next(err);
     }
@@ -205,7 +162,7 @@ export function appsRouter({ db, queue }) {
   return r;
 }
 
-export function deploymentsRouter({ db }) {
+export function deploymentsRouter({ db, queue }) {
   const r = Router();
   r.get("/:id", async (req, res, next) => {
     try {
@@ -217,5 +174,21 @@ export function deploymentsRouter({ db }) {
       next(err);
     }
   });
+
+  // Cancel a deployment. Queued ones end immediately (200). A running one is only asked to stop (202):
+  // the worker stops it and the final status appears once cleanup is done.
+  r.post("/:id/cancel", async (req, res, next) => {
+    try {
+      if (!isUuid(req.params.id)) return res.status(404).json({ error: "Deployment not found" });
+      const outcome = await cancelDeployment({ db, queue }, req.params.id);
+      if (outcome.kind === "not_found") return res.status(404).json({ error: "Deployment not found" });
+      if (outcome.kind === "final") return res.status(409).json({ error: "This deployment has already finished" });
+      const { rows } = await db.query(`SELECT ${DEPLOYMENT_COLUMNS} FROM deployments WHERE id = $1`, [req.params.id]);
+      res.status(outcome.kind === "cancelled" ? 200 : 202).json(rows[0]);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   return r;
 }

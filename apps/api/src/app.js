@@ -44,7 +44,7 @@ export function createApp({ db = pool, queue, secretsKey = loadSecretsKey() } = 
   app.use("/api/auth", authRouter(db));
   app.use("/api/apps/:id/env", requireAuth, envRouter({ db, secretsKey }));
   app.use("/api/apps", requireAuth, appsRouter({ db, queue }));
-  app.use("/api/deployments", requireAuth, deploymentsRouter({ db }));
+  app.use("/api/deployments", requireAuth, deploymentsRouter({ db, queue }));
 
   app.use((req, res) => res.status(404).json({ error: "Not found" }));
   // eslint-disable-next-line no-unused-vars
