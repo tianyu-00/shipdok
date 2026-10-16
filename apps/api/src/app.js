@@ -2,15 +2,16 @@ import express from "express";
 import helmet from "helmet";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
-import { config } from "./config.js";
+import { config, loadSecretsKey } from "./config.js";
 import { pool } from "./db/pool.js";
 import { originCheck } from "./middleware/originCheck.js";
 import { requireAuth } from "./middleware/requireAuth.js";
 import { authRouter } from "./routes/auth.js";
 import { appsRouter, deploymentsRouter } from "./routes/apps.js";
+import { envRouter } from "./routes/env.js";
 
-// db and queue are injectable so tests can pass a test pool and a fake queue.
-export function createApp({ db = pool, queue } = {}) {
+// db, queue and secretsKey are injectable so tests can pass a test pool and a fake queue.
+export function createApp({ db = pool, queue, secretsKey = loadSecretsKey() } = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.use(helmet());
@@ -41,6 +42,7 @@ export function createApp({ db = pool, queue } = {}) {
   });
 
   app.use("/api/auth", authRouter(db));
+  app.use("/api/apps/:id/env", requireAuth, envRouter({ db, secretsKey }));
   app.use("/api/apps", requireAuth, appsRouter({ db, queue }));
   app.use("/api/deployments", requireAuth, deploymentsRouter({ db }));
 
@@ -53,7 +55,7 @@ export function createApp({ db = pool, queue } = {}) {
       const messages = { "entity.parse.failed": "Invalid JSON", "entity.too.large": "Payload too large" };
       return res.status(status).json({ error: messages[err.type] ?? "Bad request" });
     }
-    console.error("Request failed:", err.message); // message only: never log bodies (passwords)
+    console.error("Request failed:", err.message); // message only: never log bodies (passwords, secrets)
     res.status(500).json({ error: "Internal server error" });
   });
 

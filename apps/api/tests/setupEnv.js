@@ -8,3 +8,5 @@ process.env.SESSION_SECRET = "test-secret-".padEnd(48, "x");
 process.env.WEB_ORIGIN = "http://localhost:5173";
 process.env.SETUP_TOKEN = "";
 process.env.COOKIE_SECURE = "false";
+// A fixed key that is NOT your real one: tests never touch infrastructure/.env's key.
+process.env.APP_SECRETS_KEY = "a1".repeat(32);

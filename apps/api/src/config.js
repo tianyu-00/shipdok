@@ -1,3 +1,5 @@
+import { parseMasterKey } from "@shipdok/shared";
+
 // API settings from the environment. Call assertConfig() once at startup.
 export const config = {
   host: process.env.API_HOST ?? "127.0.0.1", // loopback by default; widen deliberately
@@ -11,8 +13,14 @@ export const config = {
   maxLifetimeMs: 12 * 60 * 60 * 1000, // absolute session lifetime
 };
 
+// The master key for encrypting app secrets. Throws a clear error if missing or malformed.
+export function loadSecretsKey() {
+  return parseMasterKey(process.env.APP_SECRETS_KEY);
+}
+
 export function assertConfig() {
   if (!config.sessionSecret || config.sessionSecret.length < 32) {
     throw new Error("SESSION_SECRET must be set to at least 32 characters (try: openssl rand -hex 32)");
   }
+  loadSecretsKey();
 }
