@@ -1,22 +1,30 @@
 // The body of a deploy job, separated from worker.js so it can be tested without Redis or Docker.
-import { deploy } from './deploy.js';
-import * as store from './db.js';
-import { loadAppEnv, EnvDecryptError } from './envvars.js';
+import { deploy } from "./deploy.js";
+import * as store from "./db.js";
+import { loadAppEnv, EnvDecryptError } from "./envvars.js";
 
 // Status updates are best-effort: a database hiccup must not abort a deployment mid-swap.
 const tolerate = (label) => (err) => console.error(`Could not record ${label}: ${err.message}`);
 
-export async function processDeployJob(job, { secretsKey, deployFn = deploy, db = store, loadEnv = loadAppEnv }) {
+export async function processDeployJob(
+  job,
+  { secretsKey, deployFn = deploy, db = store, loadEnv = loadAppEnv, pollMs = 1000 },
+) {
   const d = job.data;
   const id = d.deploymentId;
-  if (!id || !d.appId) throw new Error('Deploy job is missing deploymentId or appId');
+  if (!id || !d.appId) throw new Error("Deploy job is missing deploymentId or appId");
 
   const log = (msg) => {
     console.log(`[job ${job.id}] ${msg}`);
     Promise.resolve(job.log(msg)).catch(() => {}); // kept in Redis for now; real log storage comes later
   };
 
-  await db.markBuilding(id).catch(tolerate('building'));
+  // Claim the deployment. If it was cancelled or superseded while it waited in the queue, it is no longer
+  // 'queued' and we must not build anything. Errors here propagate: we cannot proceed without a claim.
+  if (!(await db.claim(id))) {
+    log("Skipped: this deployment is no longer queued (cancelled or superseded)");
+    return { deploymentId: id, skipped: true };
+  }
 
   // Decrypt the app's variables now, at execution time. Secrets are never in the job payload.
   let appEnv;
@@ -24,25 +32,96 @@ export async function processDeployJob(job, { secretsKey, deployFn = deploy, db 
     appEnv = await loadEnv(db.pool, d.appId, secretsKey);
   } catch (err) {
     // Only our own EnvDecryptError message is known to be safe to store; anything else gets a generic one.
-    const message = err instanceof EnvDecryptError ? err.message : 'Could not load the app variables';
-    await db.markFailed(id, message).catch(tolerate('failure'));
+    const message = err instanceof EnvDecryptError ? err.message : "Could not load the app variables";
+    await db.markFailed(id, message).catch(tolerate("failure"));
     throw new Error(message);
   }
 
   // Record the variable versions this deployment ACTUALLY uses (the API's snapshot was taken at queue time).
-  await db.recordEnvVersions(id, appEnv.versions).catch(tolerate('env versions'));
+  await db.recordEnvVersions(id, appEnv.versions).catch(tolerate("env versions"));
 
-  const result = await deployFn({
-    ...d,
-    env: appEnv.env,
-    log,
-    onStatus: (s) => db.setStatus(id, s).catch(tolerate(s)),
-    onCommit: (sha) => db.setCommit(id, sha).catch(tolerate('commit')),
-  });
+  // Watch for a cancel request while the deployment runs: one cheap query per tick, only while active.
+  const controller = new AbortController();
+  let requested = null;
+  let polling = false;
+  let timer = setInterval(async () => {
+    if (polling) return;
+    polling = true;
+    try {
+      const flag = await db.getCancelStatus(id);
+      if (flag && !requested) {
+        requested = flag;
+        log(`Stop requested (${flag}); stopping the deployment`);
+        controller.abort();
+      }
+    } catch {
+      /* a missed poll is retried on the next tick */
+    } finally {
+      polling = false;
+    }
+  }, pollMs);
+  const stopWatching = () => {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  };
 
-  if (result.ok) await db.markSucceeded(id, result.image).catch(tolerate('success'));
-  else await db.markFailed(id, result.error).catch(tolerate('failure'));
+  // Called by deploy() right before the swap. After a "proceed", cancellation is ignored.
+  const beforeSwap = async () => {
+    try {
+      const flag = requested ?? (await db.getCancelStatus(id));
+      if (flag) return { proceed: false, outcome: flag };
+      const newer = await db.newerSuccess(id);
+      if (newer) return { proceed: false, outcome: "superseded", by: newer };
+    } catch {
+      throw new Error("Could not check for a cancel request"); // generic: never pass database internals along
+    }
+    stopWatching();
+    return { proceed: true };
+  };
 
-  if (!result.ok) throw new Error(result.error); // marks the BullMQ job failed
-  return { deploymentId: result.deploymentId, image: result.image };
+  // Progress reports from deploy() are fire-and-forget. Queue their writes so they are applied IN ORDER and
+  // always finish before the final status is written (otherwise a late "validating" or a missing commit hash
+  // could survive into the finished record).
+  let writes = Promise.resolve();
+  const inOrder = (label, fn) => {
+    writes = writes.then(fn).catch(tolerate(label));
+  };
+
+  let result;
+  try {
+    result = await deployFn({
+      ...d,
+      env: appEnv.env,
+      log,
+      signal: controller.signal,
+      beforeSwap,
+      onStatus: (s) => inOrder(s, () => db.setStatus(id, s)),
+      onCommit: (sha) => inOrder("commit", () => db.setCommit(id, sha)),
+    });
+  } catch {
+    stopWatching();
+    await writes;
+    await db.markFailed(id, "Unexpected error while deploying").catch(tolerate("failure"));
+    throw new Error("Unexpected error while deploying");
+  } finally {
+    stopWatching();
+  }
+  await writes; // every progress write is done before any final status
+
+  if (result.ok) {
+    await db.markSucceeded(id, result.image).catch(tolerate("success"));
+    return { deploymentId: result.deploymentId, image: result.image };
+  }
+
+  if (result.stopped) {
+    // Stopped on request: not a failure, so the job completes normally.
+    const outcome = result.outcome ?? requested ?? "cancelled";
+    await db.markStopped(id, outcome, result.by ?? null).catch(tolerate("stop"));
+    return { deploymentId: id, outcome };
+  }
+
+  await db.markFailed(id, result.error).catch(tolerate("failure"));
+  throw new Error(result.error); // marks the BullMQ job failed
 }

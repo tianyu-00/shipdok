@@ -8,7 +8,24 @@ export const docker = new Docker(); // /var/run/docker.sock: treat as highly pri
 // Ownership labels live in @shipdok/shared so the API and worker agree on them.
 export { LABEL };
 
-export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+export const abortError = () => Object.assign(new Error("Operation aborted"), { name: "AbortError" });
+export const isAbort = (err) => err?.name === "AbortError";
+
+// Sleep that ends early (rejecting with AbortError) if the signal fires.
+export function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(abortError());
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 export function labelsFor({ appId, deploymentId, role }) {
   return {
@@ -21,7 +38,8 @@ export function labelsFor({ appId, deploymentId, role }) {
 
 export function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: "inherit", ...opts });
+    // opts.signal: aborting kills the child with SIGINT and rejects with an AbortError.
+    const p = spawn(cmd, args, { stdio: "inherit", killSignal: "SIGINT", ...opts });
     p.on("error", reject);
     p.on("exit", (c) => (c === 0 ? resolve() : reject(new Error(`${cmd} exited ${c}`))));
   });
@@ -72,27 +90,32 @@ export async function hostPortOf(container, containerPort) {
 }
 
 // Fail fast if the container exits; otherwise poll HTTP until 200 or timeout.
-export async function waitHealthy(container, { containerPort, health, timeoutMs = 120_000 }) {
+export async function waitHealthy(container, { containerPort, health, timeoutMs = 120_000, signal }) {
   const deadline = Date.now() + timeoutMs;
   const port = await hostPortOf(container, containerPort);
   while (Date.now() < deadline) {
+    if (signal?.aborted) throw abortError();
     const { State } = await container.inspect();
     if (!State.Running) {
       throw new Error(`Container exited early (code ${State.ExitCode}, OOMKilled=${State.OOMKilled})`);
     }
     if (health) {
       try {
-        const res = await fetch(`http://127.0.0.1:${port}${health}`, { signal: AbortSignal.timeout(2000) });
+        const timeout = AbortSignal.timeout(2000);
+        const res = await fetch(`http://127.0.0.1:${port}${health}`, {
+          signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
+        });
         if (res.ok) return;
       } catch {
+        if (signal?.aborted) throw abortError();
         /* not up yet */
       }
     } else {
       // Weak fallback: still running after 3s does not prove readiness.
-      await sleep(3000);
+      await sleep(3000, signal);
       if ((await container.inspect()).State.Running) return;
     }
-    await sleep(1000);
+    await sleep(1000, signal);
   }
   throw new Error(`Health check timed out after ${timeoutMs / 1000}s`);
 }
@@ -122,6 +145,23 @@ export async function tailLogs(container, env = [], n = 40) {
   } catch {
     return "(could not read container logs)";
   }
+}
+
+// Remove an image that will never be used (a cancelled or superseded build). Ignored if it is gone or in use.
+export async function removeImage(image) {
+  try {
+    await docker.getImage(image).remove({ force: false });
+  } catch {
+    /* already gone, or in use */
+  }
+}
+
+export async function imageArch(image) {
+  return (await docker.getImage(image).inspect()).Architecture;
+}
+
+export async function hostArchitecture() {
+  return (await docker.info()).Architecture;
 }
 
 export async function removeQuietly(c) {

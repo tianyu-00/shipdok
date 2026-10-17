@@ -1,21 +1,15 @@
 // The deployment itself: clone -> build -> candidate -> health check -> swap.
 // Importable by the BullMQ worker. Returns a result object; never calls process.exit.
+//
+// Cancellation: until the SWAP begins, everything honours opts.signal (clone, build, candidate start,
+// health wait). The swap is the point of no return: once the old container has been stopped, aborting could
+// leave the app down, so a cancel that arrives then is ignored and the deployment completes.
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { assertRelativeDir, resolveBuildDir } from "./paths.js";
-import {
-  docker,
-  labelsFor,
-  run,
-  capture,
-  findContainers,
-  createContainer,
-  waitHealthy,
-  tailLogs,
-  removeQuietly,
-} from "./docker.js";
+import * as realEngine from "./docker.js";
 
 /**
  * @param {object} opts
@@ -31,12 +25,18 @@ import {
  * @param {number} [opts.memoryMb=512]
  * @param {number} [opts.cpus=1]
  * @param {string[]} [opts.env=[]]      ['KEY=VALUE', ...]
+ * @param {AbortSignal} [opts.signal]   aborts work in progress, up to the point of no return
+ * @param {() => Promise<{proceed: boolean, outcome?: string, by?: string}>} [opts.beforeSwap]
+ *        asked right before the swap; proceed:false stops the deployment instead (e.g. cancelled, or a newer one already succeeded)
  * @param {(msg: string) => void} [opts.log]
  * @param {(status: 'starting'|'validating') => void} [opts.onStatus]  progress hook
  * @param {(sha: string) => void} [opts.onCommit]                      resolved commit hook
- * @returns {Promise<{ok: boolean, deploymentId: string, image: string, error?: string}>}
+ * @param {object} [eng]                the Docker/process engine; tests pass a fake
+ * @returns {Promise<{ok: true, deploymentId: string, image: string}
+ *   | {ok: false, stopped: true, outcome?: string, by?: string, deploymentId: string, image: string}
+ *   | {ok: false, error: string, deploymentId: string, image: string}>}
  */
-export async function deploy(opts) {
+export async function deploy(opts, eng = realEngine) {
   const o = { ref: "main", dir: ".", memoryMb: 512, cpus: 1, env: [], ...opts };
   const log = o.log ?? ((m) => console.log(`[${new Date().toISOString()}] ${m}`));
   const notify = (fn, ...args) => {
@@ -50,11 +50,16 @@ export async function deploy(opts) {
   const name = o.slug ?? o.appId;
   const image = `shipdok/${name}:${deploymentId}`;
   const healthOpts = { containerPort: o.containerPort, health: o.health };
+  const { signal } = o;
+  const stopIfAborted = () => {
+    if (signal?.aborted) throw eng.abortError();
+  };
+
   const make = (role, hostPort) =>
-    createContainer({
+    eng.createContainer({
       image,
       name: `shipdok-${name}-${deploymentId}-${role}`,
-      labels: labelsFor({ appId: o.appId, deploymentId, role }),
+      labels: eng.labelsFor({ appId: o.appId, deploymentId, role }),
       containerPort: o.containerPort,
       hostPort,
       memoryMb: o.memoryMb,
@@ -63,12 +68,15 @@ export async function deploy(opts) {
     });
 
   // Health check that prints container output on failure, before the container is removed.
-  const checked = async (container, label) => {
+  // `sig` is only passed before the point of no return.
+  const checked = async (container, label, sig) => {
     try {
-      await waitHealthy(container, healthOpts);
+      await eng.waitHealthy(container, { ...healthOpts, signal: sig });
     } catch (err) {
-      const logs = await tailLogs(container, o.env);
-      if (logs) log(`--- last container output (${label}) ---\n${logs}\n--- end ---`);
+      if (!eng.isAbort(err)) {
+        const logs = await eng.tailLogs(container, o.env);
+        if (logs) log(`--- last container output (${label}) ---\n${logs}\n--- end ---`);
+      }
       throw err;
     }
   };
@@ -82,19 +90,20 @@ export async function deploy(opts) {
   }
 
   const workDir = await mkdtemp(join(tmpdir(), "shipdok-"));
-  const previous = await findContainers({ appId: o.appId, role: "live" });
+  const previous = await eng.findContainers({ appId: o.appId, role: "live" });
   let candidate;
   let finalC;
+  let committed = false; // true once the swap has begun: from then on, no cancellation
 
   try {
     log(`Cloning ${o.repo}@${o.ref}`);
-    await run("git", ["clone", "--depth", "1", "--branch", o.ref, o.repo, workDir]);
-    notify(o.onCommit, await capture("git", ["-C", workDir, "rev-parse", "HEAD"]));
+    await eng.run("git", ["clone", "--depth", "1", "--branch", o.ref, o.repo, workDir], { signal });
+    notify(o.onCommit, await eng.capture("git", ["-C", workDir, "rev-parse", "HEAD"]));
     // Resolve symlinks AFTER cloning: the API validates the string, but only the real path is trustworthy.
     const buildDir = await resolveBuildDir(workDir, o.dir);
 
     log(`Building ${image}`);
-    await run(
+    await eng.run(
       "docker",
       [
         "build",
@@ -108,43 +117,66 @@ export async function deploy(opts) {
         `shipdok.deployment-id=${deploymentId}`,
         buildDir,
       ],
-      { env: { ...process.env, DOCKER_BUILDKIT: "1" } },
+      { env: { ...process.env, DOCKER_BUILDKIT: "1" }, signal },
     );
 
-    const img = await docker.getImage(image).inspect();
-    const hostArch = (await docker.info()).Architecture;
-    log(`Image arch: ${img.Architecture}, host: ${hostArch}`);
+    log(`Image arch: ${await eng.imageArch(image)}, host: ${await eng.hostArchitecture()}`);
+    stopIfAborted();
 
     log("Starting candidate on a temporary port");
     notify(o.onStatus, "starting");
     candidate = await make("candidate", "");
     await candidate.start();
     notify(o.onStatus, "validating");
-    await checked(candidate, "candidate");
+    await checked(candidate, "candidate", signal);
     log("Candidate healthy");
-    await removeQuietly(candidate);
+    await eng.removeQuietly(candidate);
     candidate = null;
+
+    // ---- Last chance to stop. Ask whether to go ahead (cancelled? a newer deployment already live?). ----
+    if (o.beforeSwap) {
+      const gate = await o.beforeSwap();
+      if (gate && gate.proceed === false) {
+        log(`Stopping before the swap (${gate.outcome ?? "stopped"}); the running version is untouched`);
+        await eng.removeImage(image); // built for nothing: nothing will ever run it
+        return { ok: false, stopped: true, outcome: gate.outcome, by: gate.by, deploymentId, image };
+      }
+    } else {
+      stopIfAborted();
+    }
+    committed = true; // ---- point of no return ----
 
     for (const old of previous) await old.stop().catch(() => {});
     try {
       finalC = await make("live", o.hostPort);
       await finalC.start();
-      await checked(finalC, "live");
+      await checked(finalC, "live"); // deliberately no signal
     } catch (err) {
       log(`Swap failed: ${err.message}. Restoring previous version`);
-      if (finalC) await removeQuietly(finalC);
+      if (finalC) await eng.removeQuietly(finalC);
       for (const old of previous) await old.start().catch((e) => log(`RESTORE FAILED: ${e.message}`));
       throw err;
     }
 
-    for (const old of previous) await removeQuietly(old);
+    for (const old of previous) await eng.removeQuietly(old);
     log(`Deployed ${name} (${deploymentId}) on :${o.hostPort}`);
     return { ok: true, deploymentId, image };
   } catch (err) {
+    if (!committed && signal?.aborted) {
+      log("Deployment stopped on request; the running version is untouched");
+      // The candidate must go FIRST: Docker will not delete an image while any container still uses it,
+      // and removeImage deliberately ignores that failure. (The finally block would be too late.)
+      if (candidate) {
+        await eng.removeQuietly(candidate);
+        candidate = null;
+      }
+      await eng.removeImage(image);
+      return { ok: false, stopped: true, deploymentId, image };
+    }
     log(`Deployment FAILED: ${err.message}`);
     return { ok: false, deploymentId, image, error: err.message };
   } finally {
-    if (candidate) await removeQuietly(candidate);
+    if (candidate) await eng.removeQuietly(candidate);
     await rm(workDir, { recursive: true, force: true });
   }
 }
