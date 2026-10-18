@@ -126,6 +126,26 @@ describe('signature verification', () => {
     for (let i = 0; i < 5; i++) codes.push((await deliver({}, { a: limited, event: 'ping' })).status);
     expect(codes).toEqual([200, 200, 200, 429, 429]);
   });
+
+  // Behind the Cloudflare tunnel every connection comes from cloudflared on loopback; the real client is only
+  // in X-Forwarded-For. Without trusting it, the whole internet shares one bucket and a flood locks GitHub out.
+  test('counts each forwarded client separately when the proxy is on loopback', async () => {
+    const limited = await makeApp({ queue, webhookRateLimit: 2 });
+    const from = (ip) => deliver({}, { a: limited, event: 'ping' }).set('X-Forwarded-For', ip);
+    const flood = [];
+    for (let i = 0; i < 4; i++) flood.push((await from('203.0.113.7')).status);
+    expect(flood).toEqual([200, 200, 429, 429]);
+    expect((await from('198.51.100.9')).status).toBe(200);
+  });
+
+  test('a spoofed left-hand X-Forwarded-For entry does not buy a fresh bucket', async () => {
+    const limited = await makeApp({ queue, webhookRateLimit: 2 });
+    // The proxy appends the real client address on the right; anything the client put on the left is noise.
+    const from = (spoof) => deliver({}, { a: limited, event: 'ping' }).set('X-Forwarded-For', `${spoof}, 203.0.113.7`);
+    const codes = [];
+    for (const spoof of ['192.0.2.1', '192.0.2.2', '192.0.2.3', '192.0.2.4']) codes.push((await from(spoof)).status);
+    expect(codes).toEqual([200, 200, 429, 429]);
+  });
 });
 
 describe('requests that are signed but malformed', () => {

@@ -48,7 +48,7 @@ npm start -w apps/worker         # reconciles on boot, then waits for jobs
 npm test                         # API (Jest), worker (node:test), shared (node:test)
 ```
 
-Tests at last commit: API 218, worker 116, shared 118. Worker tests reuse the `_test` database the API tests create and
+Tests at last commit: API 220, worker 116, shared 118. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -61,29 +61,45 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   snapshotted per deployment. `repo` is `owner/repo`; clone URL built server-side. `host_port` required for now.
 - **Deploy engine:** clone -> build -> candidate on temp port -> health check -> swap -> retire. Failures leave the running
   version untouched; unhealthy new live container restarts the old one. Ownership labels `shipdok.managed/app-id/
-deployment-id/role`.
+  deployment-id/role`.
 - **Encrypted env vars:** AES-256-GCM `v1:iv:tag:ciphertext`, bound to `env:<appId>:<name>`; masked API; reveal only via POST.
   Values never in jobs, logs, errors or snapshots.
 - **Queue/recovery:** concurrency 1, no retries, `maxStalledCount: 0`; boot reconcile removes orphan candidates/temp clones
   and marks in-flight deployments `interrupted`.
 - **Cancel/supersede:** latest wins; worker claims (queued->building), polls cancel flag ~1s; the swap is the point of no
   return; gate refuses if cancelled or a newer deployment already succeeded.
-- **Webhooks (verified manually):** `POST /api/webhooks/github` (raw-body HMAC SHA-256, constant time, dedupe by
-  `X-GitHub-Delivery`, branch filtering, stopped apps skipped, exact-commit build with strict hex validation).
-  History at `GET /api/webhooks/deliveries`.
-- **GitHub App auth (tested, not yet run against github.com):** RS256 app JWT; installation tokens scoped to one repo with
+- **Webhooks (verified end to end with real pushes):** `POST /api/webhooks/github` (raw-body HMAC SHA-256, constant time,
+  dedupe by `X-GitHub-Delivery`, branch filtering, stopped apps skipped, exact-commit build with strict hex validation).
+  History at `GET /api/webhooks/deliveries`. Checked against github.com: push to the tracked branch deploys, a redelivery of
+  a missed push deploys, a repeated delivery is ignored as duplicate, another branch is ignored, two quick pushes supersede
+  the older one, a stopped app is skipped. Every app tracking the repo+branch deploys (one build each, worker concurrency 1).
+- **GitHub App auth (verified against github.com):** RS256 app JWT; installation tokens scoped to one repo with
   `contents: read`, cached until 5 min before expiry; token reaches git ONLY via `GIT_CONFIG_*` env (never argv/URL/logs/
   `.git/config`); git runs with a minimal environment (no `APP_SECRETS_KEY` etc.); creating an app looks up the
-  installation (warns, never errors, if not installed); `GET /api/github/repos` lists installed repos.
+  installation (warns, never errors, if not installed); `GET /api/github/repos` lists installed repos. A private repo
+  (`tianyu-00/shipdok-test-app`) was cloned and deployed through it. Not yet seen: a token refresh after the 1 h expiry.
+- **Public webhook path (Cloudflare Tunnel, on WSL2 for now):** tunnel `shipdok`, hostname `hooks.tianyu00.com`, config in
+  `~/.cloudflared/config.yml` (outside the repo): ingress forwards only `^/api/webhooks/github$` to `127.0.0.1:4000`, everything
+  else is a Cloudflare 404 (checked: `/api/auth/me`, `/api/webhooks/deliveries`). Needs no port forwarding. Run with
+  `cloudflared tunnel run shipdok`; it is not yet a service. The API sets `trust proxy` to `loopback`, so the webhook rate
+  limit (120/min) counts each real client separately and ignores forged `X-Forwarded-For` values.
+- **GitHub App config:** the App's ID, private key (`GITHUB_APP_PRIVATE_KEY_FILE`, kept at `~/.shipdok/github-app.pem`, chmod
+  600) and webhook secret live in `infrastructure/.env`; API and worker both load it. Created by hand on github.com
+  (webhook URL above, Contents read-only, Push event, installed on selected repos only).
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
 
-1. GitHub App setup walkthrough: create the App (webhook URL + secret, Contents + Metadata read-only, push event), set
-   env vars, Cloudflare tunnel exposing only `POST /api/webhooks/github`, one real push end to end.
-2. Start/stop/restart + `desired_state`, crash handling, runtime health.
-3. Persistent log storage. 4. Image retention, rollback, disk cleanup. 5. Dashboard (`apps/web`, React + Tailwind).
-4. Automatic host-port allocation and app deletion (currently SQL by hand). 7. Pi hardening, docs, API docs (Scalar).
+1. Start/stop/restart + `desired_state`, crash handling, runtime health.
+2. Persistent log storage.
+3. Image retention, rollback, disk cleanup.
+4. Dashboard (`apps/web`, React + Tailwind).
+5. Automatic host-port allocation and app deletion (currently SQL by hand: delete `deployments` rows first, `app_id` is
+   `ON DELETE RESTRICT`; remove containers and `shipdok/*` images yourself).
+6. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so
+   other people hosting Shipdok do not fill in the form by hand. Read SPEC.md Milestone 3 first.
+7. Pi: run the tunnel as a service, full-stack run, hardening, docs (setup options: tunnel, reverse proxy, or manual deploys
+   only), API docs (Scalar).
 
 Known gaps: no audit/rate limit on `reveal`; old `shipdok/*` images pile up; build-time env vars; Railpack; DB backup docs.
 The portfolio backend (`tianyu-00/TianYuSiteV2`, `backend/`, port 9090) is not yet deployed through the platform.

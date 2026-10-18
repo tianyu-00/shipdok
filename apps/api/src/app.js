@@ -29,6 +29,9 @@ export function createApp({
 } = {}) {
   const app = express();
   app.disable('x-powered-by');
+  // Believe X-Forwarded-For only when the connection itself comes from this machine (the Cloudflare tunnel's
+  // cloudflared). Never `true` or a hop count: a directly connected client could then forge its own address.
+  app.set('trust proxy', 'loopback');
   app.use(helmet());
 
   // The GitHub webhook is public and signature-protected. It is mounted BEFORE the JSON parser, the session
