@@ -18,9 +18,10 @@ async function removeJobs(queue, jobIds) {
  * @param {'manual'|'webhook'} [opts.trigger]
  * @param {string} [opts.commit]      exact commit to build (a webhook push); otherwise the branch head at build time
  * @param {string} [opts.deliveryId]  the GitHub delivery that caused this; at most one deployment per (delivery, app)
+ * @param {boolean} [opts.startAfter] start the app after this deployment even though it is stopped (explicit request only)
  * @returns {{ ok: true, deploymentId: string, duplicate?: boolean } | { ok: false, deploymentId: string }}
  */
-export async function requestDeployment({ db, queue }, app, { trigger = 'manual', commit = null, deliveryId = null } = {}) {
+export async function requestDeployment({ db, queue }, app, { trigger = 'manual', commit = null, deliveryId = null, startAfter = false } = {}) {
   // The settings THIS deployment will use. No secret values belong here.
   const snapshot = {
     repo: app.repo, branch: app.branch, root_dir: app.root_dir,
@@ -66,6 +67,7 @@ export async function requestDeployment({ db, queue }, app, { trigger = 'manual'
       health: snapshot.health_path ?? undefined,
       memoryMb: snapshot.memory_mb,
       cpus: snapshot.cpus,
+      startAfterDeploy: startAfter || undefined, // the worker applies it only if the deployment succeeds
     });
     await db.query('UPDATE deployments SET job_id = $2 WHERE id = $1', [deploymentId, String(job.id)]);
   } catch (err) {

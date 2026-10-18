@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { requestDeployment, cancelDeployment } from '../deployments.js';
+import { requestControl, CONTROL_ACTIONS } from '../control.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (s) => typeof s === 'string' && UUID_RE.test(s);
@@ -34,6 +35,12 @@ const UNIQUE_MESSAGES = {
 
 const DEPLOYMENT_COLUMNS = `id, app_id, commit_sha, trigger, status, image_ref, config_snapshot,
   error_summary, job_id, queued_at, started_at, finished_at, cancel_status, superseded_by`;
+
+// What the worker last reported about the live container (null until it has). Not the same as desired_state.
+const RUNTIME = `(SELECT row_to_json(r) FROM (
+    SELECT state, last_action, last_error, updated_at FROM app_runtime WHERE app_id = a.id) r)`;
+
+const deploySchema = z.object({ start: z.boolean().optional() }).strict();
 
 export function appsRouter({ db, queue, github = null }) {
   const r = Router();
@@ -85,7 +92,8 @@ export function appsRouter({ db, queue, github = null }) {
         SELECT a.*,
           (SELECT row_to_json(x) FROM (
              SELECT id, status, commit_sha, queued_at, finished_at FROM deployments
-             WHERE app_id = a.id ORDER BY queued_at DESC LIMIT 1) x) AS latest_deployment
+             WHERE app_id = a.id ORDER BY queued_at DESC LIMIT 1) x) AS latest_deployment,
+          ${RUNTIME} AS runtime
         FROM apps a ORDER BY a.created_at DESC`);
       res.json(rows);
     } catch (err) { next(err); }
@@ -94,7 +102,7 @@ export function appsRouter({ db, queue, github = null }) {
   r.get('/:id', async (req, res, next) => {
     try {
       if (!isUuid(req.params.id)) return res.status(404).json({ error: 'App not found' });
-      const { rows } = await db.query('SELECT * FROM apps WHERE id = $1', [req.params.id]);
+      const { rows } = await db.query(`SELECT a.*, ${RUNTIME} AS runtime FROM apps a WHERE a.id = $1`, [req.params.id]);
       if (!rows[0]) return res.status(404).json({ error: 'App not found' });
       res.json(rows[0]);
     } catch (err) { next(err); }
@@ -119,8 +127,11 @@ export function appsRouter({ db, queue, github = null }) {
       const app = appRows[0];
       if (!app) return res.status(404).json({ error: 'App not found' });
       if (!queue) return res.status(503).json({ error: 'Deployment queue unavailable' });
+      const body = deploySchema.safeParse(req.body ?? {});
+      if (!body.success) return res.status(400).json({ error: 'Invalid request', details: body.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) });
 
-      const result = await requestDeployment({ db, queue }, app);
+      // A stopped app stays stopped after a deployment unless the administrator asks for { "start": true }.
+      const result = await requestDeployment({ db, queue }, app, { startAfter: body.data.start === true });
       if (!result.ok) {
         return res.status(503).json({ error: 'Could not enqueue the deployment job', deploymentId: result.deploymentId });
       }
@@ -128,6 +139,22 @@ export function appsRouter({ db, queue, github = null }) {
       res.status(202).json(rows[0]);
     } catch (err) { next(err); }
   });
+
+  // Start / stop / restart: record the wish, queue the work for the worker (the only thing with Docker access).
+  for (const action of CONTROL_ACTIONS) {
+    r.post(`/:id/${action}`, async (req, res, next) => {
+      try {
+        if (!isUuid(req.params.id)) return res.status(404).json({ error: 'App not found' });
+        const { rows } = await db.query('SELECT * FROM apps WHERE id = $1', [req.params.id]);
+        if (!rows[0]) return res.status(404).json({ error: 'App not found' });
+        if (!queue) return res.status(503).json({ error: 'Job queue unavailable' });
+
+        const result = await requestControl({ db, queue }, rows[0], action);
+        if (!result.ok) return res.status(503).json({ error: 'Could not queue the request' });
+        res.status(202).json({ action: result.action, desired_state: result.desired_state });
+      } catch (err) { next(err); }
+    });
+  }
 
   return r;
 }
