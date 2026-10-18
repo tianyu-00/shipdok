@@ -3,8 +3,9 @@
 Self-hosted single-host PaaS (GitHub repo -> one Docker container per app, auto-deploy on push) for one administrator.
 Target: Raspberry Pi 4 (8 GB, ARM64), developed on WSL2 Ubuntu. JavaScript (not TypeScript), Node 22, ES modules,
 npm workspaces. Private LAN/VPN only; only the GitHub webhook path is ever exposed (Cloudflare tunnel).
-The full product spec is `PRIVATE.md` (Claude project file, not in the repo). If this file and the spec disagree about
-what exists, this file is right; the spec is the target.
+Full product spec: SPEC.md (the target design). Do not edit it as features get built.
+This file records what is actually built; if the two disagree about what exists, this file is right.
+Read the relevant section of the spec before building a new feature.
 
 ## How to work with me
 
@@ -17,6 +18,8 @@ what exists, this file is right; the spec is the target.
   `jar.txt`, `infrastructure/.env`, `*.pem` or `node_modules/`. Check `git status` before committing.
 - Plain `npm pkg set` has silently failed on my machine: edit `package.json` by hand when it matters.
 - Do not commit or push unless I ask.
+- When a feature is finished and tested, update "Built and verified" and "Next" in this file in the same commit.
+  Never edit SPEC.md unless I ask.
 - My `jar.txt` login cookie expires after 30 minutes idle; odd "`.map is not a function`"/"`undefined`" from curl+node
   one-liners usually means that.
 
@@ -58,7 +61,7 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   snapshotted per deployment. `repo` is `owner/repo`; clone URL built server-side. `host_port` required for now.
 - **Deploy engine:** clone -> build -> candidate on temp port -> health check -> swap -> retire. Failures leave the running
   version untouched; unhealthy new live container restarts the old one. Ownership labels `shipdok.managed/app-id/
-  deployment-id/role`.
+deployment-id/role`.
 - **Encrypted env vars:** AES-256-GCM `v1:iv:tag:ciphertext`, bound to `env:<appId>:<name>`; masked API; reveal only via POST.
   Values never in jobs, logs, errors or snapshots.
 - **Queue/recovery:** concurrency 1, no retries, `maxStalledCount: 0`; boot reconcile removes orphan candidates/temp clones
@@ -80,7 +83,7 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
    env vars, Cloudflare tunnel exposing only `POST /api/webhooks/github`, one real push end to end.
 2. Start/stop/restart + `desired_state`, crash handling, runtime health.
 3. Persistent log storage. 4. Image retention, rollback, disk cleanup. 5. Dashboard (`apps/web`, React + Tailwind).
-6. Automatic host-port allocation and app deletion (currently SQL by hand). 7. Pi hardening, docs, API docs (Scalar).
+4. Automatic host-port allocation and app deletion (currently SQL by hand). 7. Pi hardening, docs, API docs (Scalar).
 
 Known gaps: no audit/rate limit on `reveal`; old `shipdok/*` images pile up; build-time env vars; Railpack; DB backup docs.
 The portfolio backend (`tianyu-00/TianYuSiteV2`, `backend/`, port 9090) is not yet deployed through the platform.

@@ -1,0 +1,526 @@
+# Shipdok — Product & Technical Specification
+
+**Status:** Consolidated MVP specification  
+**Tagline:** Build it. Ship it. Own it.  
+**Product type:** Self-hosted, single-host PaaS  
+**Audience:** One administrator / personal use  
+**Implementation preference:** JavaScript rather than TypeScript
+
+> This document consolidates the decisions made during the Shipdok requirements discussion. Items marked **Open decision** remain unresolved; items marked **Validate in prototype** require practical testing before being treated as proven.
+
+## 1. Product vision
+
+Shipdok is an open-source, self-hostable platform inspired by Railway, Render, and Vercel. It lets an administrator connect a GitHub repository, configure a service, build an image, and deploy it as a Docker container on a Linux host they control.
+
+The initial target is a Raspberry Pi 4 with 8 GB RAM. The design must remain useful on other standard Linux Docker hosts, but the MVP is deliberately single-host and resource-conscious.
+
+### Goals
+
+- Deploy one application container per Shipdok application.
+- Support GitHub push-triggered deployments and manual deployments.
+- Support Dockerfiles, automatic buildpack detection, and custom build/start commands.
+- Make deployment state, logs, resource usage, and failures understandable.
+- Preserve the last successful version when a new deployment fails, where technically possible.
+- Keep applications and persistent data safe during cleanup and platform recovery.
+- Operate privately on a LAN or VPN by default.
+
+### Non-goals for the MVP
+
+- Kubernetes, Docker Swarm, or cluster orchestration.
+- Multi-host scheduling or remote build agents.
+- Full Docker Compose application import or multi-container application deployment.
+- Public registration, teams, invitations, or multi-tenant access.
+- Built-in domain routing, TLS certificate issuance, or certificate renewal.
+- Pull-request preview deployments.
+- Provisioning or managing databases for deployed applications.
+- Automatic scheduled backups of Shipdok's database or application volumes.
+- Dashboard editing or uploading of arbitrary application configuration files.
+- Existing-container adoption.
+- Automatic Shipdok self-upgrades.
+- Historical metrics, advanced alerting, or a dedicated time-series database.
+
+## 2. Target environment and operating assumptions
+
+- **Initial host:** Raspberry Pi 4, 8 GB RAM, Linux, Docker Engine.
+- **Development environment:** Windows with WSL2 and Docker Desktop.
+- **Architecture:** Native host architecture only in the MVP. On the Pi, target the host's actual architecture, expected to be ARM64 where the OS is 64-bit.
+- Detect incompatible images or dependencies and show clear errors. Do not attempt cross-architecture emulation in the MVP.
+- **Network access:** Private LAN/VPN access by default. Shipdok must not configure router port forwarding or public exposure.
+- **Build concurrency:** One active build at a time; other build jobs wait in a persistent queue.
+- **Resource constraints:** The host's RAM, CPU, and disk are shared by Shipdok, builds, and deployed applications.
+- **Internet dependency:** Existing applications and the local dashboard should continue to work during an internet outage where the host and LAN remain operational. Internet-dependent builds fail clearly and require manual retry.
+
+## 3. Technology and service architecture
+
+### Preferred stack
+
+- **Dashboard:** React JavaScript + Tailwind CSS.
+- **API:** Node.js + Express.
+- **Worker:** Separate Node.js process for builds, deployment jobs, reconciliation, and cleanup.
+- **Platform database:** PostgreSQL.
+- **Queue:** Redis + BullMQ.
+- **Container runtime:** Docker Engine API.
+- **Builds:** Dockerfile builds as a first-class path; evaluate Railpack for automatic buildpack detection. Support custom build/start commands as a fallback.
+- **Build execution:** Restricted BuildKit-based build jobs, subject to security and compatibility validation.
+
+### Platform services
+
+Shipdok itself is run through Docker Compose and includes the dashboard, API, worker, PostgreSQL, and Redis. A reverse proxy is optional and external to the core MVP.
+
+User application containers are created dynamically by the worker through the Docker Engine API. They are **not** declared as static services in Shipdok's own Compose file.
+
+### Suggested repository structure
+
+```text
+shipdok/
+├── apps/
+│   ├── web/                  # React dashboard
+│   ├── api/                  # Express API
+│   └── worker/                # Build and deployment jobs
+├── packages/
+│   └── shared/                # Shared validation and utilities
+├── docker/
+│   └── Dockerfile.worker
+├── infrastructure/
+│   ├── compose.yaml
+│   └── nginx-proxy-manager/   # Optional integration documentation
+├── tests/
+│   └── integration/
+├── .env.example
+├── package.json
+└── README.md
+```
+
+The exact monorepo tooling and package-manager choice can be decided during implementation.
+
+## 4. Identity, administrator setup, and authentication
+
+- Shipdok is single-administrator in the MVP.
+- On first launch, guide the user through creating the administrator account.
+- Disable first-run setup atomically after the account is created; concurrent setup requests must not create multiple administrators.
+- No public registration or invitation system.
+- Hash passwords using a modern password-hashing algorithm; never store plaintext passwords.
+- Rate-limit login attempts.
+- Use secure session cookies (`HttpOnly`, appropriate `SameSite`, and `Secure` when served over HTTPS).
+- Protect state-changing requests against CSRF where applicable.
+- Use a sliding inactivity timeout and a maximum session lifetime. Exact timeout values remain an implementation decision.
+- Support logout and session revocation.
+
+### Platform secrets
+
+**Open decision (Q50):** Decide how Shipdok's own secrets are supplied and stored. Candidates discussed:
+
+1. Environment variables and protected mounted secret files.
+2. Encrypted values managed in PostgreSQL.
+3. An external secret manager.
+
+Regardless of the choice, real secrets must never be committed to source control, included in public images, or intentionally written to logs. Provide `.env.example` with placeholders only and protect actual secret files with restrictive permissions.
+
+## 5. GitHub integration
+
+- Use a GitHub App rather than long-lived personal access tokens.
+- Request repository-scoped permissions and let the administrator install the app on selected repositories.
+- List repositories available to the installation.
+- Use short-lived installation access tokens; keep the app private key and webhook secret on the trusted platform side.
+- Verify webhook signatures.
+- Deduplicate deliveries by GitHub delivery ID.
+- Record webhook processing failures without logging secrets.
+- Deploy only pushes to the application's configured branch.
+- Do not poll GitHub periodically in the MVP. If a webhook is missed, the administrator can inspect GitHub's delivery history and manually redeploy.
+- Manual deployment and redeployment are available from the dashboard.
+
+### Latest-commit-wins policy
+
+For a new push to an application's configured branch:
+
+- Cancel older queued deployments for that application.
+- Request safe cancellation of its active build if one is in progress.
+- Queue the newest commit.
+- Do not cancel another application's job.
+- Keep the currently running application available while the replacement is built, unless the administrator explicitly stops it.
+- Record cancelled or superseded jobs in history.
+- Ensure an older commit cannot replace a newer successful version.
+
+If an application is intentionally stopped, skip automatic deployments. Record the push or skipped event as appropriate, explain the reason in the dashboard, and allow the administrator to deploy manually later. A manual deployment of a stopped application must preserve its stopped state unless the administrator explicitly chooses to start it.
+
+## 6. Application creation and configuration
+
+### Initial setup flow
+
+1. Connect or select a repository available through the GitHub App.
+2. Select a branch.
+3. Choose an application name; default to the repository name but allow editing.
+4. Configure the application root directory (repository root by default).
+5. Detect a Dockerfile or attempt buildpack detection.
+6. Review the detected build method, commands, ports, resource limits, health check, and persistent mounts.
+7. Confirm the initial deployment explicitly.
+
+### Names and identity
+
+- Application names must be unique within Shipdok.
+- Use a stable internal application ID separate from its display name.
+- Generate validated, normalised slugs for Docker resource names.
+- Permit renaming at any time.
+- A rename updates the display name and the normalised name used for future resources. Existing resources can keep their current names until naturally replaced.
+- Renaming must not require a rebuild or restart by itself.
+
+### Root directory and build settings
+
+- Default application root is the repository root.
+- Allow a configurable subdirectory, such as `frontend/` or `services/api/`.
+- Discover Dockerfiles and detect buildpacks relative to the configured directory.
+- Validate the path and provide clear errors if it is missing or invalid.
+- Full monorepo/multiple-app support is deferred.
+
+### Pending configuration
+
+- Saving settings creates a pending configuration; it does not alter the live deployment.
+- The administrator explicitly clicks **Deploy** to apply saved changes.
+- Show which settings are pending and will be used by the next deployment.
+- Automatic GitHub deployments use the latest saved configuration.
+- If a deployment fails, preserve the prior working version and its effective configuration where possible.
+
+### Build methods
+
+1. **Dockerfile:** First-class, explicit build method.
+2. **Railpack:** Preferred candidate for automatic buildpack detection, subject to a Raspberry Pi/ARM64 compatibility, security, and performance prototype.
+3. **Custom commands:** Allow configured build and start commands if detection is insufficient.
+
+Keep build methods behind a modular interface so Railpack can be replaced. Build commands execute only in the isolated build environment, not inside the privileged API service.
+
+## 7. Deployment lifecycle and versioning
+
+### Deployment flow
+
+1. Persist the requested commit and configuration snapshot.
+2. Queue a job through BullMQ.
+3. Fetch the intended repository commit using GitHub installation credentials.
+4. Build the image using the selected build method.
+5. Validate the resulting image's architecture and runtime configuration.
+6. Create a candidate container with configured environment, mounts, resource limits, and network policy.
+7. Run startup checks and the configured health check.
+8. If validation succeeds, switch to the candidate and retire the prior container as safely as the port model allows.
+9. If validation fails, remove temporary resources and preserve the prior successful deployment where possible.
+10. Persist status, logs, image reference, commit, and configuration snapshot.
+
+Because a direct host port cannot usually be bound by both old and candidate containers simultaneously, a candidate may be tested on a temporary port before a brief port swap. If the old container must be stopped first, retain enough metadata and image state to restore it if the swap fails. Do not promise zero downtime for direct-port deployments.
+
+### Deployment history and rollback
+
+- Keep deployment history and failure records.
+- Retain the current successful version plus the five previous successful versions per application.
+- Rollback reuses an existing retained image; it does not rebuild from source.
+- Protect images referenced by active containers or retained successful deployments from cleanup.
+- Failed and cancelled jobs remain visible in history but do not count toward the five previous successful versions.
+- Rollback changes the application image/version, not persistent-volume contents or external database state. Database migrations require application-specific handling.
+
+### Job cancellation and retries
+
+- No automatic retries for failed deployments; the administrator manually retries.
+- Queued jobs can be cancelled without starting.
+- Running builds can be cancelled with safe termination and cleanup.
+- Cancellation must not delete the current working application, retained images, logs, or persistent volumes.
+- Record commit/configuration details for retries.
+- On worker restart, reconcile interrupted jobs and Docker resources. Mark incomplete jobs interrupted or failed, clean temporary resources, and preserve the existing working app. Do not silently retry.
+
+## 8. Ports, networking, and exposure
+
+- Configure the application container port.
+- Allocate a host port automatically by default.
+- Allow the administrator to request a specific host port.
+- If a requested port conflicts, fail clearly; do not silently choose another port.
+- Port allocation must be race-safe and account for the actual Docker host state.
+- Persist port settings across redeployments.
+- Default access is private LAN/VPN through the host IP and assigned port.
+- Shipdok must not configure router port forwarding or public exposure.
+- Applications are isolated from the control plane and from each other by default.
+- Outbound internet access is allowed by default, subject to host policy.
+- LAN access to private devices and inter-app communication require deliberate administrator-controlled configuration.
+- Docker networks alone are not a complete host/LAN security boundary. Validate the actual host firewall and Docker-published-port behaviour.
+- Do not grant application containers access to the Docker management socket or API.
+
+### TLS
+
+- Direct host-port access is the MVP path.
+- Shipdok does not manage TLS certificates or built-in domain routing.
+- Document optional Nginx Proxy Manager integration for domains and HTTPS.
+- Explain that HTTP does not encrypt traffic; protect dashboard access and credentials accordingly.
+
+## 9. Persistent volumes and external databases
+
+### Persistent storage
+
+- Support optional user-configured Docker named volumes.
+- The administrator specifies container paths to persist, such as `/app/uploads`.
+- Reuse the same volumes across redeployments.
+- Do not automatically infer persistent paths.
+- Normal container/image/build cleanup must never delete persistent volumes.
+- When deleting an application, explicitly ask whether to preserve or permanently delete its volumes. Permanent deletion requires clear confirmation and warning.
+- Track preserved/orphaned volumes so the administrator can identify and remove them later.
+- Application volume backup/restore is not included in the MVP.
+
+### Databases
+
+- Deployed applications use external databases in the MVP.
+- The administrator supplies connection details through environment variables.
+- Shipdok does not provision or manage databases for user applications.
+- Shipdok's own PostgreSQL and Redis are separate platform services.
+- Do not expose a database publicly merely to connect an application; networking must be configured deliberately.
+- Rolling back an application does not roll back external database contents or schema migrations.
+
+### Configuration files
+
+- Use repository files for ordinary configuration, or user-configured mounts where appropriate.
+- Environment variables remain the primary mechanism for secrets and environment-specific settings.
+- No dashboard file editor or configuration-file upload feature in the MVP.
+- Files baked into an image change through deployment; mounted files have a separate lifecycle and permission model.
+
+## 10. Environment variables and secrets for applications
+
+- Add, edit, and delete variables individually, or import a `.env` file.
+- Parse `.env` files safely.
+- Encrypt application secret values at rest in PostgreSQL.
+- Mask secrets by default in the UI.
+- Ordinary API responses must not include decrypted secret values.
+- Only trusted platform components should decrypt secrets when required to configure a container.
+- Never intentionally log secret values or error messages that may contain them.
+- Variables persist across redeployments until changed.
+- Masking and encryption are separate controls; both are required.
+
+## 11. Health checks and runtime behaviour
+
+- Allow an optional configurable HTTP health-check path, such as `/health`.
+- Use container-running status as the fallback when no HTTP check is configured; clearly explain that this does not prove application readiness.
+- Startup health-check timeout: 120 seconds.
+- Detect early container exit and fail promptly rather than waiting for the full timeout.
+- If a candidate fails its startup check, mark the deployment failed and preserve the prior working version where possible.
+- Continue checking health after deployment.
+- If a previously successful application later becomes unhealthy, mark it `Unhealthy`, show failures and logs, and keep it running. Do not automatically restart or roll back solely because an ongoing health check fails.
+- Let the administrator decide whether to restart or roll back.
+- Keep deployment status separate from current runtime health.
+
+### Crash handling
+
+- Automatically restart a container after unexpected crashes, subject to a configurable retry limit.
+- After repeated crashes, stop retrying and mark the app `Crashed` or `Unhealthy`.
+- Allow manual recovery after inspection.
+- Never automatically restart an application intentionally stopped by the administrator.
+- Distinguish intentionally stopped containers from crashed applications.
+
+### Application controls
+
+Provide **Start**, **Stop**, and **Restart** controls:
+
+- Stop the container without deleting application configuration, history, images, or volumes.
+- Start the currently deployed version/configuration.
+- Restart without rebuilding.
+- Manual deployment of a stopped application should leave it stopped unless the administrator explicitly requests a start.
+
+## 12. Resource limits and monitoring
+
+- Default application memory limit: suggested 512 MB, configurable per app.
+- CPU limit: configurable per app; exact default quota is an implementation decision to be measured on the Pi.
+- Apply Docker-enforced limits to application containers.
+- Build jobs also need CPU, memory, time, and concurrency limits.
+- Reserve enough resources for Shipdok services and the host itself.
+- Show live CPU usage, memory usage, configured limits, and container status.
+- No historical resource charts, advanced alerts, or dedicated metrics database in the MVP.
+- Surface out-of-memory and resource-limit failures clearly.
+
+## 13. Logs and disk management
+
+### Centralised logs
+
+- Store build and runtime logs in Shipdok-managed persistent storage, associated with the application and deployment.
+- Logs remain accessible after containers are replaced or removed.
+- Keep logs until the administrator explicitly deletes them.
+- Keep deployment status and error summaries even if detailed logs are deleted.
+- Avoid intentionally logging secrets.
+- A file-based log store with metadata in PostgreSQL is a candidate implementation; validate disk usage and indexing needs.
+
+### Disk cleanup
+
+- Automatically remove disposable build containers, temporary files, and unused build cache.
+- Preserve the current image and images required by the five previous successful versions.
+- Preserve logs and persistent volumes.
+- Never automatically delete retained logs to reclaim space.
+- Show disk and log storage usage, and warn when storage is running low or critical.
+- Require manual deletion of retained logs and other protected data.
+- Because the chosen log policy can exhaust disk space, document the operational risk prominently.
+- Cleanup must be ownership-scoped and never touch unrelated Docker workloads.
+
+## 14. Application deletion and Docker resource ownership
+
+- Shipdok manages only applications and resources it creates; existing Docker workloads remain untouched.
+- Tag Shipdok-managed resources with explicit ownership and application/deployment identifiers.
+- Before deletion, show a resource summary covering containers, configuration, deployment records, images, and volumes.
+- Require explicit confirmation.
+- Ask whether to preserve or permanently delete persistent volumes.
+- Remove only resources verified as belonging to that application.
+- Report partial cleanup failures rather than claiming deletion fully succeeded.
+- Stable internal application IDs preserve associations across renames.
+- Never implicitly delete volumes during image/container cleanup.
+
+## 15. Platform database backups and upgrades
+
+### Database backup and restore
+
+- Provide a manual PostgreSQL backup and documented restore procedure for Shipdok's own database.
+- No scheduled automatic backups in the MVP.
+- Protect backup files because they may contain sensitive metadata and encrypted secrets.
+- Explain that restoring PostgreSQL does not restore Docker images, containers, or application volume contents.
+
+### Platform upgrades
+
+- Upgrade Shipdok manually by updating its Docker images and following documented steps.
+- Use versioned, ordered database migrations.
+- Recommend a database backup before an upgrade.
+- Document diagnosis and recovery for failed migrations.
+- No dashboard-driven or automatic self-upgrade feature in the MVP.
+
+## 16. Worker reliability and network outages
+
+- Persist queue/job state so the worker can reconcile after restart.
+- At startup, identify interrupted jobs and abandoned temporary resources.
+- Mark incomplete jobs interrupted or failed; do not auto-retry.
+- Preserve the currently working application.
+- Keep existing apps running during internet outages.
+- Keep the local dashboard/API available over the LAN when the host and local network are operational.
+- Report internet-dependent build failures clearly and allow manual retry.
+- Do not require an external Shipdok service for core local management.
+
+## 17. Security requirements
+
+Security is a core requirement because the worker interacts with Docker and processes potentially untrusted repository code.
+
+- Never expose the Docker management socket/API to deployed application containers or build steps.
+- Treat Docker Engine access as highly privileged.
+- Keep API/control-plane services separate from build and application execution.
+- Use restricted BuildKit-based build jobs with CPU, memory, and time limits.
+- Restrict mounts, capabilities, network access, and build secrets.
+- Do not run arbitrary build steps in the privileged API container.
+- Do not grant build steps privileged mode or host filesystem access.
+- Validate image architecture and configuration before starting a candidate.
+- Use scoped GitHub App permissions, verify webhook signatures, and protect private keys.
+- Encrypt application secrets at rest and mask them in the UI/API.
+- Protect session cookies, login routes, and state-changing requests.
+- Use ownership labels and stable internal IDs to scope cleanup.
+- Keep applications isolated by default and test host/LAN access controls.
+- BuildKit is not, by itself, a complete security boundary. Prototype and test isolation before claiming arbitrary untrusted repositories are safe. Document residual risks honestly.
+
+## 18. UI and status model
+
+The dashboard should make the following information readily visible:
+
+- Application name, repository, configured branch, and latest deployed commit.
+- Current deployment status and runtime status as separate concepts.
+- Current version and retained successful versions.
+- Pending configuration changes.
+- Build and runtime logs, including historical logs.
+- Container port and private access address.
+- CPU and memory usage with configured limits.
+- Health-check status and crash history.
+- Disk/log usage and storage warnings.
+- Why a deployment was skipped, cancelled, superseded, interrupted, or failed.
+- Whether an app is intentionally stopped.
+
+Suggested deployment/job states include `Queued`, `Building`, `Starting`, `Validating`, `Successful`, `Failed`, `Cancelled`, `Superseded`, and `Interrupted`. Runtime states include `Running`, `Stopped`, `Restarting`, `Crashed`, and `Unhealthy`. Final enum names should be standardised during schema design.
+
+## 19. Testing and acceptance criteria
+
+The MVP should not be considered ready until automated tests cover at least:
+
+- First-run administrator setup is atomic and cannot create multiple admins.
+- Authentication, session expiry, logout, rate limits, and CSRF-sensitive routes.
+- GitHub webhook signature verification and duplicate delivery handling.
+- Branch filtering and latest-commit-wins cancellation.
+- Stopped-app behaviour for incoming pushes and manual deployments.
+- Build success, build failure, cancellation, and worker restart reconciliation.
+- Docker resource ownership and protection of unrelated containers.
+- Port conflicts and race-safe host-port allocation.
+- Environment variable encryption, masking, and log redaction.
+- Candidate health-check failure preserves the prior successful version.
+- Rollback uses a retained image without rebuilding.
+- Persistent volumes survive redeployments and normal cleanup.
+- Application deletion requires confirmation and follows the selected volume policy.
+- Disk cleanup preserves retained images, logs, and volumes.
+- Architecture incompatibility produces a clear error.
+- Existing apps and local dashboard remain available during internet outages where expected.
+
+Prototype tests must specifically validate Railpack ARM64 compatibility, restricted BuildKit behaviour, resource consumption on the Pi, Docker network/firewall assumptions, and deployment port swapping.
+
+## 20. Implementation roadmap
+
+### Milestone 1 — Platform foundation
+
+- Monorepo and Compose setup.
+- Express API, React dashboard, PostgreSQL migrations, Redis/BullMQ.
+- First-run administrator setup and session security.
+- Health endpoints and basic test infrastructure.
+
+### Milestone 2 — Docker deployment engine
+
+- Docker resource ownership labels.
+- Queue worker, job lifecycle, cancellation, reconciliation.
+- Build Dockerfile-based images and launch one application container.
+- Port allocation, resource limits, environment variables, and runtime logs.
+- Test failure cleanup without harming a working app.
+
+### Milestone 3 — End-to-end GitHub integration
+
+- GitHub App configuration and installation flow.
+- Repository/branch selection and verified webhooks.
+- Initial deployment review/confirmation.
+- Automatic configured-branch deployments and latest-commit-wins policy.
+- Manual deployment and redeployment.
+
+### Milestone 4 — Reliable releases
+
+- Health checks and candidate validation.
+- Replacement/rollback flow and five-version retention.
+- Start, Stop, Restart, crash-loop limits.
+- Persistent volumes and safe deletion workflow.
+
+### Milestone 5 — Operations and hardening
+
+- Centralised historical logs and manual deletion.
+- Disk/storage warnings and conservative cleanup.
+- Live CPU/memory monitoring.
+- Manual platform database backup/restore documentation.
+- Manual upgrade and migration documentation.
+- Security and ARM64/BuildKit/Railpack validation.
+
+## 21. Open decisions and validation checklist
+
+### Open decisions
+
+- **Platform secret storage (Q50):** environment variables/protected files, encrypted database storage, or an external secret manager.
+- Exact session inactivity and maximum lifetime values.
+- Exact CPU quota default after benchmarking.
+- Monorepo/package manager choice.
+- Final log file format and indexing strategy.
+- Final job/runtime status enums and health-check failure thresholds.
+
+### Validate in prototype
+
+- Railpack compatibility and performance on the target ARM64 host.
+- BuildKit isolation limits and threat model.
+- Whether available Pi resources can support the platform, one build, and existing workloads safely.
+- Port-swapping and rollback behaviour with direct host ports.
+- Docker-published-port behaviour with host firewall rules.
+- Disk usage and cleanup performance for centralised log files.
+
+### API Documentation and Contract
+
+- **Swagger Autogen:** Use `swagger-autogen` to generate the API specification by scanning the Express backend's routes and adding documentation metadata through code comments.
+- **OpenAPI:** Generate an OpenAPI 3.x specification, rather than the legacy Swagger 2.0 format. Use OpenAPI 3.0 initially unless a specific feature requires a newer version.
+- **Scalar:** Use `@scalar/express-api-reference` to provide interactive API documentation from the generated OpenAPI JSON document.
+- **Documentation coverage:** Document endpoint descriptions, parameters, request bodies, response schemas, HTTP status codes, authentication requirements, and error responses.
+- **Generation workflow:** Provide an npm script to generate the specification. Regenerate it when API routes or their documentation change, and validate the generated document as part of development or CI.
+- **Development access:** Make the Scalar reference available during development for inspecting and manually testing endpoints.
+- **Production security:** Keep documentation access restricted to the administrator or disabled by default in production. All API endpoints must enforce their own authentication and authorisation.
+- **Automated testing:** Use Jest and Supertest to test API behaviour, including successful requests, validation failures, authentication, authorisation, and error handling. API documentation does not replace automated tests.
+
+---
+
+**Product principle:** Shipdok should prefer predictable, recoverable behaviour over hidden automation. It should preserve the last working application and persistent data wherever possible, make failures visible, and require explicit administrator action for destructive operations.
