@@ -1,0 +1,14 @@
+# Build context for the API and worker images is the repo root. Keep secrets and junk out of it entirely,
+# so they can never end up in an image layer.
+.git
+**/node_modules
+**/.env
+**/.env.*
+*.pem
+jar.txt
+TEMP.md
+state
+infrastructure
+**/tests
+**/*.test.js
+*.md

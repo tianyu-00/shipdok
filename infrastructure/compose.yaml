@@ -1,5 +1,17 @@
 # Platform services only. User apps are created dynamically by the worker, not declared here.
 # Dev: ports are bound to 127.0.0.1 so nothing is reachable from the LAN.
+#
+# Run everything:  docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up -d --build
+# Develop with npm run dev / npm start instead:  ... up -d postgres redis   (NOT a bare `up -d`: that also starts
+# api and worker, which would compete with the npm ones for port 4000 and for the same queue).
+# Extra settings for the containers in infrastructure/.env: DOCKER_GID (worker; see its comment, defaults to 999),
+# GITHUB_APP_PRIVATE_KEY_FILE (host path of the .pem; optional), API_HOST_PORT (default 4000).
+# The dashboard (`web`) does not exist yet.
+
+x-api-build: &api-build
+  context: ..
+  dockerfile: apps/api/Dockerfile
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -33,6 +45,93 @@ services:
       retries: 10
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  # Applies database migrations, then exits. api and worker wait for it.
+  migrate:
+    build: *api-build
+    image: shipdok-api # not under shipdok/: that prefix is reserved for deployed apps (image cleanup will target it)
+    command: ["node", "src/db/migrate.js"]
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+
+  api:
+    build: *api-build
+    image: shipdok-api
+    restart: unless-stopped
+    init: true
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    environment:
+      API_HOST: 0.0.0.0 # inside the container; the published port below is what stays on loopback
+      API_PORT: 4000
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      SESSION_SECRET: ${SESSION_SECRET}
+      APP_SECRETS_KEY: ${APP_SECRETS_KEY}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:5173}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      SETUP_TOKEN: ${SETUP_TOKEN:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github-app.pem
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-4000}:4000" # loopback only; the Cloudflare tunnel (cloudflared) is what reaches the webhook
+    volumes:
+      - ${GITHUB_APP_PRIVATE_KEY_FILE:-/dev/null}:/run/secrets/github-app.pem:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  # Clones, builds and runs user apps. It is the ONLY service that gets the Docker socket, which is root-equivalent
+  # on the host: never add it to api or web.
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+    image: shipdok-worker
+    restart: unless-stopped
+    init: true # reaps the git/docker child processes
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    # The container user is not root, so it needs the group that owns the socket. The number differs per machine:
+    #   stat -c %g /var/run/docker.sock       (put the result in infrastructure/.env as DOCKER_GID)
+    group_add:
+      - ${DOCKER_GID:-999}
+    # Health checks reach a new container through its published host port. Inside this container 127.0.0.1 is
+    # the worker itself, so go through the host instead.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      HEALTH_CHECK_HOST: host.docker.internal
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      APP_SECRETS_KEY: ${APP_SECRETS_KEY}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github-app.pem
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${GITHUB_APP_PRIVATE_KEY_FILE:-/dev/null}:/run/secrets/github-app.pem:ro
+
+  # web: not built yet. The dashboard (apps/web) will be added here once it exists.
 
 volumes:
   shipdok_pgdata:

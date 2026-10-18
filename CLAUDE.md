@@ -35,7 +35,8 @@ apps/worker/     BullMQ worker, dockerode, Postgres; node:test
   worker.js      entry point; cli.js: manual deploy
 apps/web/        empty (dashboard not started)
 packages/shared/ @shipdok/shared: crypto (AES-256-GCM), .env parser, github.js (app JWT, installation tokens), constants
-infrastructure/  compose.yaml (Postgres 16, Redis 7 on 127.0.0.1), .env (never committed)
+infrastructure/  compose.yaml (Postgres 16, Redis 7 on 127.0.0.1; migrate, api, worker services), .env (never committed)
+apps/api/Dockerfile, apps/worker/Dockerfile, .dockerignore   images built from the repo root (see "Run it")
 ```
 
 ## Run it
@@ -48,7 +49,17 @@ npm start -w apps/worker         # reconciles on boot, then waits for jobs
 npm test                         # API (Jest), worker (node:test), shared (node:test)
 ```
 
-Tests at last commit: API 220, worker 116, shared 118. Worker tests reuse the `_test` database the API tests create and
+Or run the whole platform in Docker instead (do not mix with the npm commands above; both would use port 4000 and one queue).
+Develop with npm: start only the data services with `... up -d postgres redis`. A bare `up -d` starts api and worker too.
+
+```bash
+docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up -d --build
+```
+
+Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
+socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback).
+
+Tests at last commit: API 220, worker 129, shared 118. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -86,6 +97,17 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
 - **GitHub App config:** the App's ID, private key (`GITHUB_APP_PRIVATE_KEY_FILE`, kept at `~/.shipdok/github-app.pem`, chmod
   600) and webhook secret live in `infrastructure/.env`; API and worker both load it. Created by hand on github.com
   (webhook URL above, Contents read-only, Push event, installed on selected repos only).
+- **Docker Compose hosting (api, migrate, worker verified on x86/WSL2 in an isolated project):** `migrate` runs once, then `api`
+  (loopback-published, `/health` healthcheck) and `worker` start. Images are `shipdok-api` / `shipdok-worker`, deliberately NOT under
+  `shipdok/` (that prefix is deployed apps; image cleanup will target it). The worker image has git and the Docker CLI + buildx; only
+  the worker gets `/var/run/docker.sock` (root-equivalent, decided to mount it directly, no socket proxy). Inside compose the
+  worker health-checks new containers via `HEALTH_CHECK_HOST=host.docker.internal` (`extra_hosts: host-gateway`), since its own
+  127.0.0.1 is not the host; default stays 127.0.0.1 outside compose. Checked: private repo cloned, built, swapped (`hello from v6`);
+  with `HEALTH_CHECK_HOST` unset the deploy failed after 120 s and the running version was untouched. Services get only the env
+  vars they need (no blanket `env_file`). `.dockerignore` keeps `.env`, `*.pem`, `jar.txt` out of every image. Not tested: ARM64
+  builds, a host firewall blocking bridge->host traffic (the health check path), a `web` service (none yet).
+- **Worker git ignores the admin's git config** (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`): a credential helper such as
+  Git Credential Manager can otherwise open a window and hang a refused clone.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
@@ -98,8 +120,10 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
    `ON DELETE RESTRICT`; remove containers and `shipdok/*` images yourself).
 6. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so
    other people hosting Shipdok do not fill in the form by hand. Read SPEC.md Milestone 3 first.
-7. Pi: run the tunnel as a service, full-stack run, hardening, docs (setup options: tunnel, reverse proxy, or manual deploys
-   only), API docs (Scalar).
+7. Compose follow-ups: add `web` once the dashboard exists (decide: serve it same-origin and proxy `/api`, or cross-origin with
+   CORS and cookie settings); add `cloudflared` to compose (point it at `http://api:4000`, no host networking needed).
+8. Pi: full-stack run in compose (ARM64 builds, firewall vs the health-check path, `DOCKER_GID`), run the tunnel as a service until
+   then, hardening, docs (setup options: tunnel, reverse proxy, or manual deploys only), API docs (Scalar).
 
 Known gaps: no audit/rate limit on `reveal`; old `shipdok/*` images pile up; build-time env vars; Railpack; DB backup docs.
 The portfolio backend (`tianyu-00/TianYuSiteV2`, `backend/`, port 9090) is not yet deployed through the platform.

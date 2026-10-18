@@ -2,3 +2,4 @@ node_modules
 infrastructure/.env
 TEMP.md
 jar.txt
+*.pem
