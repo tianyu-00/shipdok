@@ -1,18 +1,19 @@
 // The body of a deploy job, separated from worker.js so it can be tested without Redis or Docker.
-import { deploy } from "./deploy.js";
-import * as store from "./db.js";
-import { loadAppEnv, EnvDecryptError } from "./envvars.js";
+import { deploy } from './deploy.js';
+import * as store from './db.js';
+import { loadAppEnv, EnvDecryptError } from './envvars.js';
+import { resolveGitAuth, GitAuthError } from './gitauth.js';
 
 // Status updates are best-effort: a database hiccup must not abort a deployment mid-swap.
 const tolerate = (label) => (err) => console.error(`Could not record ${label}: ${err.message}`);
 
 export async function processDeployJob(
   job,
-  { secretsKey, deployFn = deploy, db = store, loadEnv = loadAppEnv, pollMs = 1000 },
+  { secretsKey, deployFn = deploy, db = store, loadEnv = loadAppEnv, pollMs = 1000, github = null },
 ) {
   const d = job.data;
   const id = d.deploymentId;
-  if (!id || !d.appId) throw new Error("Deploy job is missing deploymentId or appId");
+  if (!id || !d.appId) throw new Error('Deploy job is missing deploymentId or appId');
 
   const log = (msg) => {
     console.log(`[job ${job.id}] ${msg}`);
@@ -22,7 +23,7 @@ export async function processDeployJob(
   // Claim the deployment. If it was cancelled or superseded while it waited in the queue, it is no longer
   // 'queued' and we must not build anything. Errors here propagate: we cannot proceed without a claim.
   if (!(await db.claim(id))) {
-    log("Skipped: this deployment is no longer queued (cancelled or superseded)");
+    log('Skipped: this deployment is no longer queued (cancelled or superseded)');
     return { deploymentId: id, skipped: true };
   }
 
@@ -32,13 +33,26 @@ export async function processDeployJob(
     appEnv = await loadEnv(db.pool, d.appId, secretsKey);
   } catch (err) {
     // Only our own EnvDecryptError message is known to be safe to store; anything else gets a generic one.
-    const message = err instanceof EnvDecryptError ? err.message : "Could not load the app variables";
-    await db.markFailed(id, message).catch(tolerate("failure"));
+    const message = err instanceof EnvDecryptError ? err.message : 'Could not load the app variables';
+    await db.markFailed(id, message).catch(tolerate('failure'));
     throw new Error(message);
   }
 
   // Record the variable versions this deployment ACTUALLY uses (the API's snapshot was taken at queue time).
-  await db.recordEnvVersions(id, appEnv.versions).catch(tolerate("env versions"));
+  await db.recordEnvVersions(id, appEnv.versions).catch(tolerate('env versions'));
+
+  // How git will authenticate: anonymously for public repositories, or with a short-lived token scoped to this
+  // one repository. The token lives only in memory and only reaches git's environment, never docker or the container.
+  let gitEnv;
+  try {
+    ({ gitEnv } = await resolveGitAuth({
+      github, db, installationId: d.installationId, appId: d.appId, repoFullName: d.repoFullName, log,
+    }));
+  } catch (err) {
+    const message = err instanceof GitAuthError ? err.message : 'Could not prepare GitHub access';
+    await db.markFailed(id, message).catch(tolerate('failure'));
+    throw new Error(message);
+  }
 
   // Watch for a cancel request while the deployment runs: one cheap query per tick, only while active.
   const controller = new AbortController();
@@ -54,17 +68,12 @@ export async function processDeployJob(
         log(`Stop requested (${flag}); stopping the deployment`);
         controller.abort();
       }
-    } catch {
-      /* a missed poll is retried on the next tick */
-    } finally {
+    } catch { /* a missed poll is retried on the next tick */ } finally {
       polling = false;
     }
   }, pollMs);
   const stopWatching = () => {
-    if (timer) {
-      clearInterval(timer);
-      timer = null;
-    }
+    if (timer) { clearInterval(timer); timer = null; }
   };
 
   // Called by deploy() right before the swap. After a "proceed", cancellation is ignored.
@@ -73,9 +82,9 @@ export async function processDeployJob(
       const flag = requested ?? (await db.getCancelStatus(id));
       if (flag) return { proceed: false, outcome: flag };
       const newer = await db.newerSuccess(id);
-      if (newer) return { proceed: false, outcome: "superseded", by: newer };
+      if (newer) return { proceed: false, outcome: 'superseded', by: newer };
     } catch {
-      throw new Error("Could not check for a cancel request"); // generic: never pass database internals along
+      throw new Error('Could not check for a cancel request'); // generic: never pass database internals along
     }
     stopWatching();
     return { proceed: true };
@@ -85,43 +94,42 @@ export async function processDeployJob(
   // always finish before the final status is written (otherwise a late "validating" or a missing commit hash
   // could survive into the finished record).
   let writes = Promise.resolve();
-  const inOrder = (label, fn) => {
-    writes = writes.then(fn).catch(tolerate(label));
-  };
+  const inOrder = (label, fn) => { writes = writes.then(fn).catch(tolerate(label)); };
 
   let result;
   try {
     result = await deployFn({
       ...d,
       env: appEnv.env,
+      gitEnv,
       log,
       signal: controller.signal,
       beforeSwap,
       onStatus: (s) => inOrder(s, () => db.setStatus(id, s)),
-      onCommit: (sha) => inOrder("commit", () => db.setCommit(id, sha)),
+      onCommit: (sha) => inOrder('commit', () => db.setCommit(id, sha)),
     });
   } catch {
     stopWatching();
     await writes;
-    await db.markFailed(id, "Unexpected error while deploying").catch(tolerate("failure"));
-    throw new Error("Unexpected error while deploying");
+    await db.markFailed(id, 'Unexpected error while deploying').catch(tolerate('failure'));
+    throw new Error('Unexpected error while deploying');
   } finally {
     stopWatching();
   }
   await writes; // every progress write is done before any final status
 
   if (result.ok) {
-    await db.markSucceeded(id, result.image).catch(tolerate("success"));
+    await db.markSucceeded(id, result.image).catch(tolerate('success'));
     return { deploymentId: result.deploymentId, image: result.image };
   }
 
   if (result.stopped) {
     // Stopped on request: not a failure, so the job completes normally.
-    const outcome = result.outcome ?? requested ?? "cancelled";
-    await db.markStopped(id, outcome, result.by ?? null).catch(tolerate("stop"));
+    const outcome = result.outcome ?? requested ?? 'cancelled';
+    await db.markStopped(id, outcome, result.by ?? null).catch(tolerate('stop'));
     return { deploymentId: id, outcome };
   }
 
-  await db.markFailed(id, result.error).catch(tolerate("failure"));
+  await db.markFailed(id, result.error).catch(tolerate('failure'));
   throw new Error(result.error); // marks the BullMQ job failed
 }

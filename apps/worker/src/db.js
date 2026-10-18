@@ -1,9 +1,9 @@
 // The worker's view of the deployments table. Every update is guarded by "still active"
 // so a late or duplicate update can never overwrite a final status.
-import pg from "pg";
+import pg from 'pg';
 
 export const pool = new pg.Pool({
-  host: process.env.POSTGRES_HOST ?? "127.0.0.1",
+  host: process.env.POSTGRES_HOST ?? '127.0.0.1',
   port: Number(process.env.POSTGRES_PORT ?? 5432),
   user: process.env.POSTGRES_USER,
   password: process.env.POSTGRES_PASSWORD,
@@ -16,29 +16,26 @@ const ACTIVE = `('queued','building','starting','validating')`;
 // superseded while waiting, or already handled), in which case the worker must do nothing.
 export async function claim(id) {
   const { rowCount } = await pool.query(
-    `UPDATE deployments SET status = 'building', started_at = now() WHERE id = $1 AND status = 'queued'`,
-    [id],
-  );
+    `UPDATE deployments SET status = 'building', started_at = now() WHERE id = $1 AND status = 'queued'`, [id]);
   return rowCount === 1;
 }
 
 export const setStatus = (id, status) =>
   pool.query(`UPDATE deployments SET status = $2 WHERE id = $1 AND status IN ${ACTIVE}`, [id, status]);
 
-export const setCommit = (id, sha) => pool.query(`UPDATE deployments SET commit_sha = $2 WHERE id = $1`, [id, sha]);
+export const setCommit = (id, sha) =>
+  pool.query(`UPDATE deployments SET commit_sha = $2 WHERE id = $1`, [id, sha]);
 
 // Overwrites the snapshot's env map with the variable versions this deployment really used (names and
 // version numbers only, never values).
 export const recordEnvVersions = (id, versions) =>
   pool.query(
     `UPDATE deployments SET config_snapshot = jsonb_set(config_snapshot, '{env}', $2::jsonb, true)
-     WHERE id = $1 AND status IN ${ACTIVE}`,
-    [id, JSON.stringify(versions)],
-  );
+     WHERE id = $1 AND status IN ${ACTIVE}`, [id, JSON.stringify(versions)]);
 
 // 'cancelled' | 'superseded' when someone has asked this deployment to stop, otherwise null.
 export async function getCancelStatus(id) {
-  const { rows } = await pool.query("SELECT cancel_status FROM deployments WHERE id = $1", [id]);
+  const { rows } = await pool.query('SELECT cancel_status FROM deployments WHERE id = $1', [id]);
   return rows[0]?.cancel_status ?? null;
 }
 
@@ -48,9 +45,7 @@ export async function newerSuccess(id) {
   const { rows } = await pool.query(
     `SELECT n.id FROM deployments d
        JOIN deployments n ON n.app_id = d.app_id AND n.seq > d.seq AND n.status = 'successful'
-      WHERE d.id = $1 ORDER BY n.seq DESC LIMIT 1`,
-    [id],
-  );
+      WHERE d.id = $1 ORDER BY n.seq DESC LIMIT 1`, [id]);
   return rows[0]?.id ?? null;
 }
 
@@ -65,16 +60,12 @@ export const markSucceeded = (id, image) =>
               WHEN 'superseded' THEN 'Superseded too late: the swap had already begun'
               ELSE error_summary END,
             cancel_status = NULL
-      WHERE id = $1 AND status IN ${ACTIVE}`,
-    [id, image],
-  );
+      WHERE id = $1 AND status IN ${ACTIVE}`, [id, image]);
 
 export const markFailed = (id, error) =>
   pool.query(
     `UPDATE deployments SET status = 'failed', error_summary = $2, finished_at = now()
-     WHERE id = $1 AND status IN ${ACTIVE}`,
-    [id, String(error).slice(0, 500)],
-  );
+     WHERE id = $1 AND status IN ${ACTIVE}`, [id, String(error).slice(0, 500)]);
 
 // The deployment stopped on request (outcome: 'cancelled' | 'superseded') after cleaning up.
 export const markStopped = (id, outcome, supersededBy = null) =>
@@ -84,16 +75,19 @@ export const markStopped = (id, outcome, supersededBy = null) =>
             error_summary = CASE WHEN $2::text = 'cancelled' THEN 'Cancelled by the administrator'
                                  ELSE 'Superseded by a newer deployment' END,
             superseded_by = COALESCE($3::uuid, superseded_by)
-      WHERE id = $1 AND status IN ${ACTIVE}`,
-    [id, outcome, supersededBy],
-  );
+      WHERE id = $1 AND status IN ${ACTIVE}`, [id, outcome, supersededBy]);
+
+// Remember which GitHub App installation covers an app's repository (found at deploy time).
+export const setInstallationId = (appId, installationId) =>
+  pool.query(
+    `UPDATE apps SET github_installation_id = $2, updated_at = now()
+      WHERE id = $1 AND github_installation_id IS DISTINCT FROM $2`, [appId, installationId]);
 
 // At worker startup nothing can legitimately be mid-flight (one worker, one job at a time).
 export async function interruptActive() {
   const { rowCount } = await pool.query(
     `UPDATE deployments SET status = 'interrupted', finished_at = now(),
             error_summary = 'The worker stopped while this deployment was in progress'
-     WHERE status IN ('building','starting','validating')`,
-  );
+     WHERE status IN ('building','starting','validating')`);
   return rowCount;
 }
