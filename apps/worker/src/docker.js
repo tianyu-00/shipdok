@@ -84,6 +84,24 @@ export async function createContainer({ image, name, labels, containerPort, host
   });
 }
 
+// Docker answers 304 when a container is already in the state you asked for. For stop and start that is success.
+const alreadyThere = (err) => err?.statusCode === 304;
+const STOP_GRACE_SECONDS = 10; // time for the app to shut down on SIGTERM before Docker kills it
+
+export async function stopContainer(container) {
+  try { await container.stop({ t: STOP_GRACE_SECONDS }); } catch (err) { if (!alreadyThere(err)) throw err; }
+}
+
+export async function startContainer(container) {
+  try { await container.start(); } catch (err) { if (!alreadyThere(err)) throw err; }
+}
+
+export const restartContainer = (container) => container.restart({ t: STOP_GRACE_SECONDS });
+
+export async function isRunning(container) {
+  return (await container.inspect()).State.Running === true;
+}
+
 export async function hostPortOf(container, containerPort) {
   const info = await container.inspect();
   return info.NetworkSettings.Ports[`${containerPort}/tcp`]?.[0]?.HostPort;

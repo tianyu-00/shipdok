@@ -76,18 +76,21 @@ export async function processDeployJob(
     if (timer) { clearInterval(timer); timer = null; }
   };
 
-  // Called by deploy() right before the swap. After a "proceed", cancellation is ignored.
+  // Called by deploy() right before the swap. After a "proceed", cancellation is ignored. The app's wish is read
+  // HERE, not when the deployment was requested, so a Stop pressed during a long build is still honoured.
   const beforeSwap = async () => {
+    let start;
     try {
       const flag = requested ?? (await db.getCancelStatus(id));
       if (flag) return { proceed: false, outcome: flag };
       const newer = await db.newerSuccess(id);
       if (newer) return { proceed: false, outcome: 'superseded', by: newer };
+      start = d.startAfterDeploy === true || (await db.getDesiredState(d.appId)) !== 'stopped';
     } catch {
       throw new Error('Could not check for a cancel request'); // generic: never pass database internals along
     }
     stopWatching();
-    return { proceed: true };
+    return { proceed: true, start };
   };
 
   // Progress reports from deploy() are fire-and-forget. Queue their writes so they are applied IN ORDER and
@@ -120,6 +123,10 @@ export async function processDeployJob(
 
   if (result.ok) {
     await db.markSucceeded(id, result.image).catch(tolerate('success'));
+    // What the live container is doing now. An explicit "deploy and start" is what finally turns the wish to running.
+    const started = result.started !== false;
+    if (d.startAfterDeploy === true && started) await db.setDesiredState(d.appId, 'running').catch(tolerate('desired state'));
+    await db.setRuntime(d.appId, { state: started ? 'running' : 'stopped', action: 'deploy', error: null }).catch(tolerate('runtime'));
     return { deploymentId: result.deploymentId, image: result.image };
   }
 

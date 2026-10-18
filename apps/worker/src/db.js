@@ -91,3 +91,28 @@ export async function interruptActive() {
      WHERE status IN ('building','starting','validating')`);
   return rowCount;
 }
+
+// ---- Apps: what the control actions need ----
+export async function getApp(appId) {
+  const { rows } = await pool.query(
+    'SELECT id, slug, container_port, health_path, desired_state FROM apps WHERE id = $1', [appId]);
+  return rows[0] ?? null;
+}
+
+export async function getDesiredState(appId) {
+  const { rows } = await pool.query('SELECT desired_state FROM apps WHERE id = $1', [appId]);
+  return rows[0]?.desired_state ?? null;
+}
+
+export const setDesiredState = (appId, state) =>
+  pool.query('UPDATE apps SET desired_state = $2, updated_at = now() WHERE id = $1', [appId, state]);
+
+// What the live container is doing now, for the API to show. `state` may be left out to keep the current one
+// (a failed action changes nothing about the container); a first record with no state is 'stopped'.
+export const setRuntime = (appId, { state = null, action, error = null }) =>
+  pool.query(
+    `INSERT INTO app_runtime (app_id, state, last_action, last_error)
+     VALUES ($1, COALESCE($2, 'stopped'), $3, $4)
+     ON CONFLICT (app_id) DO UPDATE
+       SET state = COALESCE($2, app_runtime.state), last_action = $3, last_error = $4, updated_at = now()`,
+    [appId, state, action, error === null ? null : String(error).slice(0, 500)]);

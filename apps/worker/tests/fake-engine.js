@@ -6,6 +6,8 @@ export { abortError };
 
 /**
  * cfg.previous        names of containers already live for the app
+ * cfg.stopped         names (from cfg.previous) that are NOT running, like the containers of a stopped app
+ * cfg.failOn          { 'start old': Error, 'create live': Error, ... } an action that should throw (matched on "<verb> <name suffix>")
  * cfg.head            the commit `git rev-parse HEAD` reports (default 'abc123def')
  * cfg.onRun(cmd, args, opts)   called for git/docker commands; may throw (e.g. a failed build or an abort)
  * cfg.health.candidate / cfg.health.live   async (opts) => void; may throw to simulate an unhealthy container
@@ -17,9 +19,16 @@ export function fakeEngine(cfg = {}) {
   // Containers created for the NEW image. Real Docker refuses to delete an image while any container uses it.
   const usingNewImage = new Set();
 
+  const failure = (verb, name) => {
+    for (const [key, err] of Object.entries(cfg.failOn ?? {})) {
+      const [v, suffix] = key.split(' ');
+      if (v === verb && name.endsWith(suffix)) throw err;
+    }
+  };
+
   const container = (name) => ({
     name,
-    async start() { ev(`start ${name}`); },
+    async start() { failure('start', name); ev(`start ${name}`); },
     async stop() { ev(`stop ${name}`); },
     async remove() { usingNewImage.delete(name); ev(`remove ${name}`); },
   });
@@ -42,8 +51,13 @@ export function fakeEngine(cfg = {}) {
       await cfg.onRun?.(cmd, args, opts);
     },
     async capture() { return cfg.head ?? 'abc123def'; },
-    async findContainers() { return previous; },
-    async createContainer({ name, hostPort }) { ev(`create ${name} port=${hostPort || 'temp'}`); usingNewImage.add(name); return container(name); },
+    async findContainers(filter) { (engine.lookups ??= []).push(filter); return previous; },
+    async createContainer({ name, hostPort }) { failure('create', name); ev(`create ${name} port=${hostPort || 'temp'}`); usingNewImage.add(name); return container(name); },
+    async isRunning(c) { return !(cfg.stopped ?? []).includes(c.name); },
+    // The real helpers also accept "already stopped/started" (Docker's 304); the fake containers never raise it.
+    async stopContainer(c) { await c.stop(); },
+    async startContainer(c) { await c.start(); },
+    async restartContainer(c) { failure('restart', c.name); ev(`restart ${c.name}`); },
     async waitHealthy(c, opts) {
       ev(`health ${c.name}`);
       const role = c.name.endsWith('-candidate') ? 'candidate' : 'live';

@@ -277,3 +277,58 @@ describe('GitHub access token handling', () => {
     assert.ok(!JSON.stringify(r).includes('c2VjcmV0'));
   });
 });
+
+describe('deploying an app that is stopped', () => {
+  const LIVE = 'shipdok-my-app-dep-1-live';
+  const stopped = { beforeSwap: async () => ({ proceed: true, start: false }) };
+
+  test('still builds and validates a candidate, then swaps the containers but leaves the new one NOT started', async () => {
+    const eng = fakeEngine({ previous: ['old'], stopped: ['old'] });
+    const r = await run(stopped, eng);
+    assert.equal(r.ok, true);
+    assert.equal(r.started, false);
+    assert.ok(eng.events.includes('health shipdok-my-app-dep-1-candidate'), 'the new version is still proven to work');
+    assert.ok(eng.events.includes(`create ${LIVE} port=8080`), 'the new live container exists so Start can run it later');
+    assert.ok(!eng.events.includes(`start ${LIVE}`));
+    assert.ok(!eng.events.includes(`health ${LIVE}`));
+    assert.ok(eng.events.includes('remove old'), 'the previous version is replaced');
+  });
+
+  test('a stopped app with no previous container still ends up with a created, not started, container', async () => {
+    const eng = fakeEngine({ previous: [] });
+    const r = await run(stopped, eng);
+    assert.equal(r.ok, true);
+    assert.ok(eng.events.includes(`create ${LIVE} port=8080`));
+    assert.ok(!eng.events.includes(`start ${LIVE}`));
+  });
+
+  test('the same unchanged behaviour for a normal deployment: started, and it says so', async () => {
+    const eng = fakeEngine({ previous: ['old'] });
+    const r = await run({ beforeSwap: async () => ({ proceed: true }) }, eng);
+    assert.equal(r.started, true);
+    assert.ok(eng.events.includes(`start ${LIVE}`));
+  });
+
+  test('without a gate (the command line) the app is started', async () => {
+    const r = await run({}, fakeEngine({ previous: [] }));
+    assert.equal(r.started, true);
+  });
+
+  test('if creating the new container fails, only containers that WERE running are restarted', async () => {
+    const eng = fakeEngine({
+      previous: ['old-running', 'old-stopped'], stopped: ['old-stopped'],
+      failOn: { 'create live': new Error('no space left') },
+    });
+    const r = await run({}, eng);
+    assert.equal(r.ok, false);
+    assert.ok(eng.events.includes('start old-running'), 'what was serving traffic comes back');
+    assert.ok(!eng.events.includes('start old-stopped'), 'a failed deployment must not start an app that was stopped');
+  });
+
+  test('a failed swap of a stopped app never starts it', async () => {
+    const eng = fakeEngine({ previous: ['old'], stopped: ['old'], health: { live: async () => { throw new Error('unhealthy'); } } });
+    const r = await run({ beforeSwap: async () => ({ proceed: true, start: true }) }, eng);
+    assert.equal(r.ok, false);
+    assert.ok(!eng.events.includes('start old'));
+  });
+});

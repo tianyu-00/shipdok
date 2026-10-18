@@ -8,6 +8,8 @@ import { reconcile } from './src/reconcile.js';
 import { DEPLOY_QUEUE, redisConnection } from './src/queue.js';
 import * as deployments from './src/db.js';
 import { processDeployJob } from './src/process-job.js';
+import { processControlJob } from './src/control.js';
+import { jobProcessor } from './src/dispatch.js';
 
 // Fail fast, before touching Redis or Docker, if the master key is missing or malformed.
 let secretsKey;
@@ -38,7 +40,10 @@ const connection = redisConnection();
 
 const worker = new Worker(
   DEPLOY_QUEUE,
-  (job) => processDeployJob(job, { secretsKey, github }),
+  jobProcessor({
+    deploy: (job) => processDeployJob(job, { secretsKey, github }),
+    control: (job) => processControlJob(job),
+  }),
   { connection, concurrency: 1, maxStalledCount: 0, autorun: false },
 );
 

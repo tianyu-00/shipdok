@@ -27,11 +27,11 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 006_webhooks
-  src/           app.js, config.js, deployments.js (supersede/cancel), routes/ (auth, apps, env, webhooks, github)
+  migrations/    001_init ... 007_app_runtime
+  src/           app.js, config.js, deployments.js (supersede/cancel), control.js (start/stop/restart requests), routes/ (auth, apps, env, webhooks, github)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
-  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, envvars.js, db.js, reconcile.js, paths.js
+  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, envvars.js, db.js, reconcile.js, paths.js
   worker.js      entry point; cli.js: manual deploy
 apps/web/        empty (dashboard not started)
 packages/shared/ @shipdok/shared: crypto (AES-256-GCM), .env parser, github.js (app JWT, installation tokens), constants
@@ -59,7 +59,7 @@ docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up 
 Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
 socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback).
 
-Tests at last commit: API 220, worker 129, shared 118. Worker tests reuse the `_test` database the API tests create and
+Tests at last commit: API 239, worker 163, shared 118. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -106,13 +106,30 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   with `HEALTH_CHECK_HOST` unset the deploy failed after 120 s and the running version was untouched. Services get only the env
   vars they need (no blanket `env_file`). `.dockerignore` keeps `.env`, `*.pem`, `jar.txt` out of every image. Not tested: ARM64
   builds, a host firewall blocking bridge->host traffic (the health check path), a `web` service (none yet).
+- **Start / stop / restart (verified against real Docker in an isolated compose project):** `POST /api/apps/:id/{stop,start,restart}`
+  write `apps.desired_state` first (so webhooks skip a stopped app at once), then queue a `control` job on the SAME queue as
+  deployments (one at a time, so it never overlaps a swap; a Stop can wait behind a running build, but the intent is already saved).
+  The worker stops/starts/restarts the existing live container (no rebuild; stop keeps container, image, config) and, after
+  start/restart, waits for the app's health check: a failure is reported as `unhealthy` and the app is left running, never
+  restarted automatically. What the worker last did is in `app_runtime` (state running/stopped/unhealthy, last_action, last_error),
+  shown as `runtime` in `GET /api/apps` and `GET /api/apps/:id` next to `desired_state`; the API never touches Docker.
+  **A stopped app stays stopped when deployed**: the swap reads `desired_state` at the gate (so a Stop pressed during a build
+  counts), validates the candidate as usual, then creates the new live container WITHOUT starting it; a failed swap only restarts
+  containers that were running before. `POST /api/apps/:id/deployments` accepts `{"start": true}` to deploy and start (the
+  desired state becomes running only if that deployment succeeds). Docker's 304 ("already stopped/started") counts as success.
+  Checked for real: stop leaves the container exited and Docker does not restart it, stop twice, start, restart (StartedAt
+  changes), deploy while stopped (new container `created`, nothing answers on the port), start runs the new version.
+  Not tested: how `on-failure` restart behaves after a host/daemon reboot (see Next).
 - **Worker git ignores the admin's git config** (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`): a credential helper such as
   Git Credential Manager can otherwise open a window and hang a refused clone.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
 
-1. Start/stop/restart + `desired_state`, crash handling, runtime health.
+1. Runtime health and crashes (the second half of start/stop/restart; SPEC.md §11, §18): a worker monitor loop reads each live
+   container's Docker state and runs the HTTP health check every ~30 s into `app_runtime` (add states Restarting, Crashed; keep
+   Unhealthy = shown, never auto-restarted). Decide the restart policy: containers use `on-failure` with 5 retries; check on the
+   Pi whether they come back after a reboot, else consider `unless-stopped` plus a Shipdok-side retry limit (spec wants a limit).
 2. Persistent log storage.
 3. Image retention, rollback, disk cleanup.
 4. Dashboard (`apps/web`, React + Tailwind).

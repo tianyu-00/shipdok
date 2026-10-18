@@ -29,13 +29,14 @@ import { checkoutSource, gitEnvironment } from './git.js';
  * @param {string[]} [opts.env=[]]      ['KEY=VALUE', ...] for the container
  * @param {Record<string,string>} [opts.gitEnv]  extra environment for GIT ONLY (a GitHub token). Never given to docker or the container.
  * @param {AbortSignal} [opts.signal]   aborts work in progress, up to the point of no return
- * @param {() => Promise<{proceed: boolean, outcome?: string, by?: string}>} [opts.beforeSwap]
- *        asked right before the swap; proceed:false stops the deployment instead (e.g. cancelled, or a newer one already succeeded)
+ * @param {() => Promise<{proceed: boolean, outcome?: string, by?: string, start?: boolean}>} [opts.beforeSwap]
+ *        asked right before the swap; proceed:false stops the deployment instead (e.g. cancelled, or a newer one already succeeded).
+ *        start:false means the app is stopped: the new container is created but not started (default: start it)
  * @param {(msg: string) => void} [opts.log]
  * @param {(status: 'starting'|'validating') => void} [opts.onStatus]  progress hook
  * @param {(sha: string) => void} [opts.onCommit]                      resolved commit hook
  * @param {object} [eng]                the Docker/process engine; tests pass a fake
- * @returns {Promise<{ok: true, deploymentId: string, image: string}
+ * @returns {Promise<{ok: true, deploymentId: string, image: string, started: boolean}
  *   | {ok: false, stopped: true, outcome?: string, by?: string, deploymentId: string, image: string}
  *   | {ok: false, error: string, deploymentId: string, image: string}>}
  */
@@ -97,6 +98,7 @@ export async function deploy(opts, eng = realEngine) {
   let candidate;
   let finalC;
   let committed = false; // true once the swap has begun: from then on, no cancellation
+  let startAfterSwap = true; // false for an app the administrator has stopped
 
   try {
     const head = await checkoutSource(eng, {
@@ -131,6 +133,7 @@ export async function deploy(opts, eng = realEngine) {
     // ---- Last chance to stop. Ask whether to go ahead (cancelled? a newer deployment already live?). ----
     if (o.beforeSwap) {
       const gate = await o.beforeSwap();
+      startAfterSwap = gate?.start !== false;
       if (gate && gate.proceed === false) {
         log(`Stopping before the swap (${gate.outcome ?? 'stopped'}); the running version is untouched`);
         await eng.removeImage(image); // built for nothing: nothing will ever run it
@@ -141,21 +144,30 @@ export async function deploy(opts, eng = realEngine) {
     }
     committed = true; // ---- point of no return ----
 
+    // Remember which containers were serving before we stop them: a failed swap may only bring THOSE back.
+    // (A stopped app's container must stay stopped.) If Docker cannot tell, assume it was running.
+    const wasRunning = await Promise.all(previous.map((old) => eng.isRunning(old).catch(() => true)));
     for (const old of previous) await old.stop().catch(() => {});
     try {
       finalC = await make('live', o.hostPort);
-      await finalC.start();
-      await checked(finalC, 'live'); // deliberately no signal
+      if (startAfterSwap) {
+        await finalC.start();
+        await checked(finalC, 'live'); // deliberately no signal
+      } else {
+        log('This app is stopped: the new version is created but not started. Start it when you want it running');
+      }
     } catch (err) {
       log(`Swap failed: ${err.message}. Restoring previous version`);
       if (finalC) await eng.removeQuietly(finalC);
-      for (const old of previous) await old.start().catch((e) => log(`RESTORE FAILED: ${e.message}`));
+      for (const [i, old] of previous.entries()) {
+        if (wasRunning[i]) await old.start().catch((e) => log(`RESTORE FAILED: ${e.message}`));
+      }
       throw err;
     }
 
     for (const old of previous) await eng.removeQuietly(old);
-    log(`Deployed ${name} (${deploymentId}) on :${o.hostPort}`);
-    return { ok: true, deploymentId, image };
+    log(`Deployed ${name} (${deploymentId}) on :${o.hostPort}${startAfterSwap ? '' : ' (not started: the app is stopped)'}`);
+    return { ok: true, deploymentId, image, started: startAfterSwap };
   } catch (err) {
     if (!committed && signal?.aborted) {
       log('Deployment stopped on request; the running version is untouched');

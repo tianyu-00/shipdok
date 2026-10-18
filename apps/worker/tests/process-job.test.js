@@ -466,3 +466,82 @@ describe('GitHub authentication in the job', () => {
     assert.ok(!JSON.stringify(d).includes(TOKEN));
   });
 });
+
+describe('stopped apps and the swap', () => {
+  const setDesired = (appId, state) => pool.query('UPDATE apps SET desired_state = $2 WHERE id = $1', [appId, state]);
+  const desired = async (appId) => (await pool.query('SELECT desired_state FROM apps WHERE id = $1', [appId])).rows[0].desired_state;
+  const runtimeOf = async (appId) => (await pool.query('SELECT * FROM app_runtime WHERE app_id = $1', [appId])).rows[0];
+  // Like deploy(): asks the gate, and reports whether the app was started.
+  const gatedStart = async (opts) => {
+    const gate = await opts.beforeSwap();
+    return done(opts, { started: gate.start !== false });
+  };
+  const withFlag = (job, startAfterDeploy) => { job.data.startAfterDeploy = startAfterDeploy; return job; };
+
+  test('a running app is started by its deployment', async () => {
+    const appId = await makeApp();
+    const depId = await makeDeployment(appId);
+    const out = await processDeployJob(jobFor(appId, depId), { secretsKey: KEY, deployFn: gatedStart });
+    assert.ok(out.image);
+    assert.deepEqual([(await runtimeOf(appId)).state, (await runtimeOf(appId)).last_action], ['running', 'deploy']);
+  });
+
+  test('a stopped app is told NOT to start, and stays stopped', async () => {
+    const appId = await makeApp();
+    await setDesired(appId, 'stopped');
+    const depId = await makeDeployment(appId);
+    let seen;
+    await processDeployJob(jobFor(appId, depId), {
+      secretsKey: KEY, deployFn: async (opts) => { const g = await opts.beforeSwap(); seen = g; return done(opts, { started: g.start !== false }); },
+    });
+    assert.deepEqual([seen.proceed, seen.start], [true, false]);
+    assert.equal(await desired(appId), 'stopped');
+    assert.equal((await runtimeOf(appId)).state, 'stopped');
+    assert.equal((await getDeployment(depId)).status, 'successful', 'the deployment itself succeeded');
+  });
+
+  test('an explicit start request starts it, and only then does the desired state become running', async () => {
+    const appId = await makeApp();
+    await setDesired(appId, 'stopped');
+    const depId = await makeDeployment(appId);
+    await processDeployJob(withFlag(jobFor(appId, depId), true), { secretsKey: KEY, deployFn: gatedStart });
+    assert.equal(await desired(appId), 'running');
+    assert.equal((await runtimeOf(appId)).state, 'running');
+  });
+
+  test('an explicit start on a deployment that FAILS leaves the app stopped and wanting to be stopped', async () => {
+    const appId = await makeApp();
+    await setDesired(appId, 'stopped');
+    const depId = await makeDeployment(appId);
+    await assert.rejects(processDeployJob(withFlag(jobFor(appId, depId), true), { secretsKey: KEY, deployFn: fakeDeploy({ ok: false }) }));
+    assert.equal(await desired(appId), 'stopped');
+    assert.equal(await runtimeOf(appId), undefined, 'nothing about the live container changed, so nothing is recorded');
+  });
+
+  test('a stop that arrives while the build is running is honoured at the swap', async () => {
+    const appId = await makeApp();
+    const depId = await makeDeployment(appId);
+    let started;
+    await processDeployJob(jobFor(appId, depId), {
+      secretsKey: KEY,
+      deployFn: async (opts) => {
+        await setDesired(appId, 'stopped'); // the administrator presses Stop while the image is being built
+        const g = await opts.beforeSwap();
+        started = g.start !== false;
+        return done(opts, { started });
+      },
+    });
+    assert.equal(started, false);
+    assert.equal((await runtimeOf(appId)).state, 'stopped');
+  });
+
+  test('a cancelled deployment does not touch the desired state or the runtime record', async () => {
+    const appId = await makeApp();
+    await setDesired(appId, 'stopped');
+    const depId = await makeDeployment(appId);
+    await flag(depId, 'cancelled');
+    await processDeployJob(withFlag(jobFor(appId, depId), true), { secretsKey: KEY, deployFn: gated() });
+    assert.equal(await desired(appId), 'stopped');
+    assert.equal(await runtimeOf(appId), undefined);
+  });
+});
