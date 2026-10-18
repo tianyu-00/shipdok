@@ -16,7 +16,10 @@ const PASS_THROUGH = [
 export function gitEnvironment(extra = {}, base = process.env) {
   const env = {};
   for (const key of PASS_THROUGH) if (base[key] !== undefined) env[key] = base[key];
-  return { ...env, GIT_TERMINAL_PROMPT: '0', ...extra }; // never wait for a password nobody can type
+  // GIT_TERMINAL_PROMPT=0: never wait for a password nobody can type. The two GIT_CONFIG_* lines keep the admin's own git
+  // config (credential helpers such as Git Credential Manager, aliases, URL rewrites) out of deployments: a helper can open
+  // a window and block on a 401. GIT_CONFIG_GLOBAL needs git 2.32+.
+  return { ...env, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', ...extra };
 }
 
 /**

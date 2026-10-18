@@ -3,7 +3,7 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gitAuthEnv } from '@shipdok/shared';
@@ -81,6 +81,19 @@ describe('checkoutSource against a server that requires the GitHub token header'
     await assert.rejects(checkoutSource(recording(), { workDir: fresh(), repo: repoUrl(), ref: 'main', env: gitEnvironment(gitAuthEnv('wrong')) }));
   });
 
+  // An admin's own credential helper (Git Credential Manager, a keychain...) must never be consulted: on a 401 it can
+  // open a window or block, and a deploy would hang. This one only records that it was called, so nothing can pop up.
+  test('a credential helper in the user\'s git config is never called, even on a 401', { timeout: 30000 }, async () => {
+    const home = mkdtempSync(join(tmpdir(), 'githome-'));
+    const marker = join(home, 'helper-was-called');
+    const helper = join(home, 'helper.sh');
+    writeFileSync(helper, `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+    writeFileSync(join(home, '.gitconfig'), `[credential]\n\thelper = ${helper}\n`);
+    const env = gitEnvironment({}, { PATH: process.env.PATH, HOME: home });
+    await assert.rejects(checkoutSource(recording(), { workDir: fresh(), repo: repoUrl(), ref: 'main', env }));
+    assert.equal(existsSync(marker), false, 'git called the credential helper from the user\'s ~/.gitconfig');
+  });
+
   test('fetches an EXACT older commit, not the branch head', { timeout: 30000 }, async () => {
     const dir = fresh();
     const head = await checkoutSource(recording(), { workDir: dir, repo: repoUrl(), ref: 'main', commit: c1, env: authed() });
@@ -114,7 +127,12 @@ describe('gitEnvironment', () => {
   test('does not pass the worker secrets to git', () => {
     const env = gitEnvironment({}, { PATH: '/bin', HOME: '/h', APP_SECRETS_KEY: 'k'.repeat(64), POSTGRES_PASSWORD: 'p',
       REDIS_PASSWORD: 'r', GITHUB_APP_PRIVATE_KEY: 'pem', GITHUB_WEBHOOK_SECRET: 's' });
-    assert.deepEqual(Object.keys(env).sort(), ['GIT_TERMINAL_PROMPT', 'HOME', 'PATH']);
+    assert.deepEqual(Object.keys(env).sort(), ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_TERMINAL_PROMPT', 'HOME', 'PATH']);
+  });
+  test('ignores the system and user git config', () => {
+    const env = gitEnvironment({}, { PATH: '/bin' });
+    assert.equal(env.GIT_CONFIG_NOSYSTEM, '1');
+    assert.equal(env.GIT_CONFIG_GLOBAL, '/dev/null');
   });
   test('extra (token) variables are included; prompting is always disabled', () => {
     const env = gitEnvironment(gitAuthEnv(TOKEN), { PATH: '/bin' });

@@ -89,10 +89,20 @@ export async function hostPortOf(container, containerPort) {
   return info.NetworkSettings.Ports[`${containerPort}/tcp`]?.[0]?.HostPort;
 }
 
+// Where the worker probes a candidate. On the host that is loopback; in compose set HEALTH_CHECK_HOST to
+// host.docker.internal (loopback there would be the worker's own container). It ends up inside a URL, so keep it a plain hostname.
+const HEALTH_HOST_RE = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/;
+export function healthUrl(port, path) {
+  const host = process.env.HEALTH_CHECK_HOST || '127.0.0.1';
+  if (!HEALTH_HOST_RE.test(host)) throw new Error('HEALTH_CHECK_HOST must be a plain hostname or IPv4 address');
+  return `http://${host}:${port}${path}`;
+}
+
 // Fail fast if the container exits; otherwise poll HTTP until 200 or timeout.
 export async function waitHealthy(container, { containerPort, health, timeoutMs = 120_000, signal }) {
   const deadline = Date.now() + timeoutMs;
   const port = await hostPortOf(container, containerPort);
+  const url = health ? healthUrl(port, health) : null; // before the loop: a bad HEALTH_CHECK_HOST must fail loudly, not look like "not up yet"
   while (Date.now() < deadline) {
     if (signal?.aborted) throw abortError();
     const { State } = await container.inspect();
@@ -102,7 +112,7 @@ export async function waitHealthy(container, { containerPort, health, timeoutMs 
     if (health) {
       try {
         const timeout = AbortSignal.timeout(2000);
-        const res = await fetch(`http://127.0.0.1:${port}${health}`, {
+        const res = await fetch(url, {
           signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
         });
         if (res.ok) return;
