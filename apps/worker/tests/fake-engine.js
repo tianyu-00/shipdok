@@ -6,6 +6,7 @@ export { abortError };
 
 /**
  * cfg.previous        names of containers already live for the app
+ * cfg.head            the commit `git rev-parse HEAD` reports (default 'abc123def')
  * cfg.onRun(cmd, args, opts)   called for git/docker commands; may throw (e.g. a failed build or an abort)
  * cfg.health.candidate / cfg.health.live   async (opts) => void; may throw to simulate an unhealthy container
  */
@@ -31,19 +32,28 @@ export function fakeEngine(cfg = {}) {
   });
   const previous = (cfg.previous ?? []).map(container);
 
+  // `git -C dir fetch ...` -> "fetch"; `git clone ...` -> "clone"
+  const gitSub = (args) => {
+    let i = 0;
+    while (args[i] === "-C" || args[i] === "-c") i += 2;
+    return args[i];
+  };
+
   const engine = {
     events,
+    runs: [], // every command with its arguments, for assertions
     abortError,
     isAbort,
     workDir: null,
     labelsFor: () => ({}),
     async run(cmd, args, opts = {}) {
-      ev(`run ${cmd} ${args[0]}`);
-      if (cmd === "git") engine.workDir = args.at(-1);
+      engine.runs.push({ cmd, args });
+      ev(`run ${cmd} ${cmd === "git" ? gitSub(args) : args[0]}`);
+      if (cmd === "git") engine.workDir = args[0] === "-C" ? args[1] : args.at(-1);
       await cfg.onRun?.(cmd, args, opts);
     },
     async capture() {
-      return "abc123def";
+      return cfg.head ?? "abc123def";
     },
     async findContainers() {
       return previous;

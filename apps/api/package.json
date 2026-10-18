@@ -6,7 +6,8 @@
   "scripts": {
     "test": "node --env-file=../../infrastructure/.env --experimental-vm-modules ../../node_modules/jest/bin/jest.js --runInBand",
     "migrate": "node --env-file=../../infrastructure/.env src/db/migrate.js",
-    "dev": "node --env-file=../../infrastructure/.env src/server.js"
+    "dev": "node --env-file=../../infrastructure/.env src/server.js",
+    "webhook": "node --env-file=../../infrastructure/.env scripts/send-webhook.js"
   },
   "jest": {
     "testEnvironment": "node",

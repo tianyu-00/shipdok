@@ -20,6 +20,7 @@ import * as realEngine from "./docker.js";
  * @param {string} [opts.deploymentId]  database deployment ID; generated if absent (CLI use)
  * @param {string} [opts.slug]          readable name for image tags and container names
  * @param {string} [opts.ref='main']
+ * @param {string} [opts.commit]       exact commit to build (a webhook push). Without it, the branch head at clone time.
  * @param {string} [opts.dir='.']       app root inside the repo
  * @param {string} [opts.health]        HTTP health path, e.g. /health
  * @param {number} [opts.memoryMb=512]
@@ -36,6 +37,9 @@ import * as realEngine from "./docker.js";
  *   | {ok: false, stopped: true, outcome?: string, by?: string, deploymentId: string, image: string}
  *   | {ok: false, error: string, deploymentId: string, image: string}>}
  */
+// SHA-1, or SHA-256 for repositories that use it. Strict: this value ends up in a git command.
+const COMMIT_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+
 export async function deploy(opts, eng = realEngine) {
   const o = { ref: "main", dir: ".", memoryMb: 512, cpus: 1, env: [], ...opts };
   const log = o.log ?? ((m) => console.log(`[${new Date().toISOString()}] ${m}`));
@@ -89,6 +93,12 @@ export async function deploy(opts, eng = realEngine) {
     return { ok: false, deploymentId, image, error: err.message };
   }
 
+  // Same for the commit: refuse anything that is not a plain hex object id before any side effects.
+  if (o.commit != null && !COMMIT_RE.test(o.commit)) {
+    log("Deployment FAILED: Invalid commit id");
+    return { ok: false, deploymentId, image, error: "Invalid commit id" };
+  }
+
   const workDir = await mkdtemp(join(tmpdir(), "shipdok-"));
   const previous = await eng.findContainers({ appId: o.appId, role: "live" });
   let candidate;
@@ -96,9 +106,21 @@ export async function deploy(opts, eng = realEngine) {
   let committed = false; // true once the swap has begun: from then on, no cancellation
 
   try {
-    log(`Cloning ${o.repo}@${o.ref}`);
-    await eng.run("git", ["clone", "--depth", "1", "--branch", o.ref, o.repo, workDir], { signal });
-    notify(o.onCommit, await eng.capture("git", ["-C", workDir, "rev-parse", "HEAD"]));
+    if (o.commit) {
+      // Build EXACTLY the pushed commit, not whatever the branch points to by now (a second push may have landed).
+      log(`Fetching commit ${o.commit.slice(0, 7)} of ${o.repo}`);
+      await eng.run("git", ["-C", workDir, "init", "-q"], { signal });
+      await eng.run("git", ["-C", workDir, "remote", "add", "origin", o.repo], { signal });
+      // `--` means the commit can never be read as an option, even if the validation above were ever loosened.
+      await eng.run("git", ["-C", workDir, "fetch", "-q", "--depth", "1", "origin", "--", o.commit], { signal });
+      await eng.run("git", ["-C", workDir, "checkout", "-q", "FETCH_HEAD"], { signal });
+    } else {
+      log(`Cloning ${o.repo}@${o.ref}`);
+      await eng.run("git", ["clone", "--depth", "1", "--branch", o.ref, o.repo, workDir], { signal });
+    }
+    const head = await eng.capture("git", ["-C", workDir, "rev-parse", "HEAD"]);
+    if (o.commit && head !== o.commit) throw new Error("The checked-out commit does not match the requested one");
+    notify(o.onCommit, head);
     // Resolve symlinks AFTER cloning: the API validates the string, but only the real path is trustworthy.
     const buildDir = await resolveBuildDir(workDir, o.dir);
 

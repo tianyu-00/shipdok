@@ -58,6 +58,90 @@ describe("a normal deployment", () => {
   });
 });
 
+describe("building an exact commit (webhook pushes)", () => {
+  const COMMIT = "c".repeat(40);
+
+  test("fetches that commit instead of cloning the branch head", async () => {
+    const eng = fakeEngine({ head: COMMIT });
+    const r = await run({ commit: COMMIT }, eng);
+    assert.equal(r.ok, true);
+    assert.deepEqual(eng.events.slice(0, 5), [
+      "run git init",
+      "run git remote",
+      "run git fetch",
+      "run git checkout",
+      "run docker build",
+    ]);
+    assert.ok(!eng.events.includes("run git clone"));
+    const fetch = eng.runs.find((x) => x.args.includes("fetch"));
+    assert.ok(fetch.args.includes(COMMIT), "the exact commit is what gets fetched");
+    assert.equal(fetch.args.at(-2), "--", "the commit must come after -- so git can never read it as an option");
+    assert.equal(fetch.args.at(-1), COMMIT);
+    assert.deepEqual(eng.runs.find((x) => x.args.includes("remote")).args.slice(-3), ["add", "origin", BASE.repo]);
+    assert.ok(!existsSync(eng.workDir));
+  });
+
+  test("records the commit that was really checked out", async () => {
+    const seen = [];
+    await run({ commit: COMMIT, onCommit: (c) => seen.push(c) }, fakeEngine({ head: COMMIT }));
+    assert.deepEqual(seen, [COMMIT]);
+  });
+
+  test("refuses to build if git ends up on a different commit, before anything is built or started", async () => {
+    const eng = fakeEngine({ previous: ["old"], head: "d".repeat(40) });
+    const r = await run({ commit: COMMIT }, eng);
+    assert.equal(r.ok, false);
+    assert.match(r.error, /does not match the requested one/);
+    assert.ok(!eng.events.includes("run docker build"));
+    assert.ok(!eng.events.some((e) => e.includes("old") || e.startsWith("create")));
+    assert.ok(!existsSync(eng.workDir));
+  });
+
+  for (const [label, commit] of [
+    ["a git option", "--upload-pack=evil"],
+    ["a branch name", "main"],
+    ["an abbreviated commit", "abc1234"],
+    ["uppercase hex", "C".repeat(40)],
+    ["a commit with a trailing newline", `${"c".repeat(40)}\n`],
+    ["a commit with a space", `${"c".repeat(39)} `],
+    ["an empty string", ""],
+    ["a number", 12345],
+  ]) {
+    test(`rejects ${label} before any side effect`, async () => {
+      const eng = fakeEngine();
+      const r = await run({ commit }, eng);
+      assert.deepEqual([r.ok, r.error], [false, "Invalid commit id"]);
+      assert.deepEqual(eng.events, []);
+    });
+  }
+
+  test("a 64-character (SHA-256) commit id is accepted", async () => {
+    const sha256 = "e".repeat(64);
+    assert.equal((await run({ commit: sha256 }, fakeEngine({ head: sha256 }))).ok, true);
+  });
+
+  test("without a commit the old clone behaviour is unchanged", async () => {
+    const eng = fakeEngine();
+    await run({}, eng);
+    assert.equal(eng.events[0], "run git clone");
+  });
+
+  test("a stop during the fetch is clean, like any other stage", async () => {
+    const ctl = new AbortController();
+    const eng = fakeEngine({
+      onRun: (cmd, args) => {
+        if (args.includes("fetch")) {
+          ctl.abort();
+          throw abortError();
+        }
+      },
+    });
+    const r = await run({ commit: COMMIT, signal: ctl.signal }, eng);
+    assert.deepEqual([r.ok, r.stopped], [false, true]);
+    assert.ok(!existsSync(eng.workDir));
+  });
+});
+
 describe("failures leave the running version alone", () => {
   test("a failed build never touches the live container", async () => {
     const eng = fakeEngine({

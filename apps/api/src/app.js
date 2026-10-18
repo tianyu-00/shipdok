@@ -9,12 +9,27 @@ import { requireAuth } from "./middleware/requireAuth.js";
 import { authRouter } from "./routes/auth.js";
 import { appsRouter, deploymentsRouter } from "./routes/apps.js";
 import { envRouter } from "./routes/env.js";
+import { webhookReceiver, deliveriesRouter } from "./routes/webhooks.js";
 
 // db, queue and secretsKey are injectable so tests can pass a test pool and a fake queue.
-export function createApp({ db = pool, queue, secretsKey = loadSecretsKey() } = {}) {
+export function createApp({
+  db = pool,
+  queue,
+  secretsKey = loadSecretsKey(),
+  webhookSecret = config.webhookSecret,
+  webhookRateLimit = 120,
+} = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.use(helmet());
+
+  // The GitHub webhook is public and signature-protected. It is mounted BEFORE the JSON parser, the session
+  // and the origin check: it needs the raw bytes to verify the signature, and it has no cookies or Origin.
+  app.use(
+    "/api/webhooks/github",
+    webhookReceiver({ db, queue, secret: webhookSecret, rateLimitPerMinute: webhookRateLimit }),
+  );
+
   app.use(express.json({ limit: "100kb" }));
 
   const PgStore = connectPgSimple(session);
@@ -45,6 +60,7 @@ export function createApp({ db = pool, queue, secretsKey = loadSecretsKey() } = 
   app.use("/api/apps/:id/env", requireAuth, envRouter({ db, secretsKey }));
   app.use("/api/apps", requireAuth, appsRouter({ db, queue }));
   app.use("/api/deployments", requireAuth, deploymentsRouter({ db, queue }));
+  app.use("/api/webhooks/deliveries", requireAuth, deliveriesRouter({ db }));
 
   app.use((req, res) => res.status(404).json({ error: "Not found" }));
   // eslint-disable-next-line no-unused-vars

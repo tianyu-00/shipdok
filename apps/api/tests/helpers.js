@@ -11,13 +11,13 @@ export const testPool = new pg.Pool(config);
 
 // Dynamic import so a test file can set env vars (e.g. SETUP_TOKEN) before config loads.
 // A fresh app per call also means fresh in-memory rate limiters.
-export async function makeApp({ queue } = {}) {
+export async function makeApp({ queue, ...rest } = {}) {
   const { createApp } = await import("../src/app.js");
-  return createApp({ db: testPool, queue });
+  return createApp({ db: testPool, queue, ...rest });
 }
 
 export async function resetDb() {
-  await testPool.query('TRUNCATE users, deployments, apps, "session" RESTART IDENTITY CASCADE');
+  await testPool.query('TRUNCATE users, deployments, apps, "session", webhook_deliveries RESTART IDENTITY CASCADE');
 }
 
 export async function closeDb() {
