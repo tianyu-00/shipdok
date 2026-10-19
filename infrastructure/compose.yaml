@@ -1,6 +1,6 @@
 # Platform services only. User apps are created dynamically by the worker, not declared here.
 #
-# Run everything:  docker compose -f infrastructure/compose.yaml up -d --build      (no .env needed)
+# Run everything:  docker compose -f infrastructure/compose.yaml up -d      (no .env needed; pulls the published images)
 # On the first run a one-shot service (`secrets`) generates the platform secrets into the `shipdok_secrets` volume: the database and Redis
 # passwords, the session secret, the encryption key and the setup token. A value you put in infrastructure/.env (and pass with --env-file)
 # is used instead of a generated one. The setup token is printed in the API log: docker compose logs api
@@ -10,9 +10,10 @@
 # this machine's address or 0.0.0.0 to reach the dashboard from other devices), PORT_RANGE, SHIPDOK_PUBLIC, PUBLIC_URL, WEB_ORIGIN.
 # The GitHub App is connected in the dashboard (GitHub page), not here.
 
-x-api-build: &api-build
-  context: ..
-  dockerfile: apps/api/Dockerfile
+# Ready-made images from GitHub's container registry (amd64 and ARM64), published from the `publish` branch. SHIPDOK_VERSION picks the
+# release (default: latest). To build from the source in this checkout instead, add the override file:
+#   docker compose -f infrastructure/compose.yaml -f infrastructure/compose.build.yaml up -d --build
+x-api-image: &api-image ghcr.io/tianyu-00/shipdok-api:${SHIPDOK_VERSION:-latest}
 
 # Where the platform secrets are read from, inside the containers: a volume that the `secrets` service fills on the first run.
 x-after-secrets: &after-secrets
@@ -22,8 +23,7 @@ services:
   # First-run step: writes every platform secret that you did not give in the environment into the volume, keeps what is already there,
   # and exits. It runs as root only to write into a fresh volume; it prints names, never values.
   secrets:
-    build: *api-build
-    image: shipdok-api
+    image: *api-image
     user: "0:0"
     command: ["node", "scripts/init-secrets.js"]
     restart: "no"
@@ -85,8 +85,7 @@ services:
 
   # Applies database migrations, then exits. api and worker wait for it.
   migrate:
-    build: *api-build
-    image: shipdok-api # not under shipdok/: that prefix is reserved for deployed apps (image cleanup will target it)
+    image: *api-image # the image names are not under shipdok/: that prefix is reserved for deployed apps (image cleanup targets it)
     command: ["node", "src/db/migrate.js"]
     restart: "no"
     depends_on:
@@ -102,8 +101,7 @@ services:
       - shipdok_secrets:/run/shipdok-secrets:ro
 
   api:
-    build: *api-build
-    image: shipdok-api
+    image: *api-image
     restart: unless-stopped
     init: true
     depends_on:
@@ -149,10 +147,7 @@ services:
   # Clones, builds and runs user apps. It is the ONLY service that gets the Docker socket, which is root-equivalent
   # on the host: never add it to api or web.
   worker:
-    build:
-      context: ..
-      dockerfile: apps/worker/Dockerfile
-    image: shipdok-worker
+    image: ghcr.io/tianyu-00/shipdok-worker:${SHIPDOK_VERSION:-latest}
     restart: unless-stopped
     init: true # reaps the git/docker child processes
     depends_on:
@@ -190,10 +185,7 @@ services:
   # work, no CORS). By default it listens on this machine only; to reach it from other devices on your LAN or VPN set
   # WEB_BIND to this machine's address (or 0.0.0.0). No other setting is needed: it works at whatever address you open it at.
   web:
-    build:
-      context: ..
-      dockerfile: apps/web/Dockerfile
-    image: shipdok-web
+    image: ghcr.io/tianyu-00/shipdok-web:${SHIPDOK_VERSION:-latest}
     restart: unless-stopped
     depends_on:
       api: { condition: service_healthy }

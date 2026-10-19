@@ -58,14 +58,15 @@ Or run the whole platform in Docker instead (do not mix with the npm commands ab
 Develop with npm: start only the data services with `... up -d postgres redis`. A bare `up -d` starts api, worker and web too.
 
 ```bash
-docker compose -f infrastructure/compose.yaml up -d --build          # no .env needed (see "First-run secrets" below)
+docker compose -f infrastructure/compose.yaml up -d                  # no .env needed (see "First-run secrets" below); pulls the published images
+docker compose -f infrastructure/compose.yaml -f infrastructure/compose.build.yaml up -d --build   # build from this checkout instead
 docker compose -f infrastructure/compose.yaml logs api               # the first-run setup token is printed here
 ```
 
 Optional compose settings (all have defaults; put them in `infrastructure/.env` and pass `--env-file infrastructure/.env`, or export them; NOTE
 compose reads a `.env` that sits next to the compose file even without `--env-file`, use `--env-file /dev/null` to ignore it, as the isolated
 test projects do): `POSTGRES_USER`/`POSTGRES_DB` (default `shipdok`), `API_HOST_PORT` (default 4000, loopback), `WEB_HOST_PORT` (default 8080) and
-`WEB_BIND` (default 127.0.0.1; `0.0.0.0` or this machine's address to reach the dashboard from other devices), `PORT_RANGE` (default
+`SHIPDOK_VERSION` (image release, default `latest`), `WEB_BIND` (default 127.0.0.1; `0.0.0.0` or this machine's address to reach the dashboard from other devices), `PORT_RANGE` (default
 `20000-20999`), `SHIPDOK_PUBLIC`, `PUBLIC_URL`, `COOKIE_SECURE` (default `auto`), `WEB_ORIGIN` (optional extra origins; the dashboard accepts
 requests from whatever address it is opened at), `MONITOR_INTERVAL_MS`, `STATS_INTERVAL_MS`, and the four secrets below (your value wins).
 `LOG_DIR` is set by compose to the `shipdok_logs` volume (outside Docker it defaults to `~/.shipdok/logs`). **`DOCKER_GID` is gone.**
@@ -505,6 +506,20 @@ GitHub page; see "Connect GitHub").
   have one); the shadcn CLI again installed the unrelated npm package `cn` (removed, `chart.jsx` imports `@/lib/utils`).
 - **Worker git ignores the admin's git config** (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`): a credential helper such as
   Git Credential Manager can otherwise open a window and hang a refused clone.
+- **Published images (Milestone 6 step 6; the compose side and the secret check verified locally, the workflow itself NOT yet run on GitHub):**
+  **Administrator's decisions: images are published only when a stable release is pushed to the `publish` branch; the repo and the images
+  will become public later; use whatever build method works.** `.github/workflows/images.yml` builds `api`, `worker`, `web` (one job
+  each) for linux/amd64 + linux/arm64 with QEMU (native ARM runners are free only for public repos; switch once the repo is public). A push
+  to `publish` also pushes to `ghcr.io/<owner>/shipdok-<name>` with tags `latest`, the number in the root `VERSION` file and `sha-<commit>`
+  (publishing the same VERSION again moves that tag; bump `VERSION` for a new release); a push to `main` or a pull request only builds.
+  Before any push each image is built for amd64 and checked by `.github/scripts/check-image.sh`, which fails on `.env*`, `*.pem`, `jar.txt`,
+  `id_rsa*` anywhere in the image (outside node_modules and system certificates); checked on the real api, worker and web images (clean) and on
+  an image with a planted `.env` and `.pem` (fails, listing both); an unknown image also fails. `infrastructure/compose.yaml` now has only
+  `image:` lines (`ghcr.io/tianyu-00/shipdok-api|worker|web:${SHIPDOK_VERSION:-latest}`; secrets, migrate and api share the api image);
+  `infrastructure/compose.build.yaml` is the override that adds the `build:` sections. Checked: `docker compose config --images` for both file
+  sets and for a pinned version. **Not tested: the workflow on GitHub, the push to GHCR, the multi-arch build (this machine has no ARM
+  emulation), pulling on the Pi.** To do once, after the first publish: set the three packages to Public on github.com (GHCR starts
+  private) or `docker compose pull` needs a login. Do a pre-release on the `publish` branch to see it work.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
@@ -516,12 +531,12 @@ administrator provides a public address (own IP, or Nginx / Nginx Proxy Manager 
 the mode (`local` / `webhook` / `full`) and the public address in the DASHBOARD (Settings, Public access; stored in the DB, `SHIPDOK_PUBLIC` / `PUBLIC_URL` in `.env` override and show as locked). Goal: `docker compose up`, log in, press "Connect GitHub", install the app, deploy
 private repos. No periodic polling. Caddy is an optional, low-priority profile only.
 
-Build order (SPEC.md Milestone 6); steps 1 to 5 (password policy and lockout, recovery codes, public access, Connect GitHub, first-run secrets) are built, see above:
+Build order (SPEC.md Milestone 6); steps 1 to 5 (password policy and lockout, recovery codes, public access, Connect GitHub, first-run secrets) are built, step 6 is written but not yet run on GitHub, see above:
 3. Public access is BUILT (see "Public access" under Built and verified); what remains of it is the docs with Nginx / Nginx Proxy Manager / Caddy
    examples, which go with step 7.
 4. Connect GitHub is BUILT (see "Connect GitHub" under Built and verified); the administrator still has to try the real button once.
 5. First-run secrets is BUILT (see above).
-6. Ready-made multi-arch images (amd64 + ARM64) on GitHub's container registry via GitHub Actions; compose pulls instead of builds.
+6. Ready-made multi-arch images: BUILT in the repo (see "Published images"); waiting for the first run on GitHub (push to `publish`) and making the packages public.
 7. Pi: full-stack run on the published images (ARM64, firewall vs the health-check path), hardening, docs (public
    address options, upgrade, backup), API docs (Scalar).
 8. Optional: Caddy compose profile for people without a proxy.

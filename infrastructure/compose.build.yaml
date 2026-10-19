@@ -1,0 +1,19 @@
+# Build the images from the source in this checkout instead of pulling the published ones (for development and for changes of your own):
+#   docker compose -f infrastructure/compose.yaml -f infrastructure/compose.build.yaml up -d --build
+# The images get the same names as the published ones, so a later `docker compose pull` replaces them with the released versions.
+x-api-build: &api-build
+  context: ..
+  dockerfile: apps/api/Dockerfile
+
+services:
+  secrets: { build: *api-build }
+  migrate: { build: *api-build }
+  api: { build: *api-build }
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
