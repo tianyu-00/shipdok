@@ -16,6 +16,7 @@ import { LogViewer } from '@/components/log-viewer'
 import { RollbackDialog } from '@/components/rollback-dialog'
 import { DeleteDeploymentDialog } from '@/components/delete-deployment-dialog'
 import { VersionBadge } from '@/components/version-badge'
+import { DeleteBuildLog } from '@/components/delete-build-log'
 
 const TRIGGER = { manual: 'Manual', webhook: 'Push', rollback: 'Rollback' }
 
@@ -105,6 +106,7 @@ export default function DeploymentsTab({ app }) {
             <DialogDescription>{logFor && `${shortSha(logFor.commit_sha)} · ${timeAgo(logFor.queued_at)}`}</DialogDescription>
           </DialogHeader>
           {logFor && <LogViewer key={logFor.id} path={`/deployments/${logFor.id}/logs`} emptyText="This deployment has no log (it may have been deleted)." />}
+          {logFor && !isActiveDeployment(logFor.status) && <div className="flex justify-end"><DeleteBuildLog deployment={logFor} onDeleted={() => setLogFor(null)} /></div>}
         </DialogContent>
       </Dialog>
     </>

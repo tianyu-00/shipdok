@@ -85,3 +85,11 @@ describe('displayState', () => {
     expect(displayState(app('stopped', 'crashed'))).toBe('crashed')
   })
 })
+
+describe('appAddress', () => {
+  test('points at the port the running version answers on, not an edited one', async () => {
+    const { appAddress } = await import('./format')
+    expect(appAddress({ host_port: 9000, running_settings: { host_port: 8080 } }, 'pi.local')).toBe('http://pi.local:8080')
+    expect(appAddress({ host_port: 9000, running_settings: null }, 'pi.local')).toBe('http://pi.local:9000')
+  })
+})

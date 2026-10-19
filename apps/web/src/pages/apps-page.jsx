@@ -36,7 +36,7 @@ export function AppCard({ app }) {
             </div>
           ) : <span className="text-muted-foreground">Never deployed</span>}
           <a href={appAddress(app)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">
-            :{app.host_port}<ExternalLink className="size-3" aria-hidden="true" /><span className="sr-only">Open the app</span>
+            :{app.running_settings?.host_port ?? app.host_port}<ExternalLink className="size-3" aria-hidden="true" /><span className="sr-only">Open the app</span>
           </a>
         </div>
       </CardContent>

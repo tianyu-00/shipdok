@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useApp } from '@/lib/queries'
 import { appAddress, displayState } from '@/lib/format'
 import { ApiError } from '@/lib/api'
+import { runningSetting } from '@/lib/settings'
 import { RuntimeBadge } from '@/components/status-badge'
 import { LoadError } from '@/components/states'
 import { RepoLink } from '@/components/repo-link'
@@ -15,8 +16,9 @@ import DeploymentsTab from '@/components/deployments-tab'
 import ImagesTab from '@/components/images-tab'
 import LogsTab from '@/components/logs-tab'
 import VariablesTab from '@/components/variables-tab'
+import SettingsTab from '@/components/settings-tab'
 
-const TABS = ['overview', 'deployments', 'images', 'logs', 'variables']
+const TABS = ['overview', 'deployments', 'images', 'logs', 'variables', 'settings']
 
 export default function AppDetailPage() {
   const { id } = useParams()
@@ -54,7 +56,7 @@ export default function AppDetailPage() {
             <RepoLink repo={a.repo} />
             <span className="inline-flex items-center gap-1"><GitBranch className="size-3.5" aria-hidden="true" />{a.branch}</span>
             <a href={appAddress(a)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">
-              Open :{a.host_port}<ExternalLink className="size-3" aria-hidden="true" />
+              Open :{runningSetting(a, 'host_port')}<ExternalLink className="size-3" aria-hidden="true" />
             </a>
           </p>
         </div>
@@ -69,6 +71,7 @@ export default function AppDetailPage() {
             <TabsTrigger value="images">Images</TabsTrigger>
             <TabsTrigger value="logs">Logs</TabsTrigger>
             <TabsTrigger value="variables">Variables</TabsTrigger>
+            <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
         </div>
         <TabsContent value="overview"><OverviewTab app={a} /></TabsContent>
@@ -76,6 +79,7 @@ export default function AppDetailPage() {
         <TabsContent value="images"><ImagesTab app={a} /></TabsContent>
         <TabsContent value="logs"><LogsTab app={a} /></TabsContent>
         <TabsContent value="variables"><VariablesTab app={a} /></TabsContent>
+        <TabsContent value="settings"><SettingsTab app={a} /></TabsContent>
       </Tabs>
     </div>
   )

@@ -75,6 +75,32 @@ describe('the app page', () => {
   })
 })
 
+describe('settings that were edited but not deployed yet', () => {
+  const edited = () => makeApp({
+    host_port: 9000, memory_mb: 1024, settings_pending: ['host_port', 'memory_mb'],
+    running_settings: { container_port: 3000, host_port: 8080, health_path: '/health', memory_mb: 512, cpus: 1 },
+  })
+  test('the overview shows what runs now, and says what is waiting', async () => {
+    mockApi(base({ [`GET /api/apps/${APP_ID}`]: edited(), [`GET /api/apps/${APP_ID}/deployments`]: [makeDeployment()] }))
+    page()
+    expect(await screen.findByText('container 3000 → host 8080')).toBeInTheDocument()
+    expect(screen.getByText('512 MB')).toBeInTheDocument()
+    expect(screen.queryByText('1024 MB')).toBeNull()
+    expect(screen.getByText(/Host port, Memory limit/)).toBeInTheDocument()
+  })
+  test('the link at the top still opens the port that answers', async () => {
+    mockApi(base({ [`GET /api/apps/${APP_ID}`]: edited() }))
+    page()
+    expect(await screen.findByRole('link', { name: /open :8080/i })).toHaveAttribute('href', `http://${window.location.hostname}:8080`)
+  })
+  test('the Settings tab opens from its address', async () => {
+    mockApi(base({ [`GET /api/apps/${APP_ID}`]: edited() }))
+    page(`/apps/${APP_ID}/settings`)
+    expect(await screen.findByRole('tab', { name: 'Settings' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByLabelText('Host port')).toHaveValue('9000')
+  })
+})
+
 describe('the overview', () => {
   test('describes what is running, the limits, and the status the worker reported', async () => {
     mockApi(base({ [`GET /api/apps/${APP_ID}`]: makeApp({ runtime: { state: 'unhealthy', last_action: 'start', last_error: 'Started, but it did not pass its health check', health_failures: 3, last_exit_code: null, updated_at: '2026-10-19T11:00:00Z' } }) }))

@@ -3,6 +3,8 @@ import { Empty, LoadError } from '@/components/states'
 import { DeploymentStatusBadge } from '@/components/status-badge'
 import { useCrashes, useDeployments } from '@/lib/queries'
 import { shortSha, timeAgo } from '@/lib/format'
+import { runningSetting } from '@/lib/settings'
+import { PendingSettings } from '@/components/pending-settings'
 
 const CAUSE = { crash: 'Crashed', stopped_outside: 'Stopped outside Shipdok', recovered: 'Recovered after a restart of the host or Docker' }
 
@@ -24,6 +26,7 @@ export default function OverviewTab({ app }) {
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
+      <div className="lg:col-span-2 empty:hidden"><PendingSettings app={app} /></div>
       <Card>
         <CardHeader><CardTitle className="text-base">Running now</CardTitle></CardHeader>
         <CardContent>
@@ -31,10 +34,10 @@ export default function OverviewTab({ app }) {
             <dl className="grid grid-cols-2 gap-4">
               <Fact label="Version"><span className="font-mono">{shortSha(live.commit_sha)}</span></Fact>
               <Fact label="Deployed">{timeAgo(live.finished_at)}</Fact>
-              <Fact label="Port">container {app.container_port} → host {app.host_port}</Fact>
-              <Fact label="Health check">{app.health_path ?? 'none (any answer counts)'}</Fact>
-              <Fact label="Memory limit">{app.memory_mb} MB</Fact>
-              <Fact label="CPU limit">{Number(app.cpus)} CPU</Fact>
+              <Fact label="Port">container {runningSetting(app, 'container_port')} → host {runningSetting(app, 'host_port')}</Fact>
+              <Fact label="Health check">{runningSetting(app, 'health_path') ?? 'none (any answer counts)'}</Fact>
+              <Fact label="Memory limit">{runningSetting(app, 'memory_mb')} MB</Fact>
+              <Fact label="CPU limit">{Number(runningSetting(app, 'cpus'))} CPU</Fact>
             </dl>
           ) : <p className="text-sm text-muted-foreground">Nothing has been deployed yet. Press Deploy to build and start this app.</p>}
         </CardContent>

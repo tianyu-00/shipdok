@@ -1,17 +1,15 @@
-import { useState } from 'react'
 import { toast } from 'sonner'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
+  AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { api } from '@/lib/api'
 import { shortSha, timeAgo } from '@/lib/format'
 
-/** Deleting a deployment is permanent, so the app's name has to be typed. */
+/** Deleting a deployment is permanent, so it asks once. (The API already refuses the dangerous cases.) */
 export function DeleteDeploymentDialog({ app, deployment, removesImage, onClose }) {
   const client = useQueryClient()
-  const [typed, setTyped] = useState('')
   const del = useMutation({
     mutationFn: () => api(`/deployments/${deployment.id}`, { method: 'DELETE' }),
     onSuccess: () => {
@@ -22,27 +20,22 @@ export function DeleteDeploymentDialog({ app, deployment, removesImage, onClose 
     },
     onError: (err) => { toast.error(err.message); onClose() },
   })
-  const matches = typed === app.name
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Delete deployment {shortSha(deployment.commit_sha)}?</DialogTitle>
-          <DialogDescription>
+    <AlertDialog open onOpenChange={(open) => !open && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete deployment {shortSha(deployment.commit_sha)}?</AlertDialogTitle>
+          <AlertDialogDescription>
             From {timeAgo(deployment.queued_at)}. This removes the record and its build log for good.
             {removesImage ? ' Its saved image is removed too, so it can no longer be rolled back to.' : ''}
             {' '}The app's own output (runtime log) is not touched.
-          </DialogDescription>
-        </DialogHeader>
-        <form className="space-y-2" onSubmit={(e) => { e.preventDefault(); if (matches && !del.isPending) del.mutate() }}>
-          <Label htmlFor="confirm-name">Type <span className="font-mono font-semibold">{app.name}</span> to confirm</Label>
-          <Input id="confirm-name" autoComplete="off" value={typed} onChange={(e) => setTyped(e.target.value)} />
-        </form>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button variant="destructive" disabled={!matches || del.isPending} onClick={() => del.mutate()}>Delete deployment</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction disabled={del.isPending} onClick={(e) => { e.preventDefault(); del.mutate() }}>Delete deployment</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }

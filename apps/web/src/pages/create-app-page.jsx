@@ -10,16 +10,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { api } from '@/lib/api'
 import { useRepos } from '@/lib/queries'
-
-function Field({ id, label, hint, children }) {
-  return (
-    <div className="space-y-1.5">
-      <Label htmlFor={id}>{label}</Label>
-      {children}
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
-    </div>
-  )
-}
+import { Field } from '@/components/field'
 
 const num = (v) => (v === '' ? undefined : Number(v))
 

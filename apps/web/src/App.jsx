@@ -11,6 +11,7 @@ import AuthPage from '@/pages/auth-page'
 import AppsPage from '@/pages/apps-page'
 import CreateAppPage from '@/pages/create-app-page'
 import AppDetailPage from '@/pages/app-detail-page'
+import StoragePage from '@/pages/storage-page'
 
 export default function App() {
   const client = useQueryClient()
@@ -37,6 +38,7 @@ export default function App() {
       <Shell username={auth.data.username}>
         <Routes>
           <Route path="/" element={<AppsPage />} />
+          <Route path="/storage" element={<StoragePage />} />
           <Route path="/apps/new" element={<CreateAppPage />} />
           <Route path="/apps/:id/*" element={<AppDetailPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />

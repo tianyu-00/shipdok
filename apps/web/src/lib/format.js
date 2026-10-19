@@ -90,7 +90,8 @@ export function parseLogLine(line) {
 }
 
 // Where an app answers on the network, as seen from the machine the dashboard is open on.
-export const appAddress = (app, host = window.location.hostname) => `http://${host}:${app.host_port}`
+// The port the RUNNING version answers on: an edited host port only takes effect with the next deployment.
+export const appAddress = (app, host = window.location.hostname) => `http://${host}:${app.running_settings?.host_port ?? app.host_port}`
 
 // The repository's page on GitHub. `repo` is validated as owner/repo by the API; anything else gets no link.
 export const repoUrl = (repo) => (/^(?!\.+\/)[A-Za-z0-9_.-]+\/(?!\.+$)[A-Za-z0-9_.-]+$/.test(repo ?? '') ? `https://github.com/${repo}` : null)

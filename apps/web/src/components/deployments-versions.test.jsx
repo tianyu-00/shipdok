@@ -115,50 +115,41 @@ describe('deleting a deployment', () => {
     expect(within(await rowOf('fffffff')).queryByRole('button', { name: /delete/i })).toBeNull()
   })
 
-  test('needs the app name typed, and only then deletes that deployment', async () => {
+  test('asks once, then deletes that deployment', async () => {
     const api = mockApi({ [LIST]: deployments, [IMAGES]: images, 'DELETE /api/deployments/old': { deleted: true } })
     tab()
     await userEvent.click(await within(await rowOf('ccccccc')).findByRole('button', { name: /^delete$/i }))
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('alertdialog')
     expect(within(dialog).getByText(/image is removed too/i)).toBeInTheDocument()
-    const confirm = within(dialog).getByRole('button', { name: 'Delete deployment' })
-    expect(confirm).toBeDisabled()
-    await userEvent.type(within(dialog).getByLabelText(/to confirm/i), 'my app')
-    expect(confirm).toBeDisabled() // wrong case
-    await userEvent.clear(within(dialog).getByLabelText(/to confirm/i))
-    await userEvent.type(within(dialog).getByLabelText(/to confirm/i), 'My App')
-    expect(confirm).toBeEnabled()
+    expect(within(dialog).queryByRole('textbox')).toBeNull() // nothing to type
     expect(api.called('DELETE', '/api/deployments/old')).toHaveLength(0)
-    await userEvent.click(confirm)
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete deployment' }))
     await waitFor(() => expect(api.called('DELETE', '/api/deployments/old')).toHaveLength(1))
     await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('Deployment deleted'))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
   })
 
-  test('Enter in the box deletes only once the name matches', async () => {
-    const api = mockApi({ [LIST]: deployments, [IMAGES]: images, 'DELETE /api/deployments/old': { deleted: true } })
+  test('cancel deletes nothing', async () => {
+    const api = mockApi({ [LIST]: deployments, [IMAGES]: images })
     tab()
     await userEvent.click(await within(await rowOf('ccccccc')).findByRole('button', { name: /^delete$/i }))
-    const box = within(await screen.findByRole('dialog')).getByLabelText(/to confirm/i)
-    await userEvent.type(box, 'nope{Enter}')
-    expect(api.called('DELETE', '/api/deployments/old')).toHaveLength(0)
-    await userEvent.clear(box)
-    await userEvent.type(box, 'My App{Enter}')
-    await waitFor(() => expect(api.called('DELETE', '/api/deployments/old')).toHaveLength(1))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(api.calls.some((c) => c.method === 'DELETE')).toBe(false)
   })
 
   test('a deployment without an image does not claim to remove one', async () => {
     mockApi({ [LIST]: deployments, [IMAGES]: images })
     tab()
     await userEvent.click(await within(await rowOf('eeeeeee')).findByRole('button', { name: /^delete$/i }))
-    expect(within(await screen.findByRole('dialog')).queryByText(/image is removed too/i)).toBeNull()
+    expect(within(await screen.findByRole('alertdialog')).queryByText(/image is removed too/i)).toBeNull()
   })
 
   test('the API\'s refusal is shown', async () => {
     mockApi({ [LIST]: deployments, [IMAGES]: images, 'DELETE /api/deployments/old': answer(409, { error: 'A rollback to this version is waiting to run' }) })
     tab()
     await userEvent.click(await within(await rowOf('ccccccc')).findByRole('button', { name: /^delete$/i }))
-    await userEvent.type(within(await screen.findByRole('dialog')).getByLabelText(/to confirm/i), 'My App')
-    await userEvent.click(screen.getByRole('button', { name: 'Delete deployment' }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete deployment' }))
     await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('A rollback to this version is waiting to run'))
   })
 })
@@ -178,5 +169,43 @@ describe('labels follow the history', () => {
     await client.invalidateQueries({ queryKey: ['deployments', APP_ID] })
     await within(await rowOf('aaaaaaa')).findByText('Live')
     expect(imageReads).toBeGreaterThan(before)
+  })
+})
+
+describe('deleting a build log', () => {
+  const LOG = 'GET /api/deployments/old/logs'
+  const logOf = { text: '2026-10-19T12:00:00.000Z shipdok hi\n', offset: 0, nextOffset: 40, size: 40, complete: true, truncated: false }
+  const openLog = async (text) => {
+    await userEvent.click(within(await rowOf(text)).getByRole('button', { name: /^log$/i }))
+    return screen.findByRole('dialog')
+  }
+
+  test('asks first, then deletes that deployment\'s log and closes the window', async () => {
+    const api = mockApi({ [LIST]: deployments, [IMAGES]: images, [LOG]: logOf, 'DELETE /api/deployments/old/logs': { freedBytes: 2048 } })
+    tab()
+    const dialog = await openLog('ccccccc')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete this log' }))
+    const ask = await screen.findByRole('alertdialog')
+    expect(api.called('DELETE', '/api/deployments/old/logs')).toHaveLength(0)
+    await userEvent.click(within(ask).getByRole('button', { name: 'Delete log' }))
+    await waitFor(() => expect(api.called('DELETE', '/api/deployments/old/logs')).toHaveLength(1))
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('Log deleted (2.0 KB)'))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  test('a refusal is shown and the window stays', async () => {
+    mockApi({ [LIST]: deployments, [IMAGES]: images, [LOG]: logOf, 'DELETE /api/deployments/old/logs': answer(500, { error: 'The log files could not be deleted' }) })
+    tab()
+    await userEvent.click(within(await openLog('ccccccc')).getByRole('button', { name: 'Delete this log' }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete log' }))
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('The log files could not be deleted'))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  test('is not offered while the deployment is still running', async () => {
+    mockApi({ [LIST]: deployments, [IMAGES]: images, 'GET /api/deployments/run/logs': logOf })
+    tab()
+    const dialog = await openLog('fffffff')
+    expect(within(dialog).queryByRole('button', { name: 'Delete this log' })).toBeNull()
   })
 })

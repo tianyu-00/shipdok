@@ -47,12 +47,14 @@ function respond(status, body) {
 
 export function renderWithProviders(ui, { route = '/' } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 }, mutations: { retry: false } } })
-  const view = render(
+  // `wrap` puts new content inside the same providers, for view.rerender(wrap(<Changed />)).
+  const wrap = (content) => (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem storageKey="shipdok-theme">
       <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={[route]}>{ui}</MemoryRouter>
+        <MemoryRouter initialEntries={[route]}>{content}</MemoryRouter>
       </QueryClientProvider>
-    </ThemeProvider>,
+    </ThemeProvider>
   )
-  return { ...view, client }
+  const view = render(wrap(ui))
+  return { ...view, client, wrap }
 }
