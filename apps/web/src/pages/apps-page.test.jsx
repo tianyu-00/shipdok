@@ -121,3 +121,26 @@ describe('an app that is being deleted', () => {
     expect(await screen.findByText('Delete failed')).toBeInTheDocument()
   })
 })
+
+
+describe('resource use on the cards', () => {
+  const MB = 1024 * 1024
+  test('shows the current CPU and memory of a running app', async () => {
+    mockApi({ 'GET /api/apps': [makeApp({ stats: { cpuPercent: 7.25, memoryBytes: 90 * MB, memoryLimitBytes: 512 * MB, sampledAt: 'x' } })], 'GET /api/storage': { disk: { level: 'ok' } } })
+    renderWithProviders(<AppsPage />)
+    expect(await screen.findByText('CPU 7.3%')).toBeInTheDocument()
+    expect(screen.getByText('Memory 90.0 MB of 512 MB')).toBeInTheDocument()
+  })
+  test('shows nothing when there is no recent reading', async () => {
+    mockApi({ 'GET /api/apps': [makeApp({ stats: null })], 'GET /api/storage': { disk: { level: 'ok' } } })
+    renderWithProviders(<AppsPage />)
+    await screen.findByText('My App')
+    expect(screen.queryByText(/^CPU /)).toBeNull()
+  })
+  test('is hidden for an app being deleted', async () => {
+    mockApi({ 'GET /api/apps': [makeApp({ deleting_at: '2026-10-19T12:00:00Z', stats: { cpuPercent: 1, memoryBytes: MB, memoryLimitBytes: null, sampledAt: 'x' } })], 'GET /api/storage': { disk: { level: 'ok' } } })
+    renderWithProviders(<AppsPage />)
+    await screen.findByText('Deleting…')
+    expect(screen.queryByText(/^CPU /)).toBeNull()
+  })
+})

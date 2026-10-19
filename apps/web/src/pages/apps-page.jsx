@@ -8,6 +8,7 @@ import { appAddress, displayState, timeAgo, shortSha } from '@/lib/format'
 import { DeploymentStatusBadge, RuntimeBadge } from '@/components/status-badge'
 import { Empty, ListSkeleton, LoadError } from '@/components/states'
 import { StorageBanner } from '@/components/storage-banner'
+import { formatCpu, formatMemory } from '@/lib/stats'
 import { RepoLink } from '@/components/repo-link'
 
 export function AppCard({ app }) {
@@ -26,6 +27,12 @@ export function AppCard({ app }) {
             <RepoLink repo={app.repo} />
             <span className="inline-flex items-center gap-1"><GitBranch className="size-3.5" aria-hidden="true" />{app.branch}</span>
           </p>
+          {app.stats && !app.deleting_at && (
+            <p className="mt-1 flex flex-wrap gap-x-4 text-xs text-muted-foreground">
+              <span>CPU {formatCpu(app.stats.cpuPercent)}</span>
+              <span>Memory {formatMemory(app.stats)}</span>
+            </p>
+          )}
         </div>
         <div className="flex flex-col gap-1 text-sm sm:items-end">
           {latest ? (

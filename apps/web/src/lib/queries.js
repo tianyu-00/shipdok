@@ -46,3 +46,6 @@ export const useStorage = () => useQuery({ queryKey: ['storage'], queryFn: () =>
 
 // The versions that have an image (live / previous / prunable / removed), the retention settings and the last clean-up.
 export const useImages = (id) => useQuery({ queryKey: ['images', id], queryFn: () => api(`/apps/${id}/images`), refetchInterval: 6000 })
+
+// The last hour of CPU and memory readings (the worker takes one every 15 seconds).
+export const useStats = (id) => useQuery({ queryKey: ['stats', id], queryFn: () => api(`/apps/${id}/stats`), refetchInterval: 15_000 })

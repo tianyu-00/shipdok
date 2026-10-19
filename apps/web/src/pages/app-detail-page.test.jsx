@@ -15,6 +15,7 @@ const base = (over = {}) => ({
   [`GET /api/apps/${APP_ID}`]: makeApp(),
   [`GET /api/apps/${APP_ID}/deployments`]: [makeDeployment()],
   [`GET /api/apps/${APP_ID}/crashes`]: [],
+  [`GET /api/apps/${APP_ID}/stats`]: { latest: null, samples: [] },
   [`GET /api/apps/${APP_ID}/env`]: { variables: [], pending: { pending: false } },
   [`GET /api/apps/${APP_ID}/logs`]: { text: '', offset: 0, nextOffset: 0, size: 0, complete: false, truncated: false },
   ...over,
@@ -170,6 +171,13 @@ describe('an app that is being deleted', () => {
 })
 
 describe('the overview', () => {
+  test('includes the resource use card', async () => {
+    mockApi(base({ [`GET /api/apps/${APP_ID}/stats`]: { latest: { cpuPercent: 4, memoryBytes: 50 * 1024 * 1024, memoryLimitBytes: null, sampledAt: 'x' }, samples: [] } }))
+    page()
+    expect(await screen.findByText('Resource use', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByText('4.0%')).toBeInTheDocument()
+  })
+
   test('describes what is running, the limits, and the status the worker reported', async () => {
     mockApi(base({ [`GET /api/apps/${APP_ID}`]: makeApp({ runtime: { state: 'unhealthy', last_action: 'start', last_error: 'Started, but it did not pass its health check', health_failures: 3, last_exit_code: null, updated_at: '2026-10-19T11:00:00Z' } }) }))
     page()

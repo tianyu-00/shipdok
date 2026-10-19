@@ -5,6 +5,11 @@ import { useCrashes, useDeployments } from '@/lib/queries'
 import { shortSha, timeAgo } from '@/lib/format'
 import { runningSetting } from '@/lib/settings'
 import { PendingSettings } from '@/components/pending-settings'
+import { lazy, Suspense } from 'react'
+import { Skeleton } from '@/components/ui/skeleton'
+
+// The charts library is large; it is only fetched when an Overview is opened.
+const ResourceCard = lazy(() => import('@/components/resource-card'))
 
 const CAUSE = { crash: 'Crashed', stopped_outside: 'Stopped outside Shipdok', recovered: 'Recovered after a restart of the host or Docker' }
 
@@ -65,6 +70,8 @@ export default function OverviewTab({ app }) {
           )}
         </CardContent>
       </Card>
+
+      <Suspense fallback={<Skeleton className="h-40 lg:col-span-2" />}><ResourceCard app={app} /></Suspense>
 
       <Card className="lg:col-span-2">
         <CardHeader><CardTitle className="text-base">Crash history</CardTitle></CardHeader>
