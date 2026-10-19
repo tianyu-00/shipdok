@@ -123,6 +123,7 @@ services:
     environment:
       HEALTH_CHECK_HOST: host.docker.internal
       MONITOR_INTERVAL_MS: ${MONITOR_INTERVAL_MS:-15000} # how often crashes and health are checked
+      STATS_INTERVAL_MS: ${STATS_INTERVAL_MS:-15000} # how often CPU and memory of running apps are measured
       LOG_DIR: /var/lib/shipdok/logs
       POSTGRES_HOST: postgres
       POSTGRES_USER: ${POSTGRES_USER}

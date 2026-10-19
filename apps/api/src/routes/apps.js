@@ -87,6 +87,19 @@ const RUNTIME = `(SELECT row_to_json(r) FROM (
 const RUNNING_SETTINGS = `(SELECT config_snapshot - 'env' FROM deployments
     WHERE app_id = a.id AND status = 'successful' ORDER BY seq DESC LIMIT 1)`;
 
+// The newest CPU / memory reading of the app's running container, if it is recent (the worker takes one every 15 s; after 90 s of
+// silence the worker is down or the app is not running, and an old number would be a lie). Null otherwise.
+const FRESH_SECONDS = 90;
+const STATS_LATEST = `(SELECT row_to_json(x) FROM (
+    SELECT cpu_percent, memory_bytes, memory_limit_bytes, sampled_at FROM app_stats
+     WHERE app_id = a.id AND sampled_at > now() - interval '${FRESH_SECONDS} seconds' ORDER BY sampled_at DESC LIMIT 1) x)`;
+const shapeStats = (r) => (r ? {
+  cpuPercent: r.cpu_percent === null ? null : Number(r.cpu_percent),
+  memoryBytes: Number(r.memory_bytes),
+  memoryLimitBytes: r.memory_limit_bytes === null ? null : Number(r.memory_limit_bytes),
+  sampledAt: r.sampled_at,
+} : null);
+
 // What the last clean-up of the app's images did (null until one has run).
 const CLEANUP = `(SELECT row_to_json(c) FROM (
     SELECT last_run_at, trigger, images_removed, freed_bytes, skipped, error
@@ -160,17 +173,18 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
           (SELECT row_to_json(x) FROM (
              SELECT id, status, commit_sha, queued_at, finished_at FROM deployments
              WHERE app_id = a.id ORDER BY queued_at DESC LIMIT 1) x) AS latest_deployment,
-          ${RUNTIME} AS runtime, ${CLEANUP} AS cleanup, ${RUNNING_SETTINGS} AS running_settings
+          ${RUNTIME} AS runtime, ${CLEANUP} AS cleanup, ${RUNNING_SETTINGS} AS running_settings, ${STATS_LATEST} AS stats
         FROM apps a ORDER BY a.created_at DESC`);
-      res.json(rows);
+      res.json(rows.map((r) => ({ ...r, stats: shapeStats(r.stats) })));
     } catch (err) { next(err); }
   });
 
   // The app as the dashboard shows it, plus which edited settings the running version does not have yet (null: nothing deployed).
   async function appDetail(id) {
-    const { rows } = await db.query(`SELECT a.*, ${RUNTIME} AS runtime, ${CLEANUP} AS cleanup, ${RUNNING_SETTINGS} AS running_settings FROM apps a WHERE a.id = $1`, [id]);
+    const { rows } = await db.query(`SELECT a.*, ${RUNTIME} AS runtime, ${CLEANUP} AS cleanup, ${RUNNING_SETTINGS} AS running_settings, ${STATS_LATEST} AS stats FROM apps a WHERE a.id = $1`, [id]);
     const a = rows[0];
     if (!a) return null;
+    a.stats = shapeStats(a.stats);
     const snap = a.running_settings;
     // A record that lacks a key (an older version of Shipdok wrote it) is not treated as a difference.
     a.settings_pending = snap
@@ -227,6 +241,25 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
   });
 
   // Why the app stopped when it should have been running, newest first (what Shipdok did about each one is in `action`).
+  // The last hour (or less) of CPU and memory readings, oldest first, for the chart; `latest` is the current number, or null when
+  // the app is not running / the worker has gone quiet.
+  r.get('/:id/stats', async (req, res, next) => {
+    try {
+      if (!isUuid(req.params.id)) return res.status(404).json({ error: 'App not found' });
+      const minutes = req.query.minutes === undefined ? 60 : /^\d{1,2}$/.test(String(req.query.minutes)) ? Number(req.query.minutes) : 0;
+      if (minutes < 1 || minutes > 60) return res.status(400).json({ error: 'minutes must be a whole number from 1 to 60' });
+      const { rows: found } = await db.query(`SELECT ${STATS_LATEST} AS latest FROM apps a WHERE a.id = $1`, [req.params.id]);
+      if (!found[0]) return res.status(404).json({ error: 'App not found' });
+      const { rows } = await db.query(
+        `SELECT sampled_at, cpu_percent, memory_bytes FROM app_stats
+          WHERE app_id = $1 AND sampled_at > now() - ($2::int * interval '1 minute') ORDER BY sampled_at`, [req.params.id, minutes]);
+      res.json({
+        latest: shapeStats(found[0].latest),
+        samples: rows.map((r) => ({ t: r.sampled_at, cpu: r.cpu_percent === null ? null : Number(r.cpu_percent), memory: Number(r.memory_bytes) })),
+      });
+    } catch (err) { next(err); }
+  });
+
   r.get('/:id/crashes', async (req, res, next) => {
     try {
       if (!isUuid(req.params.id)) return res.status(404).json({ error: 'App not found' });

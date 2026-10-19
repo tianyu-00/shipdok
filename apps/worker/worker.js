@@ -14,6 +14,7 @@ import { processDeleteJob } from './src/deleteapp.js';
 import { jobProcessor } from './src/dispatch.js';
 import { createActivity } from './src/activity.js';
 import { createMonitor } from './src/monitor.js';
+import { createSampler } from './src/stats.js';
 import { createCollector } from './src/runtimelog.js';
 import { loadAppEnv } from './src/envvars.js';
 import * as dockerEngine from './src/docker.js';
@@ -55,6 +56,8 @@ const collector = createCollector({
 });
 const monitor = createMonitor({ activity, collector, intervalMs: Number(process.env.MONITOR_INTERVAL_MS) || 15_000 });
 
+const sampler = createSampler({ intervalMs: Number(process.env.STATS_INTERVAL_MS) || 15_000 }); // CPU and memory of running apps
+
 const worker = new Worker(
   DEPLOY_QUEUE,
   jobProcessor({
@@ -87,6 +90,7 @@ worker.on('failed', (job, err) => {
 async function shutdown(signal) {
   console.log(`${signal}: letting the current job finish, then exiting`);
   await monitor.stop();
+  await sampler.stop();
   await collector.stopAll(); // close every runtime log and record its size
   await worker.close();
   await connection.quit();
@@ -97,6 +101,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 await reconcile();
+sampler.start();
 monitor.start(); // crashes, health, and recovery after a host or Docker restart
 worker.run().catch((err) => {
   console.error('Worker crashed:', err);

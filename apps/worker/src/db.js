@@ -109,6 +109,22 @@ export async function getApp(appId) {
   return rows[0] ?? null;
 }
 
+// ---- Resource use ----
+// The apps whose live container should be running (an app being deleted is left alone).
+export async function listSampleTargets() {
+  const { rows } = await pool.query(`SELECT id, slug FROM apps WHERE desired_state = 'running' AND deleting_at IS NULL ORDER BY created_at`);
+  return rows;
+}
+
+export const insertStat = (appId, { cpuPercent, memoryBytes, memoryLimitBytes }) =>
+  pool.query('INSERT INTO app_stats (app_id, cpu_percent, memory_bytes, memory_limit_bytes) VALUES ($1, $2, $3, $4)',
+    [appId, cpuPercent, memoryBytes, memoryLimitBytes]);
+
+export async function deleteOldStats(olderThanMs) {
+  const { rowCount } = await pool.query(`DELETE FROM app_stats WHERE sampled_at < now() - ($1::bigint * interval '1 millisecond')`, [olderThanMs]);
+  return rowCount;
+}
+
 // ---- Deleting an app ----
 // The app as the deletion needs it. Only an app the API marked as "being deleted" is ever touched.
 export async function getAppForDelete(appId) {

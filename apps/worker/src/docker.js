@@ -157,6 +157,33 @@ export async function containerFacts(container) {
   };
 }
 
+// ---- Resource use ----
+/**
+ * Docker's stats answer -> { cpuPercent, memoryBytes, memoryLimitBytes }.
+ * CPU is the share of ONE cpu (200 = two cpus fully busy), from the change since the sample Docker took before this one;
+ * null when there is no earlier sample to compare with. Memory is what the app uses without the file cache the kernel can
+ * take back (what `docker stats` shows too): cgroup v2 calls that inactive_file, v1 total_inactive_file.
+ */
+export function normalizeStats(raw) {
+  const cpu = raw?.cpu_stats;
+  const before = raw?.precpu_stats;
+  let cpuPercent = null;
+  const cpuDelta = (cpu?.cpu_usage?.total_usage ?? 0) - (before?.cpu_usage?.total_usage ?? 0);
+  const systemDelta = (cpu?.system_cpu_usage ?? 0) - (before?.system_cpu_usage ?? 0);
+  if (before?.cpu_usage?.total_usage > 0 && systemDelta > 0 && cpuDelta >= 0) {
+    const cpus = cpu.online_cpus ?? cpu.cpu_usage?.percpu_usage?.length ?? 1;
+    cpuPercent = Math.round((cpuDelta / systemDelta) * cpus * 100 * 10) / 10;
+  }
+  const mem = raw?.memory_stats ?? {};
+  const cache = mem.stats?.inactive_file ?? mem.stats?.total_inactive_file ?? 0;
+  const memoryBytes = Math.max(0, (mem.usage ?? 0) - cache);
+  // With no limit set Docker reports the host's memory (or a huge number); the caller only shows what the app was given.
+  return { cpuPercent, memoryBytes, memoryLimitBytes: mem.limit > 0 ? mem.limit : null };
+}
+
+// One reading. With stream:false Docker waits about a second so that it can compare two samples.
+export const containerStats = async (container) => normalizeStats(await container.stats({ stream: false }));
+
 // ---- The app's own output ----
 const seconds = (ms) => (ms / 1000).toFixed(3); // Docker takes "since"/"until" as seconds with decimals
 
