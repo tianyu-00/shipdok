@@ -12,7 +12,7 @@ import { envRouter } from './routes/env.js';
 import { webhookReceiver, deliveriesRouter } from './routes/webhooks.js';
 import { githubRouter } from './routes/github.js';
 import { loadGithubAppConfig, createGithubClient, logRoot } from '@shipdok/shared';
-import { deploymentLogsRouter, storageRouter, defaultDiskUsage } from './routes/logs.js';
+import { deploymentLogsRouter, appLogsRouter, storageRouter, defaultDiskUsage } from './routes/logs.js';
 
 // The GitHub App client exists only when GITHUB_APP_ID and a private key are configured.
 function defaultGithub() {
@@ -67,6 +67,7 @@ export function createApp({
   app.use('/api/auth', authRouter(db));
   app.use('/api/apps/:id/env', requireAuth, envRouter({ db, secretsKey }));
   app.use('/api/apps', requireAuth, appsRouter({ db, queue, github }));
+  app.use('/api/apps', requireAuth, appLogsRouter({ db, logDir }));
   app.use('/api/github', requireAuth, githubRouter({ github }));
   app.use('/api/deployments', requireAuth, deploymentsRouter({ db, queue }));
   app.use('/api/deployments', requireAuth, deploymentLogsRouter({ db, logDir }));
