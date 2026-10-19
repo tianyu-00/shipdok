@@ -27,11 +27,11 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 012_image_retention
-  src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), routes/ (auth, apps, env, webhooks, github, logs)
+  migrations/    001_init ... 013_app_deletion
+  src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), routes/ (auth, apps, env, webhooks, github, logs)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
-  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), monitor.js, activity.js, buildlog.js (the log sink), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
+  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), deleteapp.js (removing an app), monitor.js, activity.js, buildlog.js (the log sink), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
   worker.js      entry point; cli.js: manual deploy
 apps/web/        Vite + React (JavaScript) dashboard, Tailwind v4 + shadcn/ui (copied into src/components/ui); Vitest + Testing Library
   src/           App.jsx, pages/ (auth, apps list, create app, app detail), components/ (tabs, log viewer, actions), lib/ (api client, queries, format)
@@ -60,9 +60,9 @@ docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up 
 ```
 
 Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
-socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked), `WEB_HOST_PORT` (default 8080) and `WEB_BIND` (default 127.0.0.1) for the dashboard container; `WEB_ORIGIN` must be the exact address you open it at (several allowed, comma separated; default `http://localhost:<WEB_HOST_PORT>` in compose, `http://localhost:5173` for `npm run dev`).
+socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked), `WEB_HOST_PORT` (default 8080) and `WEB_BIND` (default 127.0.0.1) for the dashboard container; `PORT_RANGE` (default `20000-20999`, in compose passed to the API) is where a new app's host port comes from when none is given; `WEB_ORIGIN` must be the exact address you open it at (several allowed, comma separated; default `http://localhost:<WEB_HOST_PORT>` in compose, `http://localhost:5173` for `npm run dev`).
 
-Tests: API 466, worker 452, shared 173, web 303. Worker tests reuse the `_test` database the API tests create and
+Tests: API 514, worker 470, shared 176, web 319. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -281,6 +281,30 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   while the first stays in; old password rejected, new one accepted. Not tested: a real push-triggered deployment applying an edit (a
   rollback was used, same code path for settings), a host port held by a non-Shipdok process, a very long session. Known limits: the name
   changes in the dashboard but containers and images keep the old slug.
+- **Deleting an app and automatic host ports (verified against real Docker and a real browser in an isolated compose project):**
+  **Administrator's rules: deleting an app removes its logs too; recorded webhook deliveries are kept as history; it works on a running app
+  directly (no Stop first); the exact name must be typed.** `DELETE /api/apps/:id` with `{confirm: "<exact name>"}` (else 400
+  `confirm_mismatch`) refuses while a deployment is queued or running (409 `deployment_active`: cancel it first), then marks the app
+  (`deleting_at`, migration 013), sets `desired_state` to stopped at once, and queues a `deleteapp` job; the API itself deletes nothing.
+  The worker (`deleteapp.js`, same queue, one job at a time, app marked busy so the monitor leaves it alone) does, in this order: lets the
+  output collector go (`collector.release`), stops and force-removes every container labelled with the app (live and leftover
+  candidates), removes every image labelled and named like Shipdok's own for the app, deletes the app's whole log directory
+  (`removeAppLogs`), and last, in one transaction, its deployments and the app (variables, runtime state, crash events, log records and
+  clean-up summary go by cascade). Records go last so any failure leaves the app, marked, to retry from; every step can be repeated. A
+  failure is written to `apps.delete_error` (also for a job that stalled when the worker died) and the dashboard shows it with **Try
+  again** (the same DELETE again). While marked, deploy, rollback, prune, start/stop/restart, retention and settings answer 409 `deleting`,
+  webhook pushes are skipped ("The app is being deleted"), and the list and app page show Deleting… / Delete failed; when the app
+  finally disappears the open page returns to the list with "App deleted". A container made from the app's image inherits the image's
+  labels, so it counts as the app's and is removed with it; an image held by a container that does NOT carry the app's labels makes the
+  deletion fail with a message (checked for real, then fixed by removing that container and pressing Try again). **Automatic host
+  port:** leave the host port empty when creating an app and the lowest free port in `PORT_RANGE` is used (default `20000-20999`: above
+  the ports databases and dashboards use, e.g. 9000 Portainer, 9090 Prometheus, and below Linux's temporary ports from 32768; set
+  `PORT_RANGE=a-b` in `.env` to change it; checked at startup). The unique index decides races (the loser picks again); a full range is a
+  409 `no_free_port` with a message. Only Shipdok's own apps are known: a port used by something else on the machine is not seen.
+  Checked for real: auto ports 21000 and 21001 from a custom range, the full range explained, delete of a running app (container, three
+  images, runtime log and all records gone, other apps untouched), the failure with a stuck image and the retry. Not tested: deleting while
+  a collector is mid-write on a very chatty app, a delete that stalls the worker, ARM64. Known limit: the collector's connection is closed
+  by `release` but a fake Docker cannot show that.
 - **Worker git ignores the admin's git config** (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`): a credential helper such as
   Git Credential Manager can otherwise open a window and hang a refused clone.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
@@ -288,13 +312,10 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
 ## Next
 
 1. Live CPU/memory usage and limits display (SPEC.md §12).
-2. Automatic host-port allocation and app deletion (currently SQL by hand: delete `deployments` rows first, `app_id` is
-   `ON DELETE RESTRICT`; remove containers and `shipdok/*` images yourself; with the new `DELETE /api/deployments/:id` the rows and
-   images can go through the API first).
-3. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so
+2. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so
    other people hosting Shipdok do not fill in the form by hand. Read SPEC.md Milestone 3 first.
-4. Compose follow-ups: add `cloudflared` to compose (point it at `http://api:4000`, no host networking needed).
-5. Pi: full-stack run in compose (ARM64 builds, firewall vs the health-check path, `DOCKER_GID`), run the tunnel as a service until
+3. Compose follow-ups: add `cloudflared` to compose (point it at `http://api:4000`, no host networking needed).
+4. Pi: full-stack run in compose (ARM64 builds, firewall vs the health-check path, `DOCKER_GID`), run the tunnel as a service until
    then, hardening, docs (setup options: tunnel, reverse proxy, or manual deploys only), API docs (Scalar).
 
 Known gaps: no audit/rate limit on `reveal`; old `shipdok/*` images pile up until the administrator prunes (or turns on `auto_prune`); no "clean build cache" action; build-time env vars; Railpack; DB backup docs.
