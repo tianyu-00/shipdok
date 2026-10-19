@@ -81,10 +81,12 @@ services:
       APP_SECRETS_KEY: ${APP_SECRETS_KEY}
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:${WEB_HOST_PORT:-8080}}
       TRUST_PROXY: loopback,uniquelocal # the dashboard's nginx (a private address) passes on the real client address
+      SHIPDOK_PUBLIC: ${SHIPDOK_PUBLIC:-} # optional: local | webhook | full. Normally set in the dashboard (Security > Public access); a value here overrides it
+      PUBLIC_URL: ${PUBLIC_URL:-} # optional: the public address, e.g. https://shipdok.example.com. Same: the dashboard sets it, this overrides
       PORT_RANGE: ${PORT_RANGE:-} # host ports chosen automatically for new apps (default 20000-20999)
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
       SETUP_TOKEN: ${SETUP_TOKEN:-}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SECURE: ${COOKIE_SECURE:-auto} # auto: Secure only for requests that came in over https (through your proxy)
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
       GITHUB_APP_PRIVATE_KEY_FILE: ${GITHUB_APP_ID:+/run/secrets/github-app.pem} # only when an App ID is set: a key path alone is a configuration error
       LOG_DIR: /var/lib/shipdok/logs

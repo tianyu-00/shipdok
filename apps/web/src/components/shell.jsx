@@ -3,11 +3,13 @@ import { HardDrive, LogOut, Ship, ShieldCheck } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
+import { usePublicAccess } from '@/lib/queries'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { forgetSession } from '@/lib/session'
 
 export function Shell({ username, children }) {
   const client = useQueryClient()
+  const access = usePublicAccess()
   const logout = useMutation({
     mutationFn: () => api('/auth/logout', { method: 'POST' }),
     // Whatever the answer, this browser should stop showing the data.
@@ -27,6 +29,11 @@ export function Shell({ username, children }) {
           </div>
         </div>
       </header>
+      {access.data?.mode === 'full' && (
+        <div role="status" aria-label="Public access" className="border-b border-warning/40 bg-warning/10 px-4 py-2 text-center text-sm text-warning">
+          The whole dashboard is reachable from the internet. <Link to="/security" className="underline">Security settings</Link>
+        </div>
+      )}
       <main className="mx-auto max-w-6xl px-4 py-6">{children}</main>
     </div>
   )

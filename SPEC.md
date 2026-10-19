@@ -130,9 +130,9 @@ Because the dashboard may be exposed to the internet by the administrator's choi
 
 ### Platform secrets
 
-**Decision (Q50):** Environment variables and protected secret files remain supported and always take precedence. By default, secrets that the administrator did not supply (session secret, encryption key, database and Redis passwords) are generated on first run into a protected volume, so that `docker compose up` works without a hand-made environment file. The trade-off, which the documentation must state, is that the encryption key then lives on the same disk as the database volume; administrators who want them separate supply the key themselves.
+**Decision (Q50):** Environment variables and protected secret files remain supported for the platform's own secrets (session secret, encryption key, database and Redis passwords) and take precedence over generated ones. By default, secrets that the administrator did not supply (session secret, encryption key, database and Redis passwords) are generated on first run into a protected volume, so that `docker compose up` works without a hand-made environment file. The trade-off, which the documentation must state, is that the encryption key then lives on the same disk as the database volume; administrators who want them separate supply the key themselves.
 
-Credentials created by the GitHub App flow (private key, webhook secret, client secret) are stored encrypted in PostgreSQL with the platform encryption key, never returned to the browser after creation, and can be deleted with a "Disconnect GitHub" action. Environment-based GitHub App settings continue to work and take precedence.
+GitHub App credentials (app ID, private key, webhook secret, client secret) live only in the dashboard, never in the environment or in files. They are stored encrypted in PostgreSQL with the platform encryption key, never returned to the browser after they are saved, and can be deleted with a "Disconnect GitHub" action. They come from one of two places on the same screen: the "Connect GitHub" button (App Manifest flow), or an "I already have a GitHub App" form where the administrator enters the app ID, private key, and webhook secret by hand. Shipdok does not read GitHub App credentials from the environment and does not import them from an older environment file; an administrator who set them there enters them once in the form.
 
 Regardless of the source, real secrets must never be committed to source control, included in public images, or intentionally written to logs. Provide `.env.example` with placeholders only and protect actual secret files with restrictive permissions.
 
@@ -263,19 +263,23 @@ Because a direct host port cannot usually be bound by both old and candidate con
 
 ### Public exposure
 
-The administrator chooses one mode with a single setting, `SHIPDOK_PUBLIC`, and gives the public address in `PUBLIC_URL` (for example `https://shipdok.example.com`). Both are environment settings in the MVP; entering the domain in the dashboard is deferred.
+The administrator chooses who may reach Shipdok from outside their own network, and gives the public address, in the dashboard (Settings, Public access). Two values are stored: the mode, and the public address (for example `https://shipdok.example.com`). The environment can still set them as `SHIPDOK_PUBLIC` (`local`, `webhook`, `full`) and `PUBLIC_URL`; a value set in the environment takes precedence and is shown in the dashboard as locked. The public address is needed before "Connect GitHub" can tell GitHub where to deliver webhooks, so entering it in the dashboard keeps first-run setup free of file edits.
 
-1. **`off` (default):** nothing is reachable from the internet. The dashboard listens on loopback by default and is reached from the same machine, over the LAN by binding it to a LAN address, or over a VPN.
-2. **`webhook`:** only `POST /api/webhooks/github` is reachable through the public address. Every other path answers 404. The dashboard stays private. This is the lowest-risk way to receive GitHub pushes.
-3. **`full`:** the whole dashboard is reachable on the public address, for administrators who want to manage Shipdok from outside their network. The password policy, lockout, recent logins, and recovery codes in section 4 apply, and the dashboard shows a banner whenever it is reachable from the internet.
+1. **`local` (default):** nothing is reachable from outside. Anyone who is not provably on the local network gets 404 for every path, the webhook included. The dashboard listens on loopback by default and is reached from the same machine, over the LAN by binding it to a LAN address, or over a VPN.
+2. **`webhook`:** from outside, only `POST /api/webhooks/github` is reachable. Every other path answers 404. The dashboard stays private to the local network. This is the lowest-risk way to receive GitHub pushes.
+3. **`full`:** the whole dashboard is reachable from outside, for administrators who want to manage Shipdok away from their network. The password policy, lockout, recent logins, and recovery codes in section 4 apply, and the dashboard shows a banner whenever it is reachable from the internet.
+
+Shipdok does not control the administrator's proxy, so it enforces the mode inside the application. A request counts as local only when that can be shown: it carries no forwarding headers and comes straight from a private or loopback address, or it comes through a trusted proxy that reports a private client address. Everything else counts as outside. The rule fails closed: a proxy that hides the real client address makes visitors look outside, which yields 404 and never an exposed dashboard. Local requests always reach the whole dashboard, whatever the mode.
+
+Changing the mode or the public address requires the administrator's current password, is recorded in the recent-logins list, and takes effect without a restart. The public address adds an allowed origin and never removes the local ones, so a mistyped address cannot lock the administrator out. Which proxies are trusted is a deployment setting that stays in the environment (`TRUST_PROXY`, defaulting to loopback and private ranges): letting a session change it would let an intruder forge client addresses to evade the lockout and the mode.
 
 Shipdok ships and manages no tunnel and no certificate authority. The administrator provides the public address in whatever way suits them: their own public IP with a port forward, a reverse proxy such as Nginx, Nginx Proxy Manager, or Caddy, or a tunnel they run themselves in front of such a proxy. HTTPS is terminated by that proxy.
 
 Behind a proxy, Shipdok must:
 
-- Derive the allowed origin, secure cookies, and the GitHub webhook URL from `PUBLIC_URL`.
+- Derive the allowed origin, secure cookies, and the GitHub webhook URL from the public address (the dashboard setting, or `PUBLIC_URL` when set).
 - Accept forwarded headers only from trusted proxies configured with a trusted-proxy setting, and use the real client address from those headers for rate limits, lockout, and the recent-logins list. The dashboard's own web server must not discard an address that a trusted proxy supplies.
-- Never expose the dashboard port in `webhook` mode, and document that the proxy must forward only the webhook path, with Nginx and Caddy examples.
+- Document that, in `webhook` mode, the proxy should still forward only the webhook path (defence in depth next to Shipdok's own check), with Nginx and Caddy examples.
 - Keep the API, PostgreSQL, and Redis unreachable from outside the Compose network or loopback.
 
 ### TLS
@@ -477,7 +481,7 @@ The MVP should not be considered ready until automated tests cover at least:
 - Authentication, session expiry, logout, rate limits, and CSRF-sensitive routes.
 - Password policy (minimum length, repeated patterns, plain runs, username in password), progressive lockout per account and per address, and the recent-logins list.
 - Recovery codes: generated once, stored hashed, single use, invalidated by regeneration, rate-limited, and ending other sessions when used.
-- Public modes: `off` exposes nothing; `webhook` answers 404 for every path except the webhook; `full` applies the origin check, secure cookies, and the real client address behind a trusted proxy, and ignores forwarded headers from untrusted sources.
+- Public modes: `local` answers 404 to every outside visitor; `webhook` answers 404 for every outside path except the webhook; `full` applies the origin check, secure cookies, and the real client address behind a trusted proxy, and ignores forwarded headers from untrusted sources. Visitors who cannot be shown to be local count as outside (fail closed), local visitors always reach everything, and changing the mode or address needs the current password and is recorded.
 - The GitHub App Manifest flow: `state` binding, one-time code use, encrypted storage of credentials, no private key in any response or log, and Disconnect.
 - GitHub webhook signature verification and duplicate delivery handling.
 - Branch filtering and latest-commit-wins cancellation.
@@ -543,7 +547,7 @@ In this order:
 
 1. Password policy and strength guidance, progressive lockout, and the recent-logins list.
 2. Recovery codes and the host-side password reset command.
-3. Public address support: `SHIPDOK_PUBLIC` (`off`, `webhook`, `full`), `PUBLIC_URL`, trusted proxies, real client address, and documentation with Nginx, Nginx Proxy Manager, and Caddy examples.
+3. Public access: a dashboard setting for the mode (`local`, `webhook`, `full`) and the public address (the environment overrides), stored in the database; in-app enforcement that fails closed; trusted proxies and the real client address; and documentation with Nginx, Nginx Proxy Manager, and Caddy examples.
 4. The GitHub App Manifest flow ("Connect GitHub") using the public address, with the credentials stored encrypted.
 5. First-run secret generation, so that `docker compose up` needs no hand-made environment file.
 6. Prebuilt amd64 and ARM64 images published to GitHub's container registry by a GitHub Actions workflow, and a Compose file that pulls them.
@@ -554,9 +558,9 @@ In this order:
 
 ### Open decisions
 
-- **Platform secret storage (Q50):** decided in section 4 (environment and files take precedence; generated on first run into a protected volume otherwise; GitHub App credentials encrypted in PostgreSQL). Revisit if the same-disk key placement proves unacceptable.
+- **Platform secret storage (Q50):** decided in section 4 (the platform's own secrets: environment and files take precedence, generated on first run into a protected volume otherwise; GitHub App credentials: dashboard only, encrypted in PostgreSQL, entered through Connect GitHub or by hand). Revisit if the same-disk key placement proves unacceptable.
 - Whether to add optional two-factor login after the MVP.
-- Whether to let the administrator enter the public domain in the dashboard (which would require controlling a proxy), instead of the environment.
+- **Public address and mode in the dashboard:** decided (section 8). Shipdok enforces the mode in the application and does not configure the proxy.
 - Whether to include the optional Caddy profile at all.
 - Exact session inactivity and maximum lifetime values.
 - Exact CPU quota default after benchmarking.

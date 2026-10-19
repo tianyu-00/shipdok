@@ -6,6 +6,9 @@ import { config, loadSecretsKey } from './config.js';
 import { parsePortRange } from './ports.js';
 import { pool } from './db/pool.js';
 import { originCheck } from './middleware/originCheck.js';
+import { publicAccess, visitorCheck } from './middleware/publicAccess.js';
+import { createSettings } from './settings.js';
+import { settingsRouter } from './routes/settings.js';
 import { requireAuth } from './middleware/requireAuth.js';
 import { authRouter } from './routes/auth.js';
 import { recoveryRouter } from './routes/recovery.js';
@@ -32,6 +35,7 @@ export function createApp({
   github = defaultGithub(),
   logDir = logRoot(), diskUsage = defaultDiskUsage, portRange = parsePortRange(config.portRangeText),
   trustProxy = process.env.TRUST_PROXY || 'loopback',
+  settings = createSettings(db),
 } = {}) {
   const app = express();
   app.disable('x-powered-by');
@@ -41,6 +45,11 @@ export function createApp({
   // forge its own address.
   app.set('trust proxy', trustProxy);
   app.use(helmet());
+
+  // Who may reach Shipdok from outside (see middleware/publicAccess.js). First of all, before the webhook receiver, the
+  // session and everything else; the check the dashboard's web server makes goes ahead of the rule because it IS the rule's answer.
+  app.get('/api/_visitor', visitorCheck(settings));
+  app.use(publicAccess(settings));
 
   // The GitHub webhook is public and signature-protected. It is mounted BEFORE the JSON parser, the session
   // and the origin check: it needs the raw bytes to verify the signature, and it has no cookies or Origin.
@@ -58,7 +67,7 @@ export function createApp({
     rolling: true, // sliding inactivity timeout: each request renews the cookie
     cookie: { httpOnly: true, sameSite: 'lax', secure: config.secureCookies, maxAge: config.idleMs },
   }));
-  app.use(originCheck);
+  app.use(originCheck(settings));
 
   app.get('/health', (req, res) => res.json({ status: 'ok' }));
   app.get('/health/ready', async (req, res) => {
@@ -70,6 +79,7 @@ export function createApp({
     }
   });
 
+  app.use('/api/settings', requireAuth, settingsRouter({ db, settings }));
   app.use('/api/auth', authRouter(db));
   app.use('/api/auth', recoveryRouter(db));
   app.use('/api/apps/:id/env', requireAuth, envRouter({ db, secretsKey }));

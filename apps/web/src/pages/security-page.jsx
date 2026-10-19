@@ -17,9 +17,10 @@ import { shortAddress, timeAgo } from '@/lib/format'
 import { forgetSession } from '@/lib/session'
 import { ChangePasswordDialog } from '@/components/change-password-dialog'
 import { NewRecoveryCodesDialog } from '@/components/new-recovery-codes-dialog'
+import { PublicAccessCard } from '@/components/public-access-card'
 import { Empty, ListSkeleton, LoadError } from '@/components/states'
 
-const KIND = { setup: 'Account created', recovery: 'Recovery code used', reset: 'Password reset on the host' }
+const KIND = { setup: 'Account created', recovery: 'Recovery code used', reset: 'Password reset on the host', settings: 'Public access changed' }
 
 function Result({ login }) {
   if (!login.success) return <Badge variant="outline" className="border-destructive/40 bg-destructive/10 text-destructive">Failed</Badge>
@@ -111,6 +112,8 @@ export default function SecurityPage() {
       {changing && <ChangePasswordDialog onClose={() => setChanging(false)} />}
 
       <RecoveryCard />
+
+      <PublicAccessCard />
 
       <Card>
         <CardHeader>

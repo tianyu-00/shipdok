@@ -17,7 +17,7 @@ export async function makeApp({ queue, ...rest } = {}) {
 }
 
 export async function resetDb() {
-  await testPool.query('TRUNCATE users, deployments, apps, "session", webhook_deliveries, login_attempts RESTART IDENTITY CASCADE');
+  await testPool.query('TRUNCATE users, deployments, apps, "session", webhook_deliveries, login_attempts, settings RESTART IDENTITY CASCADE');
 }
 
 export async function closeDb() {
@@ -25,3 +25,11 @@ export async function closeDb() {
 }
 
 export const PASSWORD = "a-long-test-password";
+
+// Fixed public-access settings for a test that does not need the database ones (the tunnel tests use "webhook": real
+// clients behind a proxy are outside visitors, who get nothing but the webhook).
+export const settingsFor = (mode, publicUrl = "") => ({
+  public: async () => ({ mode, publicUrl, modeLocked: false, urlLocked: false }),
+  setPublic: async () => {},
+  invalidate() {},
+});

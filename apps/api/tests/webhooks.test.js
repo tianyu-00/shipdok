@@ -1,7 +1,7 @@
 import request from 'supertest';
 import { jest } from '@jest/globals';
 import { createHmac, randomUUID } from 'node:crypto';
-import { makeApp, resetDb, closeDb, testPool, PASSWORD } from './helpers.js';
+import { makeApp, resetDb, closeDb, testPool, PASSWORD, settingsFor } from './helpers.js';
 
 const SECRET = process.env.GITHUB_WEBHOOK_SECRET;
 const REPO = 'tianyu-00/shipdok-test-app';
@@ -130,7 +130,7 @@ describe('signature verification', () => {
   // Behind the Cloudflare tunnel every connection comes from cloudflared on loopback; the real client is only
   // in X-Forwarded-For. Without trusting it, the whole internet shares one bucket and a flood locks GitHub out.
   test('counts each forwarded client separately when the proxy is on loopback', async () => {
-    const limited = await makeApp({ queue, webhookRateLimit: 2 });
+    const limited = await makeApp({ queue, webhookRateLimit: 2, settings: settingsFor('webhook') });
     const from = (ip) => deliver({}, { a: limited, event: 'ping' }).set('X-Forwarded-For', ip);
     const flood = [];
     for (let i = 0; i < 4; i++) flood.push((await from('203.0.113.7')).status);
@@ -139,7 +139,7 @@ describe('signature verification', () => {
   });
 
   test('a spoofed left-hand X-Forwarded-For entry does not buy a fresh bucket', async () => {
-    const limited = await makeApp({ queue, webhookRateLimit: 2 });
+    const limited = await makeApp({ queue, webhookRateLimit: 2, settings: settingsFor('webhook') });
     // The proxy appends the real client address on the right; anything the client put on the left is noise.
     const from = (spoof) => deliver({}, { a: limited, event: 'ping' }).set('X-Forwarded-For', `${spoof}, 203.0.113.7`);
     const codes = [];

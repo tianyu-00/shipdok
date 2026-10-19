@@ -55,3 +55,6 @@ export const useLogins = () => useQuery({ queryKey: ['logins'], queryFn: () => a
 
 // How many recovery codes are left (never the codes themselves).
 export const useRecovery = () => useQuery({ queryKey: ['recovery'], queryFn: () => api('/auth/recovery') })
+
+// Who may reach Shipdok from outside, and the public address (also tells whether THIS visit counts as local or outside).
+export const usePublicAccess = () => useQuery({ queryKey: ['public-access'], queryFn: () => api('/settings/public'), retry: false })

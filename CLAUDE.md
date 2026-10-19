@@ -27,8 +27,8 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 016_recovery_codes
-  src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), recovery.js (recovery codes), resetpassword.js (host-side reset), authutil.js, routes/ (auth, recovery, apps, env, webhooks, github, logs)
+  migrations/    001_init ... 017_settings
+  src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), recovery.js (recovery codes), resetpassword.js (host-side reset), authutil.js, settings.js + publicurl.js (public-access settings), visitor.js (local or outside), middleware/ (originCheck, publicAccess, requireAuth), routes/ (auth, recovery, settings, apps, env, webhooks, github, logs)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`), reset-password.js (host-side password reset; `npm run reset-password`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
   src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), deleteapp.js (removing an app), stats.js (CPU and memory samples), monitor.js, activity.js, buildlog.js (the log sink), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
@@ -62,7 +62,7 @@ docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up 
 Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
 socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked), `STATS_INTERVAL_MS` (default 15000: how often CPU and memory are measured), `WEB_HOST_PORT` (default 8080) and `WEB_BIND` (default 127.0.0.1) for the dashboard container; `PORT_RANGE` (default `20000-20999`, in compose passed to the API) is where a new app's host port comes from when none is given; `WEB_ORIGIN` must be the exact address you open it at (several allowed, comma separated; default `http://localhost:<WEB_HOST_PORT>` in compose, `http://localhost:5173` for `npm run dev`).
 
-Tests: API 588, worker 493, shared 183, web 415. Worker tests reuse the `_test` database the API tests create and
+Tests: API 739, worker 493, shared 183, web 451. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -125,6 +125,43 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   browser (the popup is unit-tested with a fake window), the download in a real browser (unit-tested with a fake link), a Pi. Known limits:
   recovery is by username + code, so anyone who steals the saved codes can take the account (the dashboard says so); no way yet to see which
   codes were used, only how many are left; the old SPEC wording "set a new password" is met in one step on the login screen.
+- **Public access (Milestone 6 step 3; verified with the real dashboard nginx and API in an isolated compose project, and in a real
+  browser):** **Administrator's decisions: the mode and the public address are set in the DASHBOARD (Security page, "Public access"), the
+  environment (`SHIPDOK_PUBLIC`, `PUBLIC_URL`) overrides and locks the field; modes are `local` (the default), `webhook`, `full`; visitors
+  are judged by fail-closed rules; changing it needs the password.** Table `settings` (migration 017; also a `settings` kind in the sign-ins
+  list, shown as "Public access changed"). `GET /api/settings/public` ({mode, publicUrl, modeLocked, urlLocked, visitor}) and `PUT` ({password,
+  mode?, publicUrl?}: password re-checked (403 `wrong_password`, 10 tries per 15 min), 400 for a bad mode or address, 409 `locked_by_environment`,
+  recorded in the sign-ins list; an address is tidied to an origin `https://host[:port]`, no path, no credentials). Cached 5 s, dropped at once on a
+  change. **Who counts as local** (`visitor.js`): only a visitor that can be shown to be on the local network, i.e. the connection itself comes from a
+  private, loopback, link-local or shared (100.64/10, VPN) address AND either no forwarding header exists, or a trusted proxy (`TRUST_PROXY`, default
+  loopback; compose adds private ranges) reports a private client in X-Forwarded-For. Everything else is OUTSIDE: a public socket, a forwarder
+  that is not trusted, forwarding headers (X-Real-IP, CF-Connecting-IP, Forwarded ...) without X-Forwarded-For, an unreadable address, and a request
+  addressed to the public host name that no proxy vouched for. **Enforcement** (`middleware/publicAccess.js`, the very first thing in the app,
+  before the webhook receiver): local visitors always get everything; outside visitors get a plain `{"error":"Not found"}` 404 (the same as an
+  unknown route) for every path in `local`, for every path except `POST /api/webhooks/github` in `webhook`, and nothing is refused in `full`.
+  **The dashboard's nginx** (`apps/web/nginx.conf`): `real_ip` from private ranges so a proxy's X-Forwarded-For is believed and the API sees the real
+  visitor (the sign-ins list now shows real addresses, not `172.19.0.1`); `auth_request` to `GET /api/_visitor` (204/403, mounted before the rule) in
+  front of the pages and assets, a refusal answers 404; a proxy that sent other address headers but no X-Forwarded-For gets the documentation address
+  192.0.2.1 passed on (so it counts as outside); `X-Shipdok-Proxied` says whether the visitor's own request carried X-Forwarded-For (nginx adds its own
+  to every request, which alone must not vouch for a visitor using the public name); `X-Forwarded-Proto` is passed through for the cookie. **Origins:**
+  `WEB_ORIGIN` stays, the public address is added (never replaces). **Cookies:** `COOKIE_SECURE` unset or `auto` (compose's default now) sets
+  Secure only when a trusted proxy says the visitor used https; `true`/`false` still force it. Dashboard: a "Public access" card on the Security page
+  (three radios with explanations, address field, the webhook address GitHub should use, whether this visit is local or outside, a warning that a
+  narrower mode would lock out an outside visit, a warning for `full`, locked fields explained, Save asks for the password) and a banner on every
+  page while the mode is `full`. Checked for real (curl with simulated outside visitors through the real nginx): local default, webhook (the webhook
+  gets a 401 for a bad signature, not 404, everything else 404), full, a forged "local, real-public" chain, CF-Connecting-IP without X-Forwarded-For,
+  the public name with and without a vouching proxy, outside logins recorded with their real address, Secure cookie behind an https proxy, and
+  back to local; in the browser: bad address, wrong password, save, banner on and off, phone width. The tunnel-style webhook tests now run in
+  `webhook` mode (`settingsFor('webhook')` in `tests/helpers.js`). **Consequence for the administrator's own setup: the default is `local`, so the
+  Cloudflare-tunnel webhook is blocked until Security > Public access is set to Webhook only once** (and the tunnel's ingress can keep forwarding
+  only the webhook path as well). Also checked by the administrator on the real setup: with the mode set to Webhook only, a real push through the
+  Cloudflare tunnel (`hooks.tianyu00.com`) still deployed the test app, and the dashboard was reachable from a Raspberry Pi on the LAN (Windows host,
+  WSL mirrored networking: needed `WEB_BIND=0.0.0.0`, `WEB_ORIGIN`, a Windows Firewall rule and a Hyper-V firewall rule for the port). Not tested: a real
+  Nginx Proxy Manager in front, a visitor connecting from a real public
+  address to the dashboard (only simulated with headers), IPv6 clients, a LAN user reaching the dashboard through the public name. Known limits: a dashboard port
+  forwarded straight from the router (WEB_BIND=0.0.0.0) through Docker's userland proxy can lose the real address and look local, so never forward
+  the dashboard port directly, always go through a proxy; trusted proxies stay in `.env`; the docs with Nginx / Nginx Proxy Manager / Caddy examples
+  are not written yet.
 - **Apps/deployments API:** create/list/get apps, request deployment (row first, then queued), history, cancel. Settings
   snapshotted per deployment. `repo` is `owner/repo`; clone URL built server-side. `host_port` required for now.
 - **Deploy engine:** clone -> build -> candidate on temp port -> health check -> swap -> retire. Failures leave the running
@@ -383,13 +420,15 @@ Direction decided by the administrator and now written into SPEC.md (section 4 p
 GitHub, section 8 "Public exposure", section 20 Milestone 6): Shipdok does NOT ship or manage a tunnel (no `cloudflared`). One admin
 account only. No two-factor login; instead a strong password policy, progressive lockout, recent logins and recovery codes. The
 administrator provides a public address (own IP, or Nginx / Nginx Proxy Manager / Caddy, possibly behind a tunnel they run) and picks
-`SHIPDOK_PUBLIC=off|webhook|full` with `PUBLIC_URL`. Goal: `docker compose up`, log in, press "Connect GitHub", install the app, deploy
+the mode (`local` / `webhook` / `full`) and the public address in the DASHBOARD (Settings, Public access; stored in the DB, `SHIPDOK_PUBLIC` / `PUBLIC_URL` in `.env` override and show as locked). Goal: `docker compose up`, log in, press "Connect GitHub", install the app, deploy
 private repos. No periodic polling. Caddy is an optional, low-priority profile only.
 
-Build order (SPEC.md Milestone 6); steps 1 (password policy, lockout, recent logins, sign out everywhere) and 2 (recovery codes, host reset) are built, see above:
-3. Public address support: `SHIPDOK_PUBLIC`, `PUBLIC_URL`, trusted proxies and the real client address (the dashboard's nginx must keep an
-   address a trusted proxy supplies), `webhook` mode answering 404 except the webhook, docs with Nginx / Nginx Proxy Manager / Caddy.
-4. Connect GitHub (App Manifest flow, credentials encrypted in the DB, `.env` still overrides, Disconnect), using the public address.
+Build order (SPEC.md Milestone 6); steps 1 (password policy, lockout, recent logins, sign out everywhere), 2 (recovery codes, host reset) and 3 (public access) are built, see above:
+3. Public access is BUILT (see "Public access" under Built and verified); what remains of it is the docs with Nginx / Nginx Proxy Manager / Caddy
+   examples, which go with step 7.
+4. Connect GitHub (App Manifest flow, plus an "I already have a GitHub App" form for entering app ID, private key and webhook secret by hand),
+   using the public address. Credentials live ONLY in the dashboard, encrypted in the DB: `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE` and
+   `GITHUB_WEBHOOK_SECRET` stop being read from `.env` (no import: the administrator re-enters them once by hand), plus Disconnect.
 5. First-run secrets generated into a protected volume (`.env` still overrides).
 6. Ready-made multi-arch images (amd64 + ARM64) on GitHub's container registry via GitHub Actions; compose pulls instead of builds.
 7. Pi: full-stack run on the published images (ARM64, firewall vs the health-check path, `DOCKER_GID`), hardening, docs (public
