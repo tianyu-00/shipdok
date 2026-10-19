@@ -286,6 +286,60 @@ export async function removeImage(image) {
   }
 }
 
+// ---- Images: what retention needs. Everything here is scoped by the ownership labels written at build time. ----
+
+// null when the image does not exist.
+export async function imageInfo(image) {
+  try {
+    const i = await docker.getImage(image).inspect();
+    return { architecture: i.Architecture, size: Number(i.Size), labels: i.Config?.Labels ?? {} };
+  } catch (err) {
+    if (err.statusCode === 404) return null;
+    throw err;
+  }
+}
+
+export async function imageSize(image) {
+  return (await docker.getImage(image).inspect()).Size;
+}
+
+// Every tag of every image built for this app by Shipdok: [{ tag, deploymentId, size }]. Images with no tag are not listed.
+export async function listAppImages(appId) {
+  const images = await docker.listImages({
+    filters: { label: [`${LABEL.managed}=true`, `${LABEL.app}=${appId}`] },
+  });
+  const out = [];
+  for (const img of images) {
+    for (const tag of img.RepoTags ?? []) {
+      if (tag.startsWith('shipdok/')) out.push({ tag, deploymentId: img.Labels?.[LABEL.deployment] ?? null, size: Number(img.Size) });
+    }
+  }
+  return out;
+}
+
+// Total size of all image layers on the host, each layer counted once. The difference before and after a removal is the
+// space really freed (image sizes alone are misleading: versions of one app share their base layers).
+export async function imageLayersSize() {
+  return Number((await docker.df()).LayersSize);
+}
+
+// The image a container was created from, as the tag it was created with (null if Docker cannot tell).
+export async function containerImage(container) {
+  return (await container.inspect()).Config?.Image ?? null;
+}
+
+// Removes one image tag, without force. 'removed' | 'gone' (it was not there) | 'in-use' (a container still uses it).
+export async function removeImageStrict(image) {
+  try {
+    await docker.getImage(image).remove({ force: false });
+    return 'removed';
+  } catch (err) {
+    if (err.statusCode === 404) return 'gone';
+    if (err.statusCode === 409) return 'in-use';
+    throw err;
+  }
+}
+
 export async function imageArch(image) {
   return (await docker.getImage(image).inspect()).Architecture;
 }

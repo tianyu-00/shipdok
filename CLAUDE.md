@@ -27,11 +27,11 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 010_runtime_logs
-  src/           app.js, config.js, deployments.js (supersede/cancel), control.js (start/stop/restart requests), routes/ (auth, apps, env, webhooks, github, logs)
+  migrations/    001_init ... 012_image_retention
+  src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), routes/ (auth, apps, env, webhooks, github, logs)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
-  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), monitor.js, activity.js, buildlog.js (the log sink), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
+  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), monitor.js, activity.js, buildlog.js (the log sink), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
   worker.js      entry point; cli.js: manual deploy
 apps/web/        empty (dashboard not started)
 packages/shared/ @shipdok/shared: crypto (AES-256-GCM), .env parser, github.js (app JWT, installation tokens), logstore.js (log format, masking, safe read/delete), constants
@@ -59,7 +59,7 @@ docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up 
 Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
 socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked).
 
-Tests at last commit: API 310, worker 379, shared 163. Worker tests reuse the `_test` database the API tests create and
+Tests: API 399, worker 445, shared 173. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -154,47 +154,89 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   (the API deletes on request). Back it up like the database if you care about old logs. Checked for real: private repo build log
   (29 BuildKit steps), no `ghs_`/`x-access-token` on disk, a failing deployment whose log shows the app's own output, delete,
   a worker killed mid-build, and the orphan tidy-up. Not tested: a volume on a slow SD card; `close` vs `exit` for the last lines
-  of a command (correct by Node's docs, but this machine cannot show a loss). There is still no API to delete a deployment itself
-  (SQL by hand; the next worker boot then removes its logs).
+  of a command (correct by Node's docs, but this machine cannot show a loss). `DELETE /api/deployments/:id` (below) deletes the
+  deployment itself together with its log.
 - **Runtime logs (verified against real Docker in an isolated compose project):** the monitor hands every container it looks at to
-  the collector (`runtimelog.js`), which streams the app's own output into `<LOG_DIR>/<app-id>/<deployment-id>/runtime.log`.
-  **Administrator's rule: a runtime log resets on every restart and goes away with its deployment.** Whenever the container starts
-  again (manual start/restart, an automatic restart, a recovery; told apart by the container's `StartedAt`, kept in
-  `log_files.run_started_at`) the current log becomes `runtime.previous.log` (ONE earlier run is kept, replacing the older one: an
-  automatic crash restart happens within seconds, so without it the crash output would be wiped before anyone read it) and a fresh
-  `runtime.log` starts. An old version's runtime log stays while its deployment exists (the spec wants logs to outlive container
-  replacement). Lines carry Docker's own timestamps and stdout/stderr labels, secrets are masked with the app's current variable
-  values (if they cannot be read, nothing is collected for that app), 100 MB cap per file (`truncated`; a capped log is not
-  followed again), and new containers get Docker-side rotation (10 MB x 3). Resuming needs no extra state: the time of the last line
-  in the file says where to continue, so a worker restart or a dropped connection neither loses nor repeats lines. At a redeploy the
-  old container's rest is drained into its log before it is removed (`onRetire`, 10 s limit, best effort). A run that began and ended
-  between two looks (a crash loop does this) is collected whole when first seen, bounded at the moment it exited so a later run
-  cannot leak in. API: `GET /api/apps/:id/logs` (the newest successful deployment's runtime log; `?kind=previous` for the run before;
-  `?tail=`, `?offset=&limit=`), and `?kind=build|runtime|previous` on `GET /api/deployments/:id/logs`. Deleting a deployment's logs is
-  refused (409) while its app is running and its output is still being collected. Checked for real: output collected, redeploy drain,
-  restart rotation, secret masked (0 occurrences on disk), a worker restart with 65 lines collected, 0 gaps, 0 duplicates, a crash
-  loop (the crashed run readable as "previous"), delete after stop. Real Docker also found the gap behind the crash-loop fix above.
-  Not tested: a very chatty app on the Pi's SD card, ARM64, Docker versions that return older lines than asked for (the file is
+  the collector (`runtimelog.js`), which streams the app's own output into `<LOG_DIR>/<app-id>/runtime.log`.
+  **Administrator's rule: ONE runtime log per app (plus the run before it), reset on every restart or new deployment. Build logs are
+  the ones that exist per deployment.** Whenever a container starts again (manual start/restart, an automatic restart, a recovery,
+  or a new deployment, which is a new container; told apart by the container's id and `StartedAt`, kept in `runtime_logs`, migration
+  011) the current log becomes `runtime.previous.log` (ONE earlier run is kept, replacing the older one: an automatic crash restart
+  happens within seconds, so without it the crash output would be wiped before anyone read it) and a fresh `runtime.log` starts.
+  `runtime_logs` also records which deployment's container wrote each file. Nothing runtime is written inside a deployment's
+  directory any more; at worker boot `reconcileLogs` removes the per-deployment runtime files an earlier version left behind. Lines
+  carry Docker's own timestamps and stdout/stderr labels, secrets are masked with the app's current variable values (if they cannot
+  be read, nothing is collected for that app), 100 MB cap per file (`truncated`; a capped log is not followed again), and new
+  containers get Docker-side rotation (10 MB x 3). Resuming needs no extra state: the time of the last line in the file says where to
+  continue, so a worker restart or a dropped connection neither loses nor repeats lines. At a redeploy the old container's rest is
+  drained into the log before it is removed (`onRetire`, 10 s limit, best effort), and if that did not happen the old run is closed
+  before the new container's begins (never mixed). A run that began and ended between two looks (a crash loop does this) is collected
+  whole when first seen, bounded at the moment it exited so a later run cannot leak in. API: `GET /api/apps/:id/logs` (`?kind=previous`
+  for the run before; `?tail=`, `?offset=&limit=`; the answer names the `deploymentId` that wrote it), `DELETE /api/apps/:id/logs`
+  (both files; refused with 409 while the app's output is still being collected, so stop the app first). `GET
+  /api/deployments/:id/logs` serves build logs only (`?kind=runtime|previous` there is now a 400); deleting a deployment's logs never
+  touches the app's runtime logs. Checked for real: output collected, redeploy and rollback rotation (three container generations,
+  one `runtime.log` + one `runtime.previous.log` in the app directory), restart rotation, secret masked (0 occurrences on disk), a
+  worker restart with 65 lines collected, 0 gaps, 0 duplicates, a crash loop (the crashed run readable as "previous"), delete after
+  stop. Not tested: a very chatty app on the Pi's SD card, ARM64, Docker versions that return older lines than asked for (the file is
   protected against that anyway). Known limits: stopping or restarting takes as long as the app needs to shut down (a plain Node
   process ignoring SIGTERM costs Docker's 10 s grace), and lines inside the same millisecond as the last stored one can be lost on a
   resume.
+- **Image retention, rollback, deleting deployments, disk warning (verified against real Docker in an isolated compose project):**
+  **Administrator's rules: keep the live image plus the previous working one; prune only on request, with an opt-in auto-prune; pruning
+  never touches logs (logs go only when the administrator deletes them).** Per app: `keep_previous_images` (default 1, 0 to 10) and
+  `auto_prune` (default false), set when creating the app or with `PUT /api/apps/:id/retention`. "Live" is the newest successful
+  deployment; the kept versions are the newest distinct images (a rollback reuses an image, so two records can share one). `GET
+  /api/apps/:id/images` lists the successful versions with a state (live / previous / prunable / removed) and `canRollBackTo`, the
+  last clean-up (`cleanup` is also on the app), and `prunableBytes`. `POST /api/apps/:id/prune` queues a `prune` job: the worker (the
+  only thing that talks to Docker, one job at a time on the queue, so never during a swap) removes this app's labelled images
+  (`shipdok.managed` + `shipdok.app-id`, tag `shipdok/<slug>:<deployment id>`) that are not kept, not run by the live container, not
+  the image of an unfinished deployment and not the source of a waiting rollback, without force (an image a container still uses is
+  skipped and counted); it also removes leftovers of failed or cancelled builds, and records versions whose image was removed by hand.
+  The deployment records and their logs stay, marked `image_removed_at` ("cannot be rolled back to"). The summary (`app_cleanup`) says
+  how much was freed, measured as the drop in Docker's layer usage (image sizes alone are misleading: versions of an app share their
+  base layers; in the real run three 76 MB images freed 0.02 MB), or 0 if Docker cannot say. `prunableBytes` and `/api/storage`'s
+  `images` add up the recorded image sizes (`image_bytes`), so they are upper bounds. With `auto_prune` on, the same clean-up runs
+  after every successful deployment; a failure there never fails the deployment. `POST /api/apps/:id/rollback` (`{deploymentId?,
+  start?}`; default = the newest earlier version that still has an image) creates a new deployment (trigger `rollback`,
+  `rollback_of`, the old commit) that runs the existing image through the normal candidate, health check, swap, and restore path with
+  no clone and no build (`reuseImage`; the worker checks the tag is `shipdok/<this slug>:<uuid>` and the image's labels name this
+  app, and a reused image is NEVER deleted, not even when the deployment fails or is cancelled). It uses the app's CURRENT settings
+  and variables; only the image is old. A stopped app stays stopped unless `start: true`. `DELETE /api/deployments/:id` removes the
+  record, its build log and, through the worker (`removeimage` job), its image if nothing needs it. It is refused while the
+  deployment runs, while a queued rollback will use it, for the running version (the newest successful record), and for a kept
+  previous version nobody else holds. Disk: `POST /api/apps/:id/deployments` answers 409 `disk_critical` (under 10% free on the
+  volume the logs are on, normally the same disk as Docker's) unless the body has `ignoreDiskWarning: true` (the administrator
+  chooses to continue; the answer then carries a `warning` and the disk figures); under 20% free it deploys and adds a `warning`.
+  A webhook push cannot ask, so at critical it builds nothing and the delivery history says why (redeliver or deploy manually
+  after freeing space). Rollback, start, stop and restart are not held back. Compose fix found while testing: with no GitHub App
+  configured the stack used to crash on start because compose always passed the key path; it is now passed only when
+  `GITHUB_APP_ID` is set. Checked for real: rollback swapped a running container to an older image without building (one container
+  left, same port, answers with the old version), rolling back and forward, prune keeping live + previous and removing older
+  versions, a failed build's leftover, an image blocked by a stopped container (skipped and not marked removed), another app's
+  image untouched, a rollback to a pruned version refused, delete of running / kept / shared / old versions, the worker removing a
+  deleted version's image, auto-prune after a rollback, and a rollback to an image removed behind Shipdok's back (deployment fails
+  with a clear message, the running version untouched). Not tested: the disk warning on a really full disk (only simulated with a
+  fake measurement), a build that fills the disk, ARM64, a real push-triggered build after this change (the build step itself was
+  only re-indented; unit tests cover it). Known limits: the layer-usage measure also counts anything else Docker does during the
+  clean-up; dangling build cache is not cleaned (no per-app ownership; a separate "clean build cache" action is later work).
 - **Worker git ignores the admin's git config** (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`): a credential helper such as
   Git Credential Manager can otherwise open a window and hang a refused clone.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
 
-1. Image retention, rollback, disk cleanup.
-2. Dashboard (`apps/web`, React + Tailwind).
-3. Live CPU/memory usage and limits display (SPEC.md §12).
-4. Automatic host-port allocation and app deletion (currently SQL by hand: delete `deployments` rows first, `app_id` is
-   `ON DELETE RESTRICT`; remove containers and `shipdok/*` images yourself).
-5. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so
+1. Dashboard (`apps/web`, React + Tailwind).
+2. Live CPU/memory usage and limits display (SPEC.md §12).
+3. Automatic host-port allocation and app deletion (currently SQL by hand: delete `deployments` rows first, `app_id` is
+   `ON DELETE RESTRICT`; remove containers and `shipdok/*` images yourself; with the new `DELETE /api/deployments/:id` the rows and
+   images can go through the API first).
+4. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so
    other people hosting Shipdok do not fill in the form by hand. Read SPEC.md Milestone 3 first.
-6. Compose follow-ups: add `web` once the dashboard exists (decide: serve it same-origin and proxy `/api`, or cross-origin with
+5. Compose follow-ups: add `web` once the dashboard exists (decide: serve it same-origin and proxy `/api`, or cross-origin with
    CORS and cookie settings); add `cloudflared` to compose (point it at `http://api:4000`, no host networking needed).
-7. Pi: full-stack run in compose (ARM64 builds, firewall vs the health-check path, `DOCKER_GID`), run the tunnel as a service until
+6. Pi: full-stack run in compose (ARM64 builds, firewall vs the health-check path, `DOCKER_GID`), run the tunnel as a service until
    then, hardening, docs (setup options: tunnel, reverse proxy, or manual deploys only), API docs (Scalar).
 
-Known gaps: no API to delete a deployment (logs are tidied at the next worker boot); no audit/rate limit on `reveal`; old `shipdok/*` images pile up; build-time env vars; Railpack; DB backup docs.
+Known gaps: no audit/rate limit on `reveal`; old `shipdok/*` images pile up until the administrator prunes (or turns on `auto_prune`); no "clean build cache" action; no way to edit an app's other settings yet (only retention); build-time env vars; Railpack; DB backup docs.
 The portfolio backend (`tianyu-00/TianYuSiteV2`, `backend/`, port 9090) is not yet deployed through the platform.

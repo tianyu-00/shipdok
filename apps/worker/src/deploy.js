@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { assertRelativeDir, resolveBuildDir } from './paths.js';
 import * as realEngine from './docker.js';
+import { LABEL } from '@shipdok/shared';
 import { checkoutSource, gitEnvironment } from './git.js';
 
 /**
@@ -22,6 +23,7 @@ import { checkoutSource, gitEnvironment } from './git.js';
  * @param {string} [opts.slug]          readable name for image tags and container names
  * @param {string} [opts.ref='main']
  * @param {string} [opts.commit]       exact commit to build (a webhook push). Without it, the branch head at clone time.
+ * @param {string} [opts.reuseImage]   a rollback: an existing image of this app to run instead of cloning and building. It is never deleted by this function.
  * @param {string} [opts.dir='.']       app root inside the repo
  * @param {string} [opts.health]        HTTP health path, e.g. /health
  * @param {number} [opts.memoryMb=512]
@@ -39,12 +41,13 @@ import { checkoutSource, gitEnvironment } from './git.js';
  * @param {(status: 'starting'|'validating') => void} [opts.onStatus]  progress hook
  * @param {(sha: string) => void} [opts.onCommit]                      resolved commit hook
  * @param {object} [eng]                the Docker/process engine; tests pass a fake
- * @returns {Promise<{ok: true, deploymentId: string, image: string, started: boolean}
+ * @returns {Promise<{ok: true, deploymentId: string, image: string, imageBytes: number|null, started: boolean}
  *   | {ok: false, stopped: true, outcome?: string, by?: string, deploymentId: string, image: string}
  *   | {ok: false, error: string, deploymentId: string, image: string}>}
  */
 // SHA-1, or SHA-256 for repositories that use it. Strict: this value ends up in a git command.
 const COMMIT_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+const REUSE_TAG_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function deploy(opts, eng = realEngine) {
   const o = { ref: 'main', dir: '.', memoryMb: 512, cpus: 1, env: [], ...opts };
@@ -52,7 +55,8 @@ export async function deploy(opts, eng = realEngine) {
   const notify = (fn, ...args) => { try { fn?.(...args); } catch { /* hooks must never break a deploy */ } };
   const deploymentId = o.deploymentId ?? randomBytes(4).toString('hex');
   const name = o.slug ?? o.appId;
-  const image = `shipdok/${name}:${deploymentId}`;
+  const reused = o.reuseImage != null; // a rollback: the image already exists and belongs to an earlier deployment
+  const image = reused ? o.reuseImage : `shipdok/${name}:${deploymentId}`;
   const healthOpts = { containerPort: o.containerPort, health: o.health };
   const { signal } = o;
   const stopIfAborted = () => { if (signal?.aborted) throw eng.abortError(); };
@@ -113,6 +117,12 @@ export async function deploy(opts, eng = realEngine) {
     return { ok: false, deploymentId, image, error: 'Invalid commit id' };
   }
 
+  // A reused image must be one of THIS app's own (shipdok/<slug>:<deployment id>): refuse anything else before side effects.
+  if (reused && !(typeof image === 'string' && image.startsWith(`shipdok/${name}:`) && REUSE_TAG_RE.test(image.slice(`shipdok/${name}:`.length)))) {
+    log('Deployment FAILED: Invalid image reference');
+    return { ok: false, deploymentId, image, error: 'Invalid image reference' };
+  }
+
   const workDir = await mkdtemp(join(tmpdir(), 'shipdok-'));
   const previous = await eng.findContainers({ appId: o.appId, role: 'live' });
   let candidate;
@@ -121,23 +131,31 @@ export async function deploy(opts, eng = realEngine) {
   let startAfterSwap = true; // false for an app the administrator has stopped
 
   try {
-    const head = await checkoutSource(eng, {
-      workDir, repo: o.repo, ref: o.ref, commit: o.commit, env: gitEnvironment(o.gitEnv), signal, sink: o.logSink, log,
-    });
-    notify(o.onCommit, head);
-    // Resolve symlinks AFTER cloning: the API validates the string, but only the real path is trustworthy.
-    const buildDir = await resolveBuildDir(workDir, o.dir);
+    if (reused) {
+      // A rollback: no clone, no build. The image must still exist and must be this app's own.
+      log(`Reusing image ${image} (no rebuild)`);
+      const info = await eng.imageInfo(image);
+      if (!info) throw new Error('The image of that version no longer exists (it was removed to free space), so it cannot be rolled back to');
+      if (info.labels?.[LABEL.managed] !== 'true' || info.labels?.[LABEL.app] !== o.appId) throw new Error('That image does not belong to this app');
+    } else {
+      const head = await checkoutSource(eng, {
+        workDir, repo: o.repo, ref: o.ref, commit: o.commit, env: gitEnvironment(o.gitEnv), signal, sink: o.logSink, log,
+      });
+      notify(o.onCommit, head);
+      // Resolve symlinks AFTER cloning: the API validates the string, but only the real path is trustworthy.
+      const buildDir = await resolveBuildDir(workDir, o.dir);
 
-    log(`Building ${image}`);
-    await eng.run('docker', [
-      'build', '--progress=plain', '-t', image, // plain: readable in a file, no terminal redrawing
-      '--label', 'shipdok.managed=true',
-      '--label', `shipdok.app-id=${o.appId}`,
-      '--label', `shipdok.deployment-id=${deploymentId}`,
-      buildDir,
-    ], { env: { ...process.env, DOCKER_BUILDKIT: '1' }, signal, sink: o.logSink });
-
+      log(`Building ${image}`);
+      await eng.run('docker', [
+        'build', '--progress=plain', '-t', image, // plain: readable in a file, no terminal redrawing
+        '--label', 'shipdok.managed=true',
+        '--label', `shipdok.app-id=${o.appId}`,
+        '--label', `shipdok.deployment-id=${deploymentId}`,
+        buildDir,
+      ], { env: { ...process.env, DOCKER_BUILDKIT: '1' }, signal, sink: o.logSink });
+    }
     log(`Image arch: ${await eng.imageArch(image)}, host: ${await eng.hostArchitecture()}`);
+    const imageBytes = await eng.imageSize(image).then(Number, () => null); // for the clean-up summary; never worth failing a deployment
     stopIfAborted();
 
     log('Starting candidate on a temporary port');
@@ -156,7 +174,7 @@ export async function deploy(opts, eng = realEngine) {
       startAfterSwap = gate?.start !== false;
       if (gate && gate.proceed === false) {
         log(`Stopping before the swap (${gate.outcome ?? 'stopped'}); the running version is untouched`);
-        await eng.removeImage(image); // built for nothing: nothing will ever run it
+        if (!reused) await eng.removeImage(image); // built for nothing: nothing will ever run it (a reused image belongs to an earlier version)
         return { ok: false, stopped: true, outcome: gate.outcome, by: gate.by, deploymentId, image };
       }
     } else {
@@ -190,14 +208,14 @@ export async function deploy(opts, eng = realEngine) {
       await eng.removeQuietly(old);
     }
     log(`Deployed ${name} (${deploymentId}) on :${o.hostPort}${startAfterSwap ? '' : ' (not started: the app is stopped)'}`);
-    return { ok: true, deploymentId, image, started: startAfterSwap };
+    return { ok: true, deploymentId, image, imageBytes, started: startAfterSwap };
   } catch (err) {
     if (!committed && signal?.aborted) {
       log('Deployment stopped on request; the running version is untouched');
       // The candidate must go FIRST: Docker will not delete an image while any container still uses it,
       // and removeImage deliberately ignores that failure. (The finally block would be too late.)
       if (candidate) { await eng.removeQuietly(candidate); candidate = null; }
-      await eng.removeImage(image);
+      if (!reused) await eng.removeImage(image);
       return { ok: false, stopped: true, deploymentId, image };
     }
     log(`Deployment FAILED: ${err.message}`);

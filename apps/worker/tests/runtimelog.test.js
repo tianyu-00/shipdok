@@ -2,12 +2,12 @@
 // and survives restarts of the app, of the connection, and of the worker itself.
 import { test, describe, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as store from '../src/db.js';
 import { createCollector } from '../src/runtimelog.js';
-import { logFilePath } from '@shipdok/shared';
+import { runtimeLogPath } from '@shipdok/shared';
 import { pool, ready, reset, makeApp, makeDeployment } from './helpers.js';
 import { fakeEngine } from './fake-engine.js';
 
@@ -29,10 +29,10 @@ const setup = async (over = {}) => {
   const container = (await eng.findContainers({}))[0];
   container.id = `c-${deploymentId}`;
   const sync = () => collector.sync({ id: appId }, container, { ...eng.facts });
-  const file = (kind = 'runtime') => logFilePath(root, appId, deploymentId, kind);
+  const file = (kind = 'runtime') => runtimeLogPath(root, appId, kind);
   const text = (kind = 'runtime') => readFileSync(file(kind), 'utf8');
   const messages = (kind = 'runtime') => text(kind).trimEnd().split('\n').map((l) => l.split(' ').slice(2).join(' '));
-  const row = (kind = 'runtime') => store.getLogFile(deploymentId, kind);
+  const row = (kind = 'runtime') => store.getRuntimeLog(appId, kind);
   const settle = () => new Promise((r) => setTimeout(r, 25)); // let stream events and file writes land
   return { appId, deploymentId, eng, collector, container, sync, file, text, messages, row, settle };
 };
@@ -526,5 +526,106 @@ describe('shutting down', () => {
     const r = await t.row();
     assert.notEqual(r.endedAt, null);
     assert.equal(r.bytes, Buffer.byteLength(t.text()));
+  });
+});
+
+// One runtime log per APP: a new deployment is a new container, and it resets the log exactly like a restart does.
+describe('a new deployment of the same app (a new container)', () => {
+  const redeploy = async (t) => {
+    const deploymentId = await makeDeployment(t.appId);
+    const container = { ...t.container, id: `c-${deploymentId}`, name: 'live-2' };
+    return { deploymentId, container, facts: { ...t.eng.facts, deploymentId, startedAt: at(20) } };
+  };
+
+  test('the old output becomes the previous log, the new container starts a fresh one, in the SAME app-level files', async () => {
+    const t = await setup();
+    t.eng.say('stdout', 'v1 serving', at(1));
+    await t.sync(); await t.settle();
+    t.eng.dropFollowers();
+    t.eng.say('stdout', 'v1 last words', at(15));
+    await t.collector.drain(t.container, { appId: t.appId }); // the redeploy reads the rest before removing the old container
+    const next = await redeploy(t);
+    t.eng.say('stdout', 'v2 serving', at(21));
+    await t.collector.sync({ id: t.appId }, next.container, next.facts);
+    await t.settle(); await t.collector.stopAll();
+    assert.deepEqual(t.messages('runtime_previous'), ['v1 serving', 'v1 last words']);
+    assert.deepEqual(t.messages('runtime'), ['v2 serving']);
+    assert.deepEqual(readdirSync(join(root, t.appId)).sort(), ['runtime.log', 'runtime.previous.log']);
+  });
+
+  test('nothing is ever written inside a deployment\'s own directory', async () => {
+    const t = await setup();
+    t.eng.say('stdout', 'output', at(1));
+    await t.sync(); await t.settle(); await t.collector.stopAll();
+    assert.ok(!existsSync(join(root, t.appId, t.deploymentId)));
+  });
+
+  test('the records say which deployment wrote each log', async () => {
+    const t = await setup();
+    t.eng.say('stdout', 'v1', at(1));
+    await t.sync(); await t.settle();
+    t.eng.dropFollowers();
+    await t.collector.drain(t.container, { appId: t.appId });
+    const next = await redeploy(t);
+    t.eng.say('stdout', 'v2', at(21));
+    await t.collector.sync({ id: t.appId }, next.container, next.facts);
+    await t.settle(); await t.collector.stopAll();
+    assert.equal((await t.row()).deploymentId, next.deploymentId);
+    assert.equal((await t.row('runtime_previous')).deploymentId, t.deploymentId);
+  });
+
+  test('if the old run was never drained, it is closed first and the new log still starts clean (no mixing)', async () => {
+    const t = await setup();
+    t.eng.say('stdout', 'old run output', at(1));
+    await t.sync(); await t.settle();
+    const next = await redeploy(t);
+    await t.collector.sync({ id: t.appId }, next.container, next.facts);
+    t.eng.say('stdout', 'new run output', at(21));
+    await t.settle(); await t.collector.stopAll();
+    assert.deepEqual(t.messages('runtime_previous'), ['old run output']);
+    assert.deepEqual(t.messages('runtime'), ['new run output']);
+  });
+
+  test('the worker restarted around a redeploy: a record of another container is not read from the new one', async () => {
+    const t = await setup();
+    t.eng.say('stdout', 'old container, seen', at(1));
+    await t.sync(); await t.settle(); await t.collector.stopAll();
+    t.eng.dropFollowers();
+    const next = await redeploy(t);
+    t.eng.say('stdout', 'new container', at(21));
+    const second = createCollector({ root, db: store, eng: t.eng, loadSecrets: async () => [], log: () => {} });
+    await second.sync({ id: t.appId }, next.container, next.facts);
+    await t.settle(); await second.stopAll();
+    assert.deepEqual(t.messages('runtime_previous'), ['old container, seen']);
+    assert.deepEqual(t.messages('runtime'), ['new container']);
+    assert.ok(!t.eng.events.includes('fetch live-2'), 'nothing was fetched to "catch up" the old run from the new container');
+  });
+
+  test('a new container is a new run even if its start time equals the old one\'s', async () => {
+    const t = await setup();
+    t.eng.say('stdout', 'old container', at(1));
+    await t.sync(); await t.settle();
+    t.eng.dropFollowers();
+    await t.collector.drain(t.container, { appId: t.appId });
+    const next = await redeploy(t);
+    t.eng.say('stdout', 'new container', at(2));
+    await t.collector.sync({ id: t.appId }, next.container, { ...next.facts, startedAt: at(0) });
+    await t.settle(); await t.collector.stopAll();
+    // (the fake engine keeps one shared list of lines, so the new container is also served the old line; what matters is the rotation)
+    assert.deepEqual(t.messages('runtime_previous'), ['old container']);
+    assert.ok(t.messages('runtime').includes('new container'));
+    assert.equal((await t.row()).containerId, next.container.id);
+  });
+
+  test('two apps never share a log', async () => {
+    const a = await setup();
+    const b = await setup();
+    a.eng.say('stdout', 'from A', at(1));
+    b.eng.say('stdout', 'from B', at(1));
+    await a.sync(); await b.sync(); await a.settle();
+    await a.collector.stopAll(); await b.collector.stopAll();
+    assert.deepEqual(a.messages(), ['from A']);
+    assert.deepEqual(b.messages(), ['from B']);
+    assert.notEqual(a.file(), b.file());
   });
 });

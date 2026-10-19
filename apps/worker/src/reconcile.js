@@ -7,21 +7,27 @@ import { join } from "node:path";
 import { docker, LABEL, removeQuietly } from "./docker.js";
 import * as store from "./db.js";
 import { interruptActive } from "./db.js";
-import { logRoot, logFilePath, logDirFor, removeDeploymentLogs, LOG_FILE_NAMES } from "@shipdok/shared";
+import { logRoot, logFilePath, runtimeLogPath, logDirFor, removeDeploymentLogs, LOG_FILE_NAMES, RUNTIME_FILE_NAMES } from "@shipdok/shared";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const OUR_FILES = new Set(LOG_FILE_NAMES);
 
 // Tidies the log directory at boot. (1) Logs a dead worker never closed (any kind) get their real size. (2) The logs of
-// deployments that no longer exist are removed: a deployment's logs live exactly as long as the deployment does.
+// deployments that no longer exist are removed: a deployment's build log lives exactly as long as the deployment does.
+// (3) Runtime logs an older version kept inside each deployment's directory are removed: they now live per app.
 // It only ever touches UUID-named directories that contain nothing but our own log files.
 export async function reconcileLogs(root, { db = store, log = console.log } = {}) {
-  const report = { logsClosed: 0, orphansRemoved: 0 };
+  const report = { logsClosed: 0, orphansRemoved: 0, legacyRuntimeLogsRemoved: 0 };
 
   for (const { deploymentId, appId, kind } of await db.listOpenLogs()) {
     let bytes = 0;
-    try { bytes = (await stat(logFilePath(root, appId, deploymentId, kind))).size; } catch { /* never written */ }
-    await db.closeLogFile(deploymentId, kind, { bytes }); // the recorded "cut short" flag stays
+    if (kind === 'build') {
+      try { bytes = (await stat(logFilePath(root, appId, deploymentId, kind))).size; } catch { /* never written */ }
+      await db.closeLogFile(deploymentId, kind, { bytes }); // the recorded "cut short" flag stays
+    } else {
+      try { bytes = (await stat(runtimeLogPath(root, appId, kind))).size; } catch { /* never written */ }
+      await db.closeRuntimeLogKind(appId, kind, { bytes });
+    }
     report.logsClosed++;
   }
 
@@ -32,6 +38,15 @@ export async function reconcileLogs(root, { db = store, log = console.log } = {}
     let deployments = [];
     try { deployments = await readdir(join(root, appId)); } catch { continue; }
     for (const deploymentId of deployments.filter((n) => UUID_RE.test(n))) found.push({ appId, deploymentId });
+  }
+  for (const { appId, deploymentId } of found) {
+    for (const name of RUNTIME_FILE_NAMES) {
+      const file = join(logDirFor(root, appId, deploymentId), name);
+      if (await stat(file).then(() => true, () => false)) {
+        await rm(file, { force: true });
+        report.legacyRuntimeLogsRemoved++;
+      }
+    }
   }
   const alive = await db.existingDeploymentIds(found.map((f) => f.deploymentId));
   for (const { appId, deploymentId } of found) {

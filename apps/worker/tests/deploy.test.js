@@ -413,3 +413,117 @@ describe('saving the old version\'s output before it is removed', () => {
     assert.equal((await run({}, eng)).ok, true);
   });
 });
+
+describe('a rollback: running an image that already exists', () => {
+  const OLD_ID = '11111111-1111-4111-8111-111111111111';
+  const OLD_IMAGE = `shipdok/my-app:${OLD_ID}`;
+  const eng0 = (cfg = {}) => fakeEngine({ appId: 'app-1', ...cfg });
+
+  test('does not clone or build: the steps are candidate, health, swap, and the old container is retired', async () => {
+    const eng = eng0({ previous: ['old'] });
+    const r = await run({ reuseImage: OLD_IMAGE }, eng);
+    assert.equal(r.ok, true);
+    assert.equal(r.image, OLD_IMAGE);
+    assert.ok(!eng.events.some((e) => e.startsWith('run ')), 'no git, no docker build');
+    assert.deepEqual(eng.events.filter((e) => !e.startsWith('inspect-image')), [
+      'create shipdok-my-app-dep-1-candidate port=temp', 'start shipdok-my-app-dep-1-candidate',
+      'health shipdok-my-app-dep-1-candidate', 'remove shipdok-my-app-dep-1-candidate',
+      'stop old',
+      'create shipdok-my-app-dep-1-live port=8080', 'start shipdok-my-app-dep-1-live',
+      'health shipdok-my-app-dep-1-live', 'remove old',
+    ]);
+  });
+
+  test('the containers are made from the reused image', async () => {
+    const eng = eng0();
+    const made = [];
+    const create = eng.createContainer;
+    eng.createContainer = async (o) => { made.push(o.image); return create(o); };
+    await run({ reuseImage: OLD_IMAGE }, eng);
+    assert.deepEqual([...new Set(made)], [OLD_IMAGE]);
+  });
+
+  test('reports the image size, for a normal build as well', async () => {
+    assert.equal((await run({ reuseImage: OLD_IMAGE }, eng0({ imageSize: 4242 }))).imageBytes, 4242);
+    assert.equal((await run({}, eng0({ imageSize: 777 }))).imageBytes, 777);
+  });
+
+  test('an image size that cannot be read never fails the deployment', async () => {
+    const eng = eng0();
+    eng.imageSize = async () => { throw new Error('no such image'); };
+    const r = await run({}, eng);
+    assert.equal(r.ok, true);
+    assert.equal(r.imageBytes, null);
+  });
+
+  test('NEVER deletes the reused image, whichever way the deployment ends', async () => {
+    const outcomes = {
+      'candidate unhealthy': eng0({ previous: ['old'], health: { candidate: async () => { throw new Error('not healthy'); } } }),
+      'gate refuses': (() => { return eng0({ previous: ['old'] }); })(),
+      'swap fails': eng0({ previous: ['old'], health: { live: async () => { throw new Error('live unhealthy'); } } }),
+      'success': eng0({ previous: ['old'] }),
+    };
+    for (const [label, eng] of Object.entries(outcomes)) {
+      await run({ reuseImage: OLD_IMAGE, beforeSwap: label === 'gate refuses' ? async () => ({ proceed: false, outcome: 'cancelled' }) : undefined }, eng);
+      assert.ok(!eng.events.some((e) => e.startsWith('rmi')), `${label}: the image must stay`);
+    }
+  });
+
+  test('a stop on request before the swap keeps the reused image too', async () => {
+    const controller = new AbortController();
+    const eng = eng0({ previous: ['old'], health: { candidate: async () => { controller.abort(); throw abortError(); } } });
+    const r = await run({ reuseImage: OLD_IMAGE, signal: controller.signal }, eng);
+    assert.equal(r.stopped, true);
+    assert.ok(!eng.events.some((e) => e.startsWith('rmi')));
+    assert.ok(!eng.events.includes('stop old'), 'the old container is untouched');
+  });
+
+  test('for contrast: a normal build that is stopped DOES delete its own image', async () => {
+    const eng = eng0({ previous: ['old'] });
+    const r = await run({ beforeSwap: async () => ({ proceed: false, outcome: 'cancelled' }) }, eng);
+    assert.equal(r.stopped, true);
+    assert.ok(eng.events.includes(`rmi ${IMAGE}`));
+  });
+
+  test('an image that no longer exists is a clear failure and nothing is touched', async () => {
+    const eng = eng0({ previous: ['old'], images: {} });
+    const r = await run({ reuseImage: OLD_IMAGE }, eng);
+    assert.equal(r.ok, false);
+    assert.match(r.error, /no longer exists/i);
+    assert.ok(!eng.events.some((e) => e.startsWith('create') || e.startsWith('stop') || e.startsWith('run ')));
+  });
+
+  test('an image that belongs to another app is refused', async () => {
+    const eng = eng0({ images: { [OLD_IMAGE]: { labels: { 'shipdok.managed': 'true', 'shipdok.app-id': 'some-other-app' } } } });
+    const r = await run({ reuseImage: OLD_IMAGE }, eng);
+    assert.equal(r.ok, false);
+    assert.match(r.error, /does not belong/i);
+    assert.ok(!eng.events.some((e) => e.startsWith('create')));
+  });
+
+  test('an image Shipdok did not build is refused', async () => {
+    const eng = eng0({ images: { [OLD_IMAGE]: { labels: { 'shipdok.app-id': 'app-1' } } } });
+    const r = await run({ reuseImage: OLD_IMAGE }, eng);
+    assert.equal(r.ok, false);
+    assert.ok(!eng.events.some((e) => e.startsWith('create')));
+  });
+
+  for (const [label, image] of [
+    ['another app\'s image', `shipdok/other-app:${OLD_ID}`],
+    ['another app\'s image whose name is just as long', `shipdok/my-bpp:${OLD_ID}`],
+    ['a registry image', 'nginx:latest'],
+    ['an image with a path escape', `shipdok/my-app/../x:${OLD_ID}`],
+    ['no deployment id', 'shipdok/my-app:latest'],
+    ['an option-looking value', `--privileged`],
+    ['an empty value', ''],
+    ['a tag with extra text', `shipdok/my-app:${OLD_ID} --rm`],
+  ]) {
+    test(`refuses ${label} before any side effect`, async () => {
+      const eng = eng0({ previous: ['old'] });
+      const r = await run({ reuseImage: image }, eng);
+      assert.equal(r.ok, false);
+      assert.match(r.error, /invalid image/i);
+      assert.deepEqual(eng.events, []);
+    });
+  }
+});

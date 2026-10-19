@@ -51,16 +51,16 @@ export async function newerSuccess(id) {
 
 // Success. If a cancel request arrived too late (the swap had begun) say so, and clear the flag:
 // the deployment really did go live, so it must not look like it ended any other way.
-export const markSucceeded = (id, image) =>
+export const markSucceeded = (id, image, imageBytes = null) =>
   pool.query(
     `UPDATE deployments
-        SET status = 'successful', image_ref = $2, finished_at = now(),
+        SET status = 'successful', image_ref = $2, image_bytes = $3, finished_at = now(),
             error_summary = CASE cancel_status
               WHEN 'cancelled'  THEN 'A cancel was requested too late: the swap had already begun'
               WHEN 'superseded' THEN 'Superseded too late: the swap had already begun'
               ELSE error_summary END,
             cancel_status = NULL
-      WHERE id = $1 AND status IN ${ACTIVE}`, [id, image]);
+      WHERE id = $1 AND status IN ${ACTIVE}`, [id, image, imageBytes]);
 
 export const markFailed = (id, error) =>
   pool.query(
@@ -95,7 +95,7 @@ export async function interruptActive() {
 // ---- Apps: what the control actions need ----
 export async function getApp(appId) {
   const { rows } = await pool.query(
-    'SELECT id, slug, container_port, health_path, desired_state FROM apps WHERE id = $1', [appId]);
+    'SELECT id, slug, container_port, health_path, desired_state, keep_previous_images, auto_prune FROM apps WHERE id = $1', [appId]);
   return rows[0] ?? null;
 }
 
@@ -208,45 +208,100 @@ export async function existingDeploymentIds(ids) {
   return new Set(rows.map((r) => r.id));
 }
 
-// ---- Runtime logs: one 'runtime' file per deployment for the CURRENT run of its container, and one 'runtime_previous'
-// for the run before ----
+// ---- Runtime logs: per APP, one 'runtime' file for the CURRENT run of its container and one 'runtime_previous' for the
+// run before. A new deployment starts a new container, so it resets the log like any restart. ----
 
 // null if there is no such log yet. runStartedAt is the container's StartedAt (ms): a different value means a restart.
-export async function getLogFile(deploymentId, kind) {
+export async function getRuntimeLog(appId, kind) {
   const { rows } = await pool.query(
-    'SELECT run_started_at, ended_at, bytes, truncated FROM log_files WHERE deployment_id = $1 AND kind = $2', [deploymentId, kind]);
+    'SELECT deployment_id, container_id, run_started_at, ended_at, bytes, truncated FROM runtime_logs WHERE app_id = $1 AND kind = $2', [appId, kind]);
   if (!rows[0]) return null;
   const r = rows[0];
   return {
+    deploymentId: r.deployment_id, containerId: r.container_id,
     runStartedAt: r.run_started_at === null ? null : new Date(r.run_started_at).getTime(),
     endedAt: r.ended_at, bytes: Number(r.bytes), truncated: r.truncated,
   };
 }
 
 // A new run of the container begins: a fresh runtime log record.
-export const openRuntimeLog = (appId, deploymentId, startedAtMs) =>
+export const openRuntimeLog = (appId, { deploymentId, containerId, startedAtMs }) =>
   pool.query(
-    `INSERT INTO log_files (deployment_id, app_id, kind, run_started_at) VALUES ($1, $2, 'runtime', to_timestamp($3::double precision / 1000.0))
-     ON CONFLICT (deployment_id, kind) DO UPDATE
-       SET bytes = 0, truncated = false, started_at = now(), ended_at = NULL, run_started_at = to_timestamp($3::double precision / 1000.0)`,
-    [deploymentId, appId, startedAtMs]);
+    `INSERT INTO runtime_logs (app_id, kind, deployment_id, container_id, run_started_at)
+     VALUES ($1, 'runtime', $2, $3, to_timestamp($4::double precision / 1000.0))
+     ON CONFLICT (app_id, kind) DO UPDATE
+       SET deployment_id = $2, container_id = $3, bytes = 0, truncated = false, started_at = now(), ended_at = NULL,
+           run_started_at = to_timestamp($4::double precision / 1000.0)`,
+    [appId, deploymentId, containerId, startedAtMs]);
 
 // The same run is being collected again (the worker restarted, or the log stream dropped).
-export const reopenLog = (deploymentId, kind) =>
-  pool.query('UPDATE log_files SET ended_at = NULL WHERE deployment_id = $1 AND kind = $2', [deploymentId, kind]);
+export const reopenRuntimeLog = (appId) =>
+  pool.query(`UPDATE runtime_logs SET ended_at = NULL WHERE app_id = $1 AND kind = 'runtime'`, [appId]);
 
 // The run that just ended becomes "the previous run" (replacing any older one).
-export const recordPreviousLog = (appId, deploymentId, { bytes, truncated }) =>
+export const recordPreviousLog = (appId, { deploymentId, bytes, truncated }) =>
   pool.query(
-    `INSERT INTO log_files (deployment_id, app_id, kind, bytes, truncated, ended_at) VALUES ($1, $2, 'runtime_previous', $3, $4, now())
-     ON CONFLICT (deployment_id, kind) DO UPDATE SET bytes = $3, truncated = $4, started_at = now(), ended_at = now()`,
-    [deploymentId, appId, bytes, truncated]);
+    `INSERT INTO runtime_logs (app_id, kind, deployment_id, bytes, truncated, ended_at) VALUES ($1, 'runtime_previous', $2, $3, $4, now())
+     ON CONFLICT (app_id, kind) DO UPDATE SET deployment_id = $2, bytes = $3, truncated = $4, started_at = now(), ended_at = now()`,
+    [appId, deploymentId, bytes, truncated]);
 
-export const updateLogBytes = (deploymentId, kind, { bytes, truncated }) =>
-  pool.query('UPDATE log_files SET bytes = $3, truncated = $4 WHERE deployment_id = $1 AND kind = $2', [deploymentId, kind, bytes, truncated]);
+export const updateRuntimeLogBytes = (appId, { bytes, truncated }) =>
+  pool.query(`UPDATE runtime_logs SET bytes = $2, truncated = $3 WHERE app_id = $1 AND kind = 'runtime'`, [appId, bytes, truncated]);
 
-// Logs still marked as being written (any kind). At worker boot nothing is being written.
+export const closeRuntimeLog = (appId, { bytes, truncated }) =>
+  pool.query(
+    `UPDATE runtime_logs SET bytes = $2, truncated = COALESCE($3::boolean, truncated), ended_at = now() WHERE app_id = $1 AND kind = 'runtime'`,
+    [appId, bytes, truncated ?? null]);
+
+// Logs still marked as being written. At worker boot nothing is being written.
 export async function listOpenLogs() {
-  const { rows } = await pool.query('SELECT deployment_id, app_id, kind FROM log_files WHERE ended_at IS NULL');
+  const { rows } = await pool.query(
+    `SELECT deployment_id, app_id, 'build' AS kind FROM log_files WHERE ended_at IS NULL
+     UNION ALL
+     SELECT NULL, app_id, kind FROM runtime_logs WHERE ended_at IS NULL`);
   return rows.map((r) => ({ deploymentId: r.deployment_id, appId: r.app_id, kind: r.kind }));
 }
+
+// Closes an unfinished runtime log (any kind) at boot with its real size, keeping the recorded "cut short" flag.
+export const closeRuntimeLogKind = (appId, kind, { bytes }) =>
+  pool.query('UPDATE runtime_logs SET bytes = $3, ended_at = now() WHERE app_id = $1 AND kind = $2', [appId, kind, bytes]);
+
+// ---- Image retention ----
+
+// Successful deployments that still have an image, newest first. The first distinct image is the live version.
+export async function listVersions(appId) {
+  const { rows } = await pool.query(
+    `SELECT id, image_ref, image_bytes FROM deployments
+      WHERE app_id = $1 AND status = 'successful' AND image_ref IS NOT NULL AND image_removed_at IS NULL
+      ORDER BY seq DESC`, [appId]);
+  return rows.map((r) => ({ id: r.id, imageRef: r.image_ref, bytes: r.image_bytes === null ? null : Number(r.image_bytes) }));
+}
+
+// What a deployment that has not finished still needs: its own id (its image is being built) and, for a rollback
+// that is waiting its turn, the image it is going to reuse.
+export async function activeProtections(appId) {
+  const { rows } = await pool.query(
+    `SELECT d.id, src.image_ref AS reuse_image
+       FROM deployments d LEFT JOIN deployments src ON src.id = d.rollback_of
+      WHERE d.app_id = $1 AND d.status IN ${ACTIVE}`, [appId]);
+  return {
+    deploymentIds: new Set(rows.map((r) => r.id)),
+    images: new Set(rows.map((r) => r.reuse_image).filter(Boolean)),
+  };
+}
+
+// These images are gone: their deployments stay in the history, but can no longer be rolled back to.
+export const markImagesRemoved = (appId, images) =>
+  images.length
+    ? pool.query(
+        `UPDATE deployments SET image_removed_at = now()
+          WHERE app_id = $1 AND image_ref = ANY($2::text[]) AND image_removed_at IS NULL`, [appId, images])
+    : Promise.resolve();
+
+export const recordCleanup = (appId, { trigger, removed, freedBytes, skipped, error = null }) =>
+  pool.query(
+    `INSERT INTO app_cleanup (app_id, trigger, images_removed, freed_bytes, skipped, error)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (app_id) DO UPDATE
+       SET last_run_at = now(), trigger = $2, images_removed = $3, freed_bytes = $4, skipped = $5, error = $6`,
+    [appId, trigger, removed, freedBytes, skipped, error]);

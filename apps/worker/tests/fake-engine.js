@@ -116,6 +116,14 @@ export function fakeEngine(cfg = {}) {
     },
     dropFollowers() { for (const f of engine.followers) f.push(null); engine.followers = []; }, // a connection that ends
     async imageArch() { return 'amd64'; },
+    async imageSize() { return cfg.imageSize ?? 123_456_789; },
+    // An image a rollback wants to reuse: null when it is gone. cfg.images maps tag -> { labels }, default: every image exists and belongs to the app
+    async imageInfo(image) {
+      ev(`inspect-image ${image}`);
+      const known = cfg.images ?? null;
+      if (known && !(image in known)) return null;
+      return { architecture: 'amd64', size: cfg.imageSize ?? 123_456_789, labels: known?.[image]?.labels ?? cfg.imageLabels ?? { 'shipdok.managed': 'true', 'shipdok.app-id': cfg.appId } };
+    },
     async hostArchitecture() { return 'x86_64'; },
   };
   return engine;

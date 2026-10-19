@@ -9,6 +9,7 @@ import { DEPLOY_QUEUE, redisConnection } from './src/queue.js';
 import * as deployments from './src/db.js';
 import { processDeployJob } from './src/process-job.js';
 import { processControlJob } from './src/control.js';
+import { processPruneJob } from './src/prune.js';
 import { jobProcessor } from './src/dispatch.js';
 import { createActivity } from './src/activity.js';
 import { createMonitor } from './src/monitor.js';
@@ -43,7 +44,7 @@ try {
 
 const connection = redisConnection();
 const activity = createActivity(); // which apps a job is working on; the monitor leaves those alone
-// The app's own output, saved per deployment (runtime.log, reset on every restart; the run before is kept). Secrets are
+// The app's own output, saved per app (runtime.log, reset on every restart or new deployment; the run before is kept). Secrets are
 // masked with the app's current variable values; if they cannot be read, nothing is collected for that app.
 const collector = createCollector({
   root: logRoot(),
@@ -59,6 +60,7 @@ const worker = new Worker(
     activity,
     deploy: (job) => processDeployJob(job, { secretsKey, github, collector }),
     control: (job) => processControlJob(job),
+    prune: (job) => processPruneJob(job),
   }),
   { connection, concurrency: 1, maxStalledCount: 0, autorun: false },
 );

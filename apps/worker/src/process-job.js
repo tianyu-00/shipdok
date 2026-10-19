@@ -5,6 +5,7 @@ import * as store from './db.js';
 import { loadAppEnv, EnvDecryptError } from './envvars.js';
 import { resolveGitAuth, GitAuthError } from './gitauth.js';
 import { createLogSink, DEFAULT_MAX_BYTES } from './buildlog.js';
+import { pruneApp } from './prune.js';
 
 // Status updates are best-effort: a database hiccup must not abort a deployment mid-swap.
 const tolerate = (label) => (err) => console.error(`Could not record ${label}: ${err.message}`);
@@ -16,7 +17,7 @@ export async function processDeployJob(
   job,
   {
     secretsKey, deployFn = deploy, db = store, loadEnv = loadAppEnv, pollMs = 1000, github = null,
-    logRoot = defaultLogRoot(), logMaxBytes = DEFAULT_MAX_BYTES, collector = null,
+    logRoot = defaultLogRoot(), logMaxBytes = DEFAULT_MAX_BYTES, collector = null, pruneFn = pruneApp,
   },
 ) {
   const d = job.data;
@@ -161,12 +162,20 @@ export async function processDeployJob(
 
     if (result.ok) {
       log('Deployment succeeded');
-      await db.markSucceeded(id, result.image).catch(tolerate('success'));
+      await db.markSucceeded(id, result.image, result.imageBytes ?? null).catch(tolerate('success'));
       // What the live container is doing now. An explicit "deploy and start" is what finally turns the wish to running.
       const started = result.started !== false;
       if (d.startAfterDeploy === true && started) await db.setDesiredState(d.appId, 'running').catch(tolerate('desired state'));
       // A new version going live also forgives earlier crashes: they belonged to the old one.
       await db.setRuntime(d.appId, { state: started ? 'running' : 'stopped', action: 'deploy', error: null, resetCrashes: started }).catch(tolerate('runtime'));
+      // Clean-up after a deployment is the app's own choice (off by default). It runs here, in this job's turn on the
+      // queue, so it can never meet another deployment; and a failure must not turn a successful deployment into a failed one.
+      try {
+        const app = await db.getApp(d.appId);
+        if (app?.auto_prune) await pruneFn({ appId: d.appId, trigger: 'auto' }, { log });
+      } catch (err) {
+        log(`Automatic clean-up failed: ${err.message}`);
+      }
       return { deploymentId: result.deploymentId, image: result.image };
     }
 

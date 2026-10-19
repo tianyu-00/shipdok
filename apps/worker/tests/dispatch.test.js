@@ -43,3 +43,19 @@ test('a job without an app id still runs (nothing to mark)', async () => {
   const process = jobProcessor({ activity: { run: () => { throw new Error('should not be used'); } }, deploy: async () => 'd', control: async () => 'c' });
   assert.equal(await process({ name: 'deploy', data: {} }), 'd');
 });
+
+test('image clean-up jobs go to the prune processor, and are marked busy like any other job on the app', async () => {
+  const calls = [];
+  const marks = [];
+  const activity = { run: async (id, fn) => { marks.push(id); return fn(); } };
+  const process = jobProcessor({
+    activity,
+    deploy: async () => { calls.push('deploy'); },
+    control: async () => { calls.push('control'); },
+    prune: async (job) => { calls.push(`prune:${job.name}`); return 'p'; },
+  });
+  assert.equal(await process({ name: 'prune', data: { appId: 'a1' } }), 'p');
+  await process({ name: 'removeimage', data: { appId: 'a1' } });
+  assert.deepEqual(calls, ['prune:prune', 'prune:removeimage']);
+  assert.deepEqual(marks, ['a1', 'a1']);
+});

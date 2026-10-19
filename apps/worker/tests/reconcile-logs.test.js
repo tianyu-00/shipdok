@@ -61,43 +61,71 @@ describe('logs a dead worker left open', () => {
   });
 });
 
+const putApp = (appId, name, content) => {
+  mkdirSync(join(root, appId), { recursive: true });
+  writeFileSync(join(root, appId, name), content);
+};
+
 describe('runtime logs a dead worker left open', () => {
-  test('are closed with the size of THEIR file, and the previous run\'s record is left alone', async () => {
+  test('the current log is closed with the size of ITS file, and the previous run\'s finished record is left alone', async () => {
     const appId = await makeApp();
-    const depId = await makeDeployment(appId);
-    put(appId, depId, 'runtime.log', 'r'.repeat(321));
-    put(appId, depId, 'runtime.previous.log', 'p'.repeat(99));
-    await pool.query(`INSERT INTO log_files (deployment_id, app_id, kind) VALUES ($1, $2, 'runtime')`, [depId, appId]);
-    await pool.query(`INSERT INTO log_files (deployment_id, app_id, kind, bytes, ended_at) VALUES ($1, $2, 'runtime_previous', 99, now())`, [depId, appId]);
-    await go();
-    const rows = Object.fromEntries((await pool.query('SELECT kind, bytes, ended_at FROM log_files WHERE deployment_id = $1', [depId])).rows.map((r) => [r.kind, r]));
+    putApp(appId, 'runtime.log', 'r'.repeat(321));
+    putApp(appId, 'runtime.previous.log', 'p'.repeat(120));
+    await pool.query(`INSERT INTO runtime_logs (app_id, kind) VALUES ($1, 'runtime')`, [appId]);
+    await pool.query(`INSERT INTO runtime_logs (app_id, kind, bytes, ended_at) VALUES ($1, 'runtime_previous', 99, now())`, [appId]);
+    const report = await go();
+    const rows = Object.fromEntries((await pool.query('SELECT * FROM runtime_logs WHERE app_id = $1', [appId])).rows.map((r) => [r.kind, r]));
     assert.equal(Number(rows.runtime.bytes), 321);
-    assert.notEqual(rows.runtime.ended_at, null);
     assert.equal(Number(rows.runtime_previous.bytes), 99);
+    assert.ok(rows.runtime.ended_at !== null);
+    assert.equal(report.logsClosed, 1);
   });
 
-  test('a log that had been cut short at the size cap is still marked cut short after it is closed', async () => {
+  test('a cut-short flag is not forgotten, and a record without a file closes at 0', async () => {
+    const appId = await makeApp();
+    const other = await makeApp();
+    putApp(appId, 'runtime.log', 'r'.repeat(50));
+    await pool.query(`INSERT INTO runtime_logs (app_id, kind, truncated) VALUES ($1, 'runtime', true)`, [appId]);
+    await pool.query(`INSERT INTO runtime_logs (app_id, kind) VALUES ($1, 'runtime')`, [other]);
+    await go();
+    const q = (id) => pool.query(`SELECT truncated, bytes, ended_at FROM runtime_logs WHERE app_id = $1 AND kind = 'runtime'`, [id]).then((r) => r.rows[0]);
+    const r = await q(appId);
+    assert.deepEqual([r.truncated, Number(r.bytes), r.ended_at !== null], [true, 50, true]);
+    assert.deepEqual([Number((await q(other)).bytes)], [0]);
+  });
+
+  test('the app\'s runtime logs are never mistaken for an orphan deployment\'s', async () => {
     const appId = await makeApp();
     const depId = await makeDeployment(appId);
-    put(appId, depId, 'runtime.log', 'r'.repeat(50));
-    await pool.query(`INSERT INTO log_files (deployment_id, app_id, kind, truncated) VALUES ($1, $2, 'runtime', true)`, [depId, appId]);
+    put(appId, depId, 'build.log', 'b');
+    putApp(appId, 'runtime.log', 'keep');
+    putApp(appId, 'runtime.previous.log', 'keep');
     await go();
-    const r = (await pool.query(`SELECT truncated, ended_at FROM log_files WHERE deployment_id = $1 AND kind = 'runtime'`, [depId])).rows[0];
-    assert.deepEqual([r.truncated, r.ended_at !== null], [true, true]);
+    assert.ok(existsSync(join(root, appId, 'runtime.log')));
+    assert.ok(existsSync(join(root, appId, 'runtime.previous.log')));
   });
+});
 
-  test('a deployment\'s directory holding runtime.previous.log counts as ours when it is tidied away', async () => {
-    put(UUID_A, UUID_D, 'runtime.log', 'x');
-    put(UUID_A, UUID_D, 'runtime.previous.log', 'y');
-    await go();
-    assert.ok(!existsSync(logDirFor(root, UUID_A, UUID_D)));
+describe('runtime logs an older version kept inside each deployment', () => {
+  test('are removed, the build log beside them stays, and so does the app\'s own runtime log', async () => {
+    const appId = await makeApp();
+    const depId = await makeDeployment(appId);
+    put(appId, depId, 'build.log', 'keep');
+    put(appId, depId, 'runtime.log', 'old');
+    put(appId, depId, 'runtime.previous.log', 'old');
+    putApp(appId, 'runtime.log', 'current');
+    const report = await go();
+    assert.ok(existsSync(logFilePath(root, appId, depId, 'build')));
+    assert.ok(!existsSync(join(logDirFor(root, appId, depId), 'runtime.log')));
+    assert.ok(!existsSync(join(logDirFor(root, appId, depId), 'runtime.previous.log')));
+    assert.ok(existsSync(join(root, appId, 'runtime.log')));
+    assert.equal(report.legacyRuntimeLogsRemoved, 2);
   });
 });
 
 describe('logs of deployments that no longer exist', () => {
   test('are removed, and the app directory with them when it is empty', async () => {
     put(UUID_A, UUID_D, 'build.log', 'orphan');
-    put(UUID_A, UUID_D, 'runtime.log', 'orphan too');
     const report = await go();
     assert.ok(!existsSync(logDirFor(root, UUID_A, UUID_D)));
     assert.ok(!existsSync(join(root, UUID_A)));

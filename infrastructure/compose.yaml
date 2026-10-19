@@ -84,7 +84,7 @@ services:
       SETUP_TOKEN: ${SETUP_TOKEN:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
-      GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github-app.pem
+      GITHUB_APP_PRIVATE_KEY_FILE: ${GITHUB_APP_ID:+/run/secrets/github-app.pem} # only when an App ID is set: a key path alone is a configuration error
       LOG_DIR: /var/lib/shipdok/logs
     ports:
       - "127.0.0.1:${API_HOST_PORT:-4000}:4000" # loopback only; the Cloudflare tunnel (cloudflared) is what reaches the webhook
@@ -130,7 +130,7 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       APP_SECRETS_KEY: ${APP_SECRETS_KEY}
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
-      GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github-app.pem
+      GITHUB_APP_PRIVATE_KEY_FILE: ${GITHUB_APP_ID:+/run/secrets/github-app.pem} # only when an App ID is set: a key path alone is a configuration error
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${GITHUB_APP_PRIVATE_KEY_FILE:-/dev/null}:/run/secrets/github-app.pem:ro

@@ -558,3 +558,72 @@ describe('stopped apps and the swap', () => {
     assert.equal(await runtimeOf(appId), undefined);
   });
 });
+
+describe('image size and clean-up after a deployment', () => {
+  const setAuto = (appId, on) => pool.query('UPDATE apps SET auto_prune = $2 WHERE id = $1', [appId, on]);
+
+  test('the size of the image is stored with the deployment', async () => {
+    const appId = await makeApp();
+    const depId = await makeDeployment(appId);
+    const deployFn = async (opts) => done(opts, { imageBytes: 123_456_789 });
+    await processDeployJob(jobFor(appId, depId), { secretsKey: KEY, deployFn });
+    assert.equal(Number((await getDeployment(depId)).image_bytes), 123_456_789);
+  });
+
+  test('an app with auto_prune off is not cleaned up (the default)', async () => {
+    const appId = await makeApp();
+    const depId = await makeDeployment(appId);
+    const calls = [];
+    await processDeployJob(jobFor(appId, depId), { secretsKey: KEY, deployFn: fakeDeploy(), pruneFn: async (o) => { calls.push(o); } });
+    assert.deepEqual(calls, []);
+  });
+
+  test('an app with auto_prune on is cleaned up after a SUCCESSFUL deployment, saying it was automatic', async () => {
+    const appId = await makeApp();
+    await setAuto(appId, true);
+    const depId = await makeDeployment(appId);
+    const calls = [];
+    await processDeployJob(jobFor(appId, depId), { secretsKey: KEY, deployFn: fakeDeploy(), pruneFn: async (o) => { calls.push(o); } });
+    assert.deepEqual(calls, [{ appId, trigger: 'auto' }]);
+  });
+
+  test('the clean-up runs after the new version is recorded as successful', async () => {
+    const appId = await makeApp();
+    await setAuto(appId, true);
+    const depId = await makeDeployment(appId);
+    let statusAtPrune;
+    await processDeployJob(jobFor(appId, depId), {
+      secretsKey: KEY, deployFn: fakeDeploy(),
+      pruneFn: async () => { statusAtPrune = (await getDeployment(depId)).status; },
+    });
+    assert.equal(statusAtPrune, 'successful');
+  });
+
+  test('a failed deployment is never followed by a clean-up', async () => {
+    const appId = await makeApp();
+    await setAuto(appId, true);
+    const depId = await makeDeployment(appId);
+    const calls = [];
+    await assert.rejects(processDeployJob(jobFor(appId, depId), { secretsKey: KEY, deployFn: fakeDeploy({ ok: false }), pruneFn: async (o) => { calls.push(o); } }));
+    assert.deepEqual(calls, []);
+  });
+
+  test('a clean-up that fails cannot turn a successful deployment into a failed one', async () => {
+    const appId = await makeApp();
+    await setAuto(appId, true);
+    const depId = await makeDeployment(appId);
+    const out = await processDeployJob(jobFor(appId, depId), { secretsKey: KEY, deployFn: fakeDeploy(), pruneFn: async () => { throw new Error('docker down'); } });
+    assert.equal(out.deploymentId, depId);
+    assert.equal((await getDeployment(depId)).status, 'successful');
+  });
+
+  test('a rollback\'s reused image is handed to the deploy step', async () => {
+    const appId = await makeApp();
+    const depId = await makeDeployment(appId);
+    const deployFn = fakeDeploy();
+    const job = jobFor(appId, depId);
+    job.data.reuseImage = 'shipdok/my-app:11111111-1111-4111-8111-111111111111';
+    await processDeployJob(job, { secretsKey: KEY, deployFn });
+    assert.equal(deployFn.calls[0].reuseImage, job.data.reuseImage);
+  });
+});
