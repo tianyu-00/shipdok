@@ -25,6 +25,8 @@ const createSchema = z.object({
   health_path: z.string().regex(/^\/[^\s]*$/, 'Must start with / and contain no spaces').max(200).nullish(),
   memory_mb: z.number().int().min(64).max(8192).default(512),
   cpus: z.number().min(0.1).max(4).default(1),
+  // Automatic restarts allowed within 10 minutes before the app is marked crashed (0 = never restart automatically).
+  max_restarts: z.number().int().min(0).max(50).default(5),
 }).strict();
 
 const UNIQUE_MESSAGES = {
@@ -38,7 +40,8 @@ const DEPLOYMENT_COLUMNS = `id, app_id, commit_sha, trigger, status, image_ref, 
 
 // What the worker last reported about the live container (null until it has). Not the same as desired_state.
 const RUNTIME = `(SELECT row_to_json(r) FROM (
-    SELECT state, last_action, last_error, updated_at FROM app_runtime WHERE app_id = a.id) r)`;
+    SELECT state, last_action, last_error, last_exit_code, oom_killed, health_failures, next_restart_at, updated_at
+      FROM app_runtime WHERE app_id = a.id) r)`;
 
 const deploySchema = z.object({ start: z.boolean().optional() }).strict();
 
@@ -57,9 +60,9 @@ export function appsRouter({ db, queue, github = null }) {
 
       try {
         const { rows } = await db.query(
-          `INSERT INTO apps (name, slug, repo, branch, root_dir, container_port, host_port, health_path, memory_mb, cpus)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-          [a.name, slug, a.repo, a.branch, a.root_dir, a.container_port, a.host_port, a.health_path ?? null, a.memory_mb, a.cpus],
+          `INSERT INTO apps (name, slug, repo, branch, root_dir, container_port, host_port, health_path, memory_mb, cpus, max_restarts)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+          [a.name, slug, a.repo, a.branch, a.root_dir, a.container_port, a.host_port, a.health_path ?? null, a.memory_mb, a.cpus, a.max_restarts],
         );
         const created = rows[0];
         // Is the GitHub App installed on this repository? Best effort and NEVER blocks creation:
@@ -105,6 +108,19 @@ export function appsRouter({ db, queue, github = null }) {
       const { rows } = await db.query(`SELECT a.*, ${RUNTIME} AS runtime FROM apps a WHERE a.id = $1`, [req.params.id]);
       if (!rows[0]) return res.status(404).json({ error: 'App not found' });
       res.json(rows[0]);
+    } catch (err) { next(err); }
+  });
+
+  // Why the app stopped when it should have been running, newest first (what Shipdok did about each one is in `action`).
+  r.get('/:id/crashes', async (req, res, next) => {
+    try {
+      if (!isUuid(req.params.id)) return res.status(404).json({ error: 'App not found' });
+      const { rows: found } = await db.query('SELECT 1 FROM apps WHERE id = $1', [req.params.id]);
+      if (!found[0]) return res.status(404).json({ error: 'App not found' });
+      const { rows } = await db.query(
+        `SELECT occurred_at, cause, exit_code, oom_killed, action FROM app_crash_events
+          WHERE app_id = $1 ORDER BY occurred_at DESC, id DESC LIMIT 20`, [req.params.id]);
+      res.json(rows);
     } catch (err) { next(err); }
   });
 
