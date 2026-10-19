@@ -18,6 +18,8 @@ Read the relevant section of the spec before building a new feature.
   `jar.txt`, `infrastructure/.env`, `*.pem` or `node_modules/`. Check `git status` before committing.
 - Plain `npm pkg set` has silently failed on my machine: edit `package.json` by hand when it matters.
 - Do not commit or push unless I ask.
+- When an environment setting is added, renamed, removed or gets a new default, update `.env.example` in the same change, with a
+  comment above each setting saying what it does and its default. Keep every value commented out.
 - When a feature is finished and tested, update "Built and verified" and "Next" in this file in the same commit.
   Never edit SPEC.md unless I ask.
 - My `jar.txt` login cookie expires after 30 minutes idle; odd "`.map is not a function`"/"`undefined`" from curl+node
