@@ -62,7 +62,7 @@ docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up 
 Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
 socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked), `WEB_HOST_PORT` (default 8080) and `WEB_BIND` (default 127.0.0.1) for the dashboard container; `WEB_ORIGIN` must be the exact address you open it at (several allowed, comma separated; default `http://localhost:<WEB_HOST_PORT>` in compose, `http://localhost:5173` for `npm run dev`).
 
-Tests: API 403, worker 445, shared 173, web 199. Worker tests reuse the `_test` database the API tests create and
+Tests: API 466, worker 452, shared 173, web 303. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -71,6 +71,9 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
 ## Built and verified
 
 - **Auth:** single admin, argon2id, sessions in Postgres (30 min idle / 12 h absolute), rate limits, Origin-header CSRF check.
+  `POST /api/auth/password` ({currentPassword, newPassword}, 12-256 chars, must differ) needs a session AND the current password (a wrong
+  one is a 403, not a 401, so the dashboard does not mistake it for an ended session), ends every OTHER session and gives this one a new
+  id; limited like login (10 per 15 min). There is still no "forgot password": delete the `users` row in Postgres to get the setup screen again.
 - **Apps/deployments API:** create/list/get apps, request deployment (row first, then queued), history, cancel. Settings
   snapshotted per deployment. `repo` is `owner/repo`; clone URL built server-side. `host_port` required for now.
 - **Deploy engine:** clone -> build -> candidate on temp port -> health check -> swap -> retire. Failures leave the running
@@ -237,8 +240,7 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   notice). Deploy asks "deploy anyway?" when the API answers `disk_critical`; a stopped app offers "Deploy and start"; Stop asks
   first; while a Stop or Start has been requested but not carried out the badge says "Stopping…" / "Starting…". If the browser's
   address is not in `WEB_ORIGIN` every button would fail with a bare 403, so the dashboard says which address was refused and which
-  setting to change. Slice 2a (below) added images, rollback and delete; still not built (slice 2b): storage page, editing an
-  app's other settings, change password. Checked for real (headless Chromium in a throwaway container, isolated compose project): setup, login (wrong
+  setting to change. Slices 2a and 2b (below) added images, rollback, delete, storage, settings and change password. Checked for real (headless Chromium in a throwaway container, isolated compose project): setup, login (wrong
   password, expiry), create app, a running app collected by the worker, live-following log, restart (earlier run kept), stop/start,
   failed deployment with its build log, variables (secret never in the page until revealed), theme switching and persistence, deep
   links and reloads, a phone-width screen without sideways scroll, no console or CSP errors. Not tested: other browsers, a screen
@@ -250,29 +252,50 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   compose project):** the Deployments tab labels each successful version (Live / Previous / Old image / Image removed; two records that
   share one image share the label, so after a rollback two rows say Live), offers **Roll back** where an image still exists (asks first;
   a stopped app can "Roll back and start") and **Delete** (disabled, with the reason, for the running version and the kept previous
-  one; the app's name must be typed; says whether its image goes too). New **Images** tab: keep-N (0 to 10) and automatic clean-up
+  one; one confirmation, which says whether its image goes too). New **Images** tab: keep-N (0 to 10) and automatic clean-up
   settings, the versions with image sizes, the last clean-up's result, and **Clean up now**, which first lists exactly the images
   that will be removed (and says logs are never touched), then shows "running" until the result changes. The version labels are re-read
   as soon as a deployment appears or finishes. The repository name links to its GitHub page. Checked for real: rollback to the
   previous version (the app answered with the old code), clean-up removing exactly the listed old image, delete with the typed name,
   settings surviving a reload, light and dark, phone width without sideways scroll (the five tabs scroll inside their own bar). Not
   tested: a rollback to an image removed behind Shipdok's back from the UI, a very long history.
+- **Dashboard slice 2b: app settings, storage page, change password (verified in a real browser against real Docker in an isolated
+  compose project):** **Settings tab**: `PUT /api/apps/:id` edits name, branch, root directory, container port, host port, health path
+  (empty = none), memory, CPU and the restart limit; the repository can NOT be edited (delete the app and create a new one, administrator's
+  decision) and neither can the slug (it names images and containers, so a rename keeps it). A host port or name another app has is a 409
+  (`port_taken` / `name_taken`) that names the app, shown under the field; the unique indexes decide, so two edits racing for one port cannot
+  both win. Shipdok only knows its own apps: a port used by something else on the machine fails at the deployment (the old version is
+  restored), and the form says so. **An edit never touches what runs**: the deployment bakes in the snapshot of settings it was started with.
+  `GET /api/apps` and `/api/apps/:id` carry `running_settings` (the newest successful deployment's snapshot, no variable versions) and, on the
+  detail, `settings_pending` (which of branch, root_dir, container_port, host_port, health_path, memory_mb, cpus differ from it; null before any
+  deployment). The dashboard shows "Running now" from `running_settings`, links to the port that really answers, and lists the waiting edits
+  (name and restart limit apply at once). A deployment or a rollback uses the app's CURRENT settings, which is how an edit is applied.
+  **Worker change that goes with it:** the monitor and the start/restart health check read container port and health path from the
+  newest successful deployment's snapshot (`RUNNING_*` in `apps/worker/src/db.js`), falling back to the app's values for old records;
+  otherwise editing the container port would make a healthy app look unhealthy until it was redeployed (checked for real: edited the port
+  and waited several monitor rounds, the app stayed Running). **Storage page** (`/storage`, header link): disk bar and level, per app log
+  bytes and image bytes (upper bounds), link to the app's Images tab, "Delete output logs" (refused with a clear reason while the app runs),
+  and "Delete this log" for a finished deployment's build log inside the log window; all behind a confirmation. **Change password**: key
+  icon in the header. Checked for real: port taken (named, typed value kept), edit then rollback = container on the new port with the new
+  memory limit, old port gone, pending list cleared; wrong current password explained inside the dialog; a second browser signed out
+  while the first stays in; old password rejected, new one accepted. Not tested: a real push-triggered deployment applying an edit (a
+  rollback was used, same code path for settings), a host port held by a non-Shipdok process, a very long session. Known limits: the name
+  changes in the dashboard but containers and images keep the old slug.
 - **Worker git ignores the admin's git config** (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`): a credential helper such as
   Git Credential Manager can otherwise open a window and hang a refused clone.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
 
-1. Dashboard slice 2b: storage page, app settings (edit branch, port, memory, CPU, health path), change password.
-2. Live CPU/memory usage and limits display (SPEC.md §12).
-3. Automatic host-port allocation and app deletion (currently SQL by hand: delete `deployments` rows first, `app_id` is
+1. Live CPU/memory usage and limits display (SPEC.md §12).
+2. Automatic host-port allocation and app deletion (currently SQL by hand: delete `deployments` rows first, `app_id` is
    `ON DELETE RESTRICT`; remove containers and `shipdok/*` images yourself; with the new `DELETE /api/deployments/:id` the rows and
    images can go through the API first).
-4. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so
+3. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so
    other people hosting Shipdok do not fill in the form by hand. Read SPEC.md Milestone 3 first.
-5. Compose follow-ups: add `cloudflared` to compose (point it at `http://api:4000`, no host networking needed).
-6. Pi: full-stack run in compose (ARM64 builds, firewall vs the health-check path, `DOCKER_GID`), run the tunnel as a service until
+4. Compose follow-ups: add `cloudflared` to compose (point it at `http://api:4000`, no host networking needed).
+5. Pi: full-stack run in compose (ARM64 builds, firewall vs the health-check path, `DOCKER_GID`), run the tunnel as a service until
    then, hardening, docs (setup options: tunnel, reverse proxy, or manual deploys only), API docs (Scalar).
 
-Known gaps: no audit/rate limit on `reveal`; old `shipdok/*` images pile up until the administrator prunes (or turns on `auto_prune`); no "clean build cache" action; no way to edit an app's other settings yet (only retention); build-time env vars; Railpack; DB backup docs.
+Known gaps: no audit/rate limit on `reveal`; old `shipdok/*` images pile up until the administrator prunes (or turns on `auto_prune`); no "clean build cache" action; build-time env vars; Railpack; DB backup docs.
 The portfolio backend (`tianyu-00/TianYuSiteV2`, `backend/`, port 9090) is not yet deployed through the platform.
