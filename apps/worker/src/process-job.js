@@ -126,7 +126,8 @@ export async function processDeployJob(
     // What the live container is doing now. An explicit "deploy and start" is what finally turns the wish to running.
     const started = result.started !== false;
     if (d.startAfterDeploy === true && started) await db.setDesiredState(d.appId, 'running').catch(tolerate('desired state'));
-    await db.setRuntime(d.appId, { state: started ? 'running' : 'stopped', action: 'deploy', error: null }).catch(tolerate('runtime'));
+    // A new version going live also forgives earlier crashes: they belonged to the old one.
+    await db.setRuntime(d.appId, { state: started ? 'running' : 'stopped', action: 'deploy', error: null, resetCrashes: started }).catch(tolerate('runtime'));
     return { deploymentId: result.deploymentId, image: result.image };
   }
 

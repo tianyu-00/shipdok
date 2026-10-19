@@ -27,11 +27,11 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 007_app_runtime
+  migrations/    001_init ... 008_crash_handling
   src/           app.js, config.js, deployments.js (supersede/cancel), control.js (start/stop/restart requests), routes/ (auth, apps, env, webhooks, github)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
-  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, envvars.js, db.js, reconcile.js, paths.js
+  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), monitor.js, activity.js, envvars.js, db.js, reconcile.js, paths.js
   worker.js      entry point; cli.js: manual deploy
 apps/web/        empty (dashboard not started)
 packages/shared/ @shipdok/shared: crypto (AES-256-GCM), .env parser, github.js (app JWT, installation tokens), constants
@@ -57,9 +57,9 @@ docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up 
 ```
 
 Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
-socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback).
+socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked).
 
-Tests at last commit: API 239, worker 163, shared 118. Worker tests reuse the `_test` database the API tests create and
+Tests at last commit: API 252, worker 243, shared 118. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -119,20 +119,34 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   desired state becomes running only if that deployment succeeds). Docker's 304 ("already stopped/started") counts as success.
   Checked for real: stop leaves the container exited and Docker does not restart it, stop twice, start, restart (StartedAt
   changes), deploy while stopped (new container `created`, nothing answers on the port), start runs the new version.
-  Not tested: how `on-failure` restart behaves after a host/daemon reboot (see Next).
+- **Crash handling and health (verified against real Docker in an isolated compose project):** the worker runs a monitor loop
+  (every 15 s) that compares `apps.desired_state` with what Docker shows, per app, and records the result in `app_runtime`
+  (states running, stopped, unhealthy, restarting, crashed; plus exit code, out-of-memory flag, health failures, next restart).
+  The rules are a pure function (`supervisor.js`): a crash is restarted after 5 s / 15 s / 45 s / ... (cap 5 min); more than
+  `apps.max_restarts` crashes (default 5, set when creating the app, 0 = never) within 10 minutes marks it `crashed` and it stays
+  down until a manual Start/Restart (which, like a new version going live, forgives earlier crashes). Health: 3 failed checks in a
+  row = `unhealthy`, shown and left running (never restarted or rolled back automatically); one good check clears it. A container
+  stopped OUTSIDE Shipdok (`docker stop`/`kill`) is NOT restarted: it shows as `crashed` ("stopped outside Shipdok"). Telling that
+  from a real crash uses Docker's event log (an API stop/kill leaves a `kill` event before `die`, a process dying by itself leaves only
+  `die`); exit codes cannot tell them apart. If the log has no record of the exit (it is in memory, so after a host or Docker restart)
+  the app is simply started again, uncounted: this is how apps come back after a reboot. Docker's own restart policy is now `no`
+  (the monitor switches older containers over). The monitor skips an app while a deployment or control job is working on it
+  (`activity.js`), only asks Docker about a NEW exit, and writes only when something changed. `GET /api/apps/:id/crashes` lists the last 20
+  events (`app_crash_events`: cause crash / stopped_outside / recovered, and what Shipdok did). Checked for real: healthy, unhealthy
+  (left running), a crash loop that gives up, forgiveness by Start, outside `docker kill` and `docker stop`, Shipdok's own stop not
+  counted as a crash, and recovery with Docker's event buffer flushed. Not tested: a real host reboot, out-of-memory kills under Pi
+  limits, ARM64. Known limits: the restart delay is rounded up to the next check; if Docker is not ready right after a boot, a failed
+  start marks the app `crashed` (press Start).
 - **Worker git ignores the admin's git config** (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`): a credential helper such as
   Git Credential Manager can otherwise open a window and hang a refused clone.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
 
-1. Runtime health and crashes (the second half of start/stop/restart; SPEC.md §11, §18): a worker monitor loop reads each live
-   container's Docker state and runs the HTTP health check every ~30 s into `app_runtime` (add states Restarting, Crashed; keep
-   Unhealthy = shown, never auto-restarted). Decide the restart policy: containers use `on-failure` with 5 retries; check on the
-   Pi whether they come back after a reboot, else consider `unless-stopped` plus a Shipdok-side retry limit (spec wants a limit).
-2. Persistent log storage.
-3. Image retention, rollback, disk cleanup.
-4. Dashboard (`apps/web`, React + Tailwind).
+1. Persistent log storage (SPEC.md §13; the crash history and `last_error` say THAT something failed, the logs say why).
+2. Image retention, rollback, disk cleanup.
+3. Dashboard (`apps/web`, React + Tailwind).
+4. Live CPU/memory usage and limits display (SPEC.md §12).
 5. Automatic host-port allocation and app deletion (currently SQL by hand: delete `deployments` rows first, `app_id` is
    `ON DELETE RESTRICT`; remove containers and `shipdok/*` images yourself).
 6. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so

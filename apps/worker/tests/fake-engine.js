@@ -69,6 +69,14 @@ export function fakeEngine(cfg = {}) {
       // The real helper swallows this failure, which is exactly why the order of cleanup matters.
       ev(usingNewImage.size ? `rmi-BLOCKED ${image}` : `rmi ${image}`);
     },
+    // ---- for the monitor: tests change these between ticks to play out a crash, a reboot, an outside stop... ----
+    facts: { status: 'running', exitCode: 0, oomKilled: false, finishedAt: null, restartPolicy: 'no', ...(cfg.facts ?? {}) },
+    probe: cfg.probe ?? true,
+    cause: cfg.cause ?? 'crash',
+    async containerFacts() { return { ...engine.facts }; },
+    async probeHealth(c, opts) { ev(`probe ${c.name}`); engine.lastProbe = opts; return typeof engine.probe === 'function' ? engine.probe() : engine.probe; },
+    async deathCause(c) { ev(`cause ${c.name}`); return engine.cause; },
+    async setRestartPolicyNone(c) { ev(`policy ${c.name}`); engine.facts.restartPolicy = 'no'; },
     async imageArch() { return 'amd64'; },
     async hostArchitecture() { return 'x86_64'; },
   };

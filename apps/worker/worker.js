@@ -10,6 +10,8 @@ import * as deployments from './src/db.js';
 import { processDeployJob } from './src/process-job.js';
 import { processControlJob } from './src/control.js';
 import { jobProcessor } from './src/dispatch.js';
+import { createActivity } from './src/activity.js';
+import { createMonitor } from './src/monitor.js';
 
 // Fail fast, before touching Redis or Docker, if the master key is missing or malformed.
 let secretsKey;
@@ -37,10 +39,13 @@ try {
 }
 
 const connection = redisConnection();
+const activity = createActivity(); // which apps a job is working on; the monitor leaves those alone
+const monitor = createMonitor({ activity, intervalMs: Number(process.env.MONITOR_INTERVAL_MS) || 15_000 });
 
 const worker = new Worker(
   DEPLOY_QUEUE,
   jobProcessor({
+    activity,
     deploy: (job) => processDeployJob(job, { secretsKey, github }),
     control: (job) => processControlJob(job),
   }),
@@ -61,6 +66,7 @@ worker.on('failed', (job, err) => {
 
 async function shutdown(signal) {
   console.log(`${signal}: letting the current job finish, then exiting`);
+  await monitor.stop();
   await worker.close();
   await connection.quit();
   await deployments.pool.end();
@@ -70,6 +76,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 await reconcile();
+monitor.start(); // crashes, health, and recovery after a host or Docker restart
 worker.run().catch((err) => {
   console.error('Worker crashed:', err);
   process.exit(1);

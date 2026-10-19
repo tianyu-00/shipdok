@@ -66,9 +66,9 @@ export async function findContainers({ appId, role }) {
   return list.map((c) => docker.getContainer(c.Id));
 }
 
-export async function createContainer({ image, name, labels, containerPort, hostPort, memoryMb, cpus, env }) {
+export function containerSpec({ image, name, labels, containerPort, hostPort, memoryMb, cpus, env }) {
   const cport = `${containerPort}/tcp`;
-  return docker.createContainer({
+  return {
     Image: image,
     name,
     Labels: labels,
@@ -78,11 +78,19 @@ export async function createContainer({ image, name, labels, containerPort, host
       PortBindings: { [cport]: [{ HostPort: String(hostPort) }] }, // '' = Docker picks a free port
       Memory: memoryMb * 1024 * 1024,
       NanoCpus: cpus * 1e9,
-      RestartPolicy: { Name: "on-failure", MaximumRetryCount: 5 },
+      // Docker's own restart policy is off: the monitor (monitor.js) decides whether and when to restart, so that
+      // crashes are counted, limited and shown, and a reboot is handled the same way as a crash.
+      RestartPolicy: { Name: "no" },
       // No privileged mode, no docker.sock, no host binds.
     },
-  });
+  };
 }
+
+export const createContainer = (opts) => docker.createContainer(containerSpec(opts));
+
+// Containers made before the monitor existed still carry Docker's old policy; switch them so Docker and the
+// monitor never both restart the same container.
+export const setRestartPolicyNone = (container) => container.update({ RestartPolicy: { Name: "no" } });
 
 // Docker answers 304 when a container is already in the state you asked for. For stop and start that is success.
 const alreadyThere = (err) => err?.statusCode === 304;
@@ -114,6 +122,73 @@ export function healthUrl(port, path) {
   const host = process.env.HEALTH_CHECK_HOST || '127.0.0.1';
   if (!HEALTH_HOST_RE.test(host)) throw new Error('HEALTH_CHECK_HOST must be a plain hostname or IPv4 address');
   return `http://${host}:${port}${path}`;
+}
+
+// What the monitor needs to know about a container, from one inspect.
+export async function containerFacts(container) {
+  const info = await container.inspect();
+  const ended = Date.parse(info.State.FinishedAt);
+  return {
+    status: info.State.Status,
+    exitCode: info.State.ExitCode,
+    oomKilled: info.State.OOMKilled === true,
+    // Docker reports "0001-01-01..." for a container that has not ended; that is "no end time".
+    finishedAt: Number.isFinite(ended) && ended > Date.parse("2000-01-01") ? ended : null,
+    restartPolicy: info.HostConfig?.RestartPolicy?.Name ?? "",
+  };
+}
+
+// One health check, no waiting and no retries: true only for a 2xx answer within the timeout.
+export async function probeHealth(container, { containerPort, health }, { timeoutMs = 2000 } = {}) {
+  try {
+    const port = await hostPortOf(container, containerPort);
+    const res = await fetch(healthUrl(port, health), { signal: AbortSignal.timeout(timeoutMs) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// How did a container that has exited die? Docker's event log knows: `docker stop` and `docker kill` produce a "kill"
+// (and "stop") event before "die", while a process that dies on its own produces only "die" (and "oom" when the kernel
+// killed it for memory). Exit codes cannot tell these apart (a graceful stop and a clean exit are both 0).
+//   'outside'  stopped through the Docker API, not by the app itself
+//   'crash'    the process ended by itself
+//   'unknown'  no record of the exit (the log is kept in memory, so it is gone after a daemon or host restart)
+export function classifyEvents(events) {
+  const actions = events.map((e) => e.Action ?? e.status);
+  if (!actions.includes("die")) return "unknown";
+  return actions.includes("kill") || actions.includes("stop") ? "outside" : "crash";
+}
+
+export async function deathCause(container, finishedAtMs, { docker: client = docker, timeoutMs = 5000 } = {}) {
+  const events = [];
+  let timer;
+  try {
+    const since = Math.floor(finishedAtMs / 1000) - 5; // the kill event comes just before the die
+    const until = Math.ceil(Date.now() / 1000) + 1;
+    const stream = await client.getEvents({
+      since, until, filters: { container: [container.id], event: ["kill", "stop", "die", "oom"] },
+    });
+    await new Promise((resolve) => {
+      timer = setTimeout(() => { stream.destroy?.(); resolve(); }, timeoutMs);
+      let buffer = "";
+      stream.on("data", (chunk) => {
+        buffer += chunk;
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+        for (const line of lines) { try { events.push(JSON.parse(line)); } catch { /* not an event */ } }
+      });
+      stream.on("end", resolve);
+      stream.on("close", resolve);
+      stream.on("error", resolve);
+    });
+  } catch {
+    return "unknown";
+  } finally {
+    clearTimeout(timer);
+  }
+  return classifyEvents(events);
 }
 
 // Fail fast if the container exits; otherwise poll HTTP until 200 or timeout.

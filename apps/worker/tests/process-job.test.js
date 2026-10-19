@@ -486,6 +486,19 @@ describe('stopped apps and the swap', () => {
     assert.deepEqual([(await runtimeOf(appId)).state, (await runtimeOf(appId)).last_action], ['running', 'deploy']);
   });
 
+  test('a new version going live forgives the old version\'s crashes; a deployment that leaves the app stopped does not', async () => {
+    const appId = await makeApp();
+    const depId = await makeDeployment(appId);
+    await processDeployJob(jobFor(appId, depId), { secretsKey: KEY, deployFn: gatedStart });
+    assert.ok((await runtimeOf(appId)).crash_reset_at);
+
+    const other = await makeApp();
+    await setDesired(other, 'stopped');
+    const dep2 = await makeDeployment(other);
+    await processDeployJob(jobFor(other, dep2), { secretsKey: KEY, deployFn: gatedStart });
+    assert.equal((await runtimeOf(other)).crash_reset_at, null);
+  });
+
   test('a stopped app is told NOT to start, and stays stopped', async () => {
     const appId = await makeApp();
     await setDesired(appId, 'stopped');

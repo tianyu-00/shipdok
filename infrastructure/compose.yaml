@@ -118,6 +118,7 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       HEALTH_CHECK_HOST: host.docker.internal
+      MONITOR_INTERVAL_MS: ${MONITOR_INTERVAL_MS:-15000} # how often crashes and health are checked
       POSTGRES_HOST: postgres
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

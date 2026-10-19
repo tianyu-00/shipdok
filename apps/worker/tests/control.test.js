@@ -78,6 +78,40 @@ describe('start', () => {
   });
 });
 
+describe('forgiving earlier crashes', () => {
+  const resetAt = async (appId) => (await pool.query('SELECT crash_reset_at, health_failures, next_restart_at FROM app_runtime WHERE app_id = $1', [appId])).rows[0];
+  const dirty = async (appId) => pool.query(
+    `INSERT INTO app_runtime (app_id, state, health_failures, next_restart_at) VALUES ($1, 'crashed', 7, now() + interval '1 minute')
+     ON CONFLICT (app_id) DO UPDATE SET health_failures = 7, next_restart_at = now() + interval '1 minute'`, [appId]);
+
+  for (const action of ['start', 'restart']) {
+    test(`a manual ${action} starts counting crashes from zero`, async () => {
+      const appId = await makeApp();
+      await dirty(appId);
+      await go(appId, action, fakeEngine({ previous: ['live-1'] }));
+      const r = await resetAt(appId);
+      assert.ok(r.crash_reset_at, 'the window restarts now');
+      assert.deepEqual([r.health_failures, r.next_restart_at], [0, null]);
+    });
+  }
+
+  test('also when the app starts but is unhealthy: the administrator did try again', async () => {
+    const appId = await makeApp();
+    await dirty(appId);
+    await go(appId, 'start', fakeEngine({ previous: ['live-1'], health: { live: async () => { throw new Error('nope'); } } }));
+    assert.ok((await resetAt(appId)).crash_reset_at);
+  });
+
+  test('a stop does not, and neither does a start that failed', async () => {
+    const appId = await makeApp();
+    await dirty(appId);
+    await go(appId, 'stop', fakeEngine({ previous: ['live-1'] }));
+    assert.equal((await resetAt(appId)).crash_reset_at, null);
+    await go(appId, 'start', fakeEngine({ previous: ['live-1'], failOn: { 'start live-1': new Error('port in use') } }));
+    assert.equal((await resetAt(appId)).crash_reset_at, null);
+  });
+});
+
 describe('restart', () => {
   test('restarts the container without rebuilding anything, then waits for health', async () => {
     const appId = await makeApp();

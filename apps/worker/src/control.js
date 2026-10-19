@@ -51,11 +51,12 @@ export async function controlApp({ appId, action }, { eng = realEngine, db = sto
     for (const c of containers) await eng.waitHealthy(c, { containerPort: app.container_port, health: app.health_path ?? undefined });
   } catch (err) {
     const message = `Started, but it did not pass its health check: ${err.message}`;
-    await db.setRuntime(appId, { state: 'unhealthy', action, error: message });
+    await db.setRuntime(appId, { state: 'unhealthy', action, error: message, resetCrashes: true });
     log(`${app.slug}: ${message}`);
     return { ok: true };
   }
-  await db.setRuntime(appId, { state: 'running', action, error: null });
+  // A manual start or restart is the administrator's "I have looked at it, try again": earlier crashes are forgiven.
+  await db.setRuntime(appId, { state: 'running', action, error: null, resetCrashes: true });
   log(`${action === 'restart' ? 'Restarted' : 'Started'} ${app.slug}`);
   return { ok: true };
 }

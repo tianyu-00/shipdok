@@ -29,3 +29,17 @@ test('jobs queued before names mattered (any other name) are still treated as de
   await process({ name: '__default__' });
   assert.deepEqual(calls, [['deploy', '__default__']]);
 });
+
+test('the app is marked busy while its job runs, and free afterwards, even if the job fails', async () => {
+  const marks = [];
+  const activity = { run: async (id, fn) => { marks.push(['start', id]); try { return await fn(); } finally { marks.push(['end', id]); } } };
+  const process = jobProcessor({ activity, deploy: async () => { throw new Error('boom'); }, control: async () => 'c' });
+  assert.equal(await process({ name: 'control', data: { appId: 'a1' } }), 'c');
+  await assert.rejects(process({ name: 'deploy', data: { appId: 'a2' } }), /boom/);
+  assert.deepEqual(marks, [['start', 'a1'], ['end', 'a1'], ['start', 'a2'], ['end', 'a2']]);
+});
+
+test('a job without an app id still runs (nothing to mark)', async () => {
+  const process = jobProcessor({ activity: { run: () => { throw new Error('should not be used'); } }, deploy: async () => 'd', control: async () => 'c' });
+  assert.equal(await process({ name: 'deploy', data: {} }), 'd');
+});
