@@ -165,6 +165,28 @@ describe('secrets', () => {
   });
 });
 
+describe('handing the old container\'s output to the collector', () => {
+  test('the deploy step gets a hook that drains a container for THIS app', async () => {
+    const appId = await makeApp();
+    const depId = await makeDeployment(appId);
+    const calls = [];
+    const collector = { drain: async (container, info) => { calls.push([container.name, info.appId]); } };
+    await processDeployJob(jobFor(appId, depId), { ...deps(async (opts) => {
+      await opts.onRetire({ name: 'old-container' });
+      return done(opts);
+    }), collector });
+    assert.deepEqual(calls, [['old-container', appId]]);
+  });
+
+  test('without a collector there is no hook', async () => {
+    const appId = await makeApp();
+    const depId = await makeDeployment(appId);
+    let given;
+    await processDeployJob(jobFor(appId, depId), deps(async (opts) => { given = opts.onRetire; return done(opts); }));
+    assert.equal(given, undefined);
+  });
+});
+
 describe('the log never gets in the way', () => {
   test('if it cannot be written the deployment still succeeds', async () => {
     const appId = await makeApp();

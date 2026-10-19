@@ -14,11 +14,16 @@ const STREAMS = ['stdout', 'stderr', 'shipdok'];
  * @param {string} o.file                   where to append
  * @param {(text: string) => string} [o.redact]   masks secrets; called per line, so it may be swapped out later
  * @param {number} [o.maxBytes]             stop storing after this many bytes (the file is then marked truncated)
+ * @param {number} [o.startBytes]           size of the file when continuing it (counts towards the cap)
+ * @param {boolean} [o.startTruncated]      the file was already cut short: store nothing more
  */
-export function createLogSink({ file, redact = (t) => t, maxBytes = DEFAULT_MAX_BYTES, now = () => new Date() }) {
+export function createLogSink({
+  file, redact = (t) => t, maxBytes = DEFAULT_MAX_BYTES, now = () => new Date(),
+  startBytes = 0, startTruncated = false, // continuing a file that already has content (or was already cut short)
+}) {
   let stream = null;
-  let bytes = 0;
-  let truncated = false;
+  let bytes = startBytes;
+  let truncated = startTruncated;
   let failed = false;
   let closed = false;
   let result = null;
@@ -38,9 +43,10 @@ export function createLogSink({ file, redact = (t) => t, maxBytes = DEFAULT_MAX_
     stream.write(text);
   };
 
-  function line(name, text) {
+  // `at`: the time the line really happened (the app's own output carries the time Docker saw it); default: now.
+  function line(name, text, at) {
     if (closed || failed || truncated) return;
-    const out = formatLine(now(), name, redact(String(text)));
+    const out = formatLine(at ?? now(), name, redact(String(text)));
     if (bytes + Buffer.byteLength(out) > maxBytes) {
       truncated = true;
       store(formatLine(now(), 'shipdok', `Output cut: log truncated at the size limit of ${Math.round(maxBytes / 1024 / 1024)} MB; later output is not stored`));
@@ -78,5 +84,5 @@ export function createLogSink({ file, redact = (t) => t, maxBytes = DEFAULT_MAX_
     return result;
   }
 
-  return { write, line, close };
+  return { write, line, close, stats: () => ({ bytes, truncated }) };
 }

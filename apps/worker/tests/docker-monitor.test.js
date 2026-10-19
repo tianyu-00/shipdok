@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 import {
-  containerFacts, probeHealth, classifyEvents, deathCause, containerSpec, setRestartPolicyNone,
+  containerFacts, probeHealth, classifyEvents, deathCause, containerSpec, setRestartPolicyNone, followLogs, fetchLogs,
 } from '../src/docker.js';
 
 const ev = (Action, attrs = {}) => ({ Action, Actor: { Attributes: attrs } });
@@ -38,8 +38,22 @@ describe('containerFacts', () => {
 
   test('reads status, exit code, out-of-memory flag and when it ended', async () => {
     const f = await containerFacts(inspect({ Status: 'exited', ExitCode: 137, OOMKilled: true, FinishedAt: '2026-10-19T10:00:00.500Z' }));
-    assert.deepEqual(f, { status: 'exited', exitCode: 137, oomKilled: true, finishedAt: Date.parse('2026-10-19T10:00:00.500Z'), restartPolicy: 'no' });
+    assert.deepEqual(f, { status: 'exited', exitCode: 137, oomKilled: true, finishedAt: Date.parse('2026-10-19T10:00:00.500Z'), startedAt: null, deploymentId: null, restartPolicy: 'no' });
   });
+  test('also reads when this run started and which deployment the container belongs to', async () => {
+    const f = await containerFacts({ async inspect() {
+      return { State: { Status: 'running', ExitCode: 0, OOMKilled: false, StartedAt: '2026-10-19T01:02:03.456789012Z', FinishedAt: '0001-01-01T00:00:00Z' },
+        HostConfig: { RestartPolicy: { Name: 'no' } }, Config: { Labels: { 'shipdok.deployment-id': 'dep-1', 'shipdok.app-id': 'app-1' } } };
+    } });
+    assert.equal(f.startedAt, Date.parse('2026-10-19T01:02:03.456Z'));
+    assert.equal(f.deploymentId, 'dep-1');
+  });
+
+  test('a container with no start time or labels gives null, not a crash', async () => {
+    const f = await containerFacts(inspect({ Status: 'created', ExitCode: 0, OOMKilled: false, FinishedAt: '0001-01-01T00:00:00Z', StartedAt: '0001-01-01T00:00:00Z' }));
+    assert.deepEqual([f.startedAt, f.deploymentId], [null, null]);
+  });
+
   test('a container that never ran has no end time (Docker uses year 1)', async () => {
     const f = await containerFacts(inspect({ Status: 'created', ExitCode: 0, OOMKilled: false, FinishedAt: '0001-01-01T00:00:00Z' }));
     assert.equal(f.finishedAt, null);
@@ -124,9 +138,40 @@ describe('what a new container is created with', () => {
     assert.equal(spec.HostConfig.Memory, 256 * 1024 * 1024);
     assert.equal(spec.HostConfig.NanoCpus, 0.5e9);
   });
+  test('Docker keeps only a bounded copy of the output (the persistent copy is ours)', () => {
+    assert.deepEqual(spec.HostConfig.LogConfig, { Type: 'json-file', Config: { 'max-size': '10m', 'max-file': '3' } });
+  });
   test('an existing container can be switched to the same policy', async () => {
     let body;
     await setRestartPolicyNone({ update: async (b) => { body = b; } });
     assert.deepEqual(body, { RestartPolicy: { Name: 'no' } });
+  });
+});
+
+describe('followLogs / fetchLogs', () => {
+  const recorder = () => { const seen = {}; return { seen, c: { logs: async (o) => { seen.opts = o; return seen.result ?? Buffer.from('x'); } } }; };
+
+  test('following asks for both streams, with timestamps, and no tail limit', async () => {
+    const { seen, c } = recorder();
+    await followLogs(c, { since: Date.parse('2026-10-19T01:00:00.250Z') });
+    assert.deepEqual(seen.opts, { follow: true, stdout: true, stderr: true, timestamps: true, since: '1792371600.250' });
+  });
+
+  test('fetching is a one-off read of the same, bounded by since and until', async () => {
+    const { seen, c } = recorder();
+    await fetchLogs(c, { since: 1_000_500, until: 2_000_000 });
+    assert.deepEqual(seen.opts, { follow: false, stdout: true, stderr: true, timestamps: true, since: '1000.500', until: '2000.000' });
+  });
+
+  test('since and until are optional', async () => {
+    const { seen, c } = recorder();
+    await fetchLogs(c, {});
+    assert.deepEqual(seen.opts, { follow: false, stdout: true, stderr: true, timestamps: true });
+  });
+
+  test('fetching gives back the bytes', async () => {
+    const { seen, c } = recorder();
+    seen.result = Buffer.from('frames');
+    assert.equal((await fetchLogs(c, {})).toString(), 'frames');
   });
 });

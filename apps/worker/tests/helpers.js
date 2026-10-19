@@ -14,7 +14,7 @@ export const SECRET = "S3cr3t-Value-Do-Not-Leak-9f2a";
 // The API's test run creates and migrates the *_test database; the worker tests reuse it.
 export async function ready() {
   try {
-    const { rows } = await pool.query(`SELECT 1 FROM schema_migrations WHERE name = '009_log_files.sql'`);
+    const { rows } = await pool.query(`SELECT 1 FROM schema_migrations WHERE name = '010_runtime_logs.sql'`);
     if (rows.length) return;
   } catch {
     /* fall through to the hint */

@@ -76,6 +76,52 @@ describe('writing lines', () => {
   });
 });
 
+describe('lines with their own time (the app\'s output carries the time Docker saw it)', () => {
+  test('line() can be given the time of the line instead of "now"', async () => {
+    const s = open();
+    s.line('stdout', 'from the app', new Date('2026-01-02T03:04:05.678Z'));
+    await s.close();
+    assert.equal(lines()[0], '2026-01-02T03:04:05.678Z stdout from the app');
+  });
+
+  test('stats() reports the size and the cap state while the sink is still open', async () => {
+    const s = open({ maxBytes: 300 });
+    assert.deepEqual(s.stats(), { bytes: 0, truncated: false });
+    s.line('stdout', 'one');
+    const afterOne = s.stats().bytes;
+    assert.ok(afterOne > 0);
+    for (let i = 0; i < 50; i++) s.line('stdout', `filler ${i} ${'x'.repeat(30)}`);
+    assert.equal(s.stats().truncated, true);
+    assert.ok(s.stats().bytes >= afterOne);
+    await s.close();
+  });
+});
+
+describe('continuing an existing file (the worker restarted while an app kept running)', () => {
+  test('the size cap counts what is already in the file', async () => {
+    const s = open({ maxBytes: 400, startBytes: 380 });
+    s.line('stdout', 'this line pushes it over the limit');
+    s.line('stdout', 'SECOND-MARKER should be dropped');
+    const r = await s.close();
+    assert.equal(r.truncated, true);
+    assert.ok(!readFileSync(file, 'utf8').includes('SECOND-MARKER'));
+  });
+
+  test('a log that was already cut short stays cut short: nothing more is stored', async () => {
+    const s = open({ startTruncated: true });
+    s.line('stdout', 'should not appear');
+    const r = await s.close();
+    assert.equal(r.truncated, true);
+    assert.ok(!existsSync(file) || readFileSync(file, 'utf8') === '');
+  });
+
+  test('without those options nothing changes', async () => {
+    const s = open();
+    s.line('stdout', 'normal');
+    assert.deepEqual(await s.close(), { bytes: statSync(file).size, truncated: false, failed: false });
+  });
+});
+
 describe('secrets', () => {
   test('are masked, including one that arrives split across two chunks', async () => {
     const s = open({ redact: createRedactor(['ghs_SuperSecretToken']) });

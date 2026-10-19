@@ -28,6 +28,8 @@ import { checkoutSource, gitEnvironment } from './git.js';
  * @param {number} [opts.cpus=1]
  * @param {string[]} [opts.env=[]]      ['KEY=VALUE', ...] for the container
  * @param {Record<string,string>} [opts.gitEnv]  extra environment for GIT ONLY (a GitHub token). Never given to docker or the container.
+ * @param {(container: object) => Promise<void>} [opts.onRetire]  called with each old container after the new one is live, before it is removed (save its output)
+ * @param {number} [opts.retireTimeoutMs=10000]  how long to wait for onRetire
  * @param {{write: Function, line: Function}} [opts.logSink]  also receives the output of git and docker build (the deployment's log file)
  * @param {AbortSignal} [opts.signal]   aborts work in progress, up to the point of no return
  * @param {() => Promise<{proceed: boolean, outcome?: string, by?: string, start?: boolean}>} [opts.beforeSwap]
@@ -65,6 +67,23 @@ export async function deploy(opts, eng = realEngine) {
     cpus: o.cpus,
     env: o.env,
   });
+
+  // The old container's output must be saved before the container is removed. Best effort, and never allowed to hold
+  // a deployment up for long: a hook that fails or hangs is given up on.
+  const retire = async (container) => {
+    if (!o.onRetire) return;
+    let timer;
+    try {
+      await Promise.race([
+        Promise.resolve(o.onRetire(container)),
+        new Promise((resolve) => { timer = setTimeout(resolve, o.retireTimeoutMs ?? 10_000); }),
+      ]);
+    } catch (err) {
+      log(`Could not save the old version's output: ${err.message}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 
   // Health check that prints container output on failure, before the container is removed.
   // `sig` is only passed before the point of no return.
@@ -166,7 +185,10 @@ export async function deploy(opts, eng = realEngine) {
       throw err;
     }
 
-    for (const old of previous) await eng.removeQuietly(old);
+    for (const old of previous) {
+      await retire(old); // hand over its last output before it disappears
+      await eng.removeQuietly(old);
+    }
     log(`Deployed ${name} (${deploymentId}) on :${o.hostPort}${startAfterSwap ? '' : ' (not started: the app is stopped)'}`);
     return { ok: true, deploymentId, image, started: startAfterSwap };
   } catch (err) {

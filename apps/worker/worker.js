@@ -3,7 +3,7 @@
 //
 // Run: npm start -w apps/worker      (loads infrastructure/.env, including APP_SECRETS_KEY)
 import { Worker } from 'bullmq';
-import { parseMasterKey, loadGithubAppConfig, createGithubClient } from '@shipdok/shared';
+import { parseMasterKey, loadGithubAppConfig, createGithubClient, logRoot } from '@shipdok/shared';
 import { reconcile } from './src/reconcile.js';
 import { DEPLOY_QUEUE, redisConnection } from './src/queue.js';
 import * as deployments from './src/db.js';
@@ -12,6 +12,9 @@ import { processControlJob } from './src/control.js';
 import { jobProcessor } from './src/dispatch.js';
 import { createActivity } from './src/activity.js';
 import { createMonitor } from './src/monitor.js';
+import { createCollector } from './src/runtimelog.js';
+import { loadAppEnv } from './src/envvars.js';
+import * as dockerEngine from './src/docker.js';
 
 // Fail fast, before touching Redis or Docker, if the master key is missing or malformed.
 let secretsKey;
@@ -40,13 +43,21 @@ try {
 
 const connection = redisConnection();
 const activity = createActivity(); // which apps a job is working on; the monitor leaves those alone
-const monitor = createMonitor({ activity, intervalMs: Number(process.env.MONITOR_INTERVAL_MS) || 15_000 });
+// The app's own output, saved per deployment (runtime.log, reset on every restart; the run before is kept). Secrets are
+// masked with the app's current variable values; if they cannot be read, nothing is collected for that app.
+const collector = createCollector({
+  root: logRoot(),
+  db: deployments,
+  eng: dockerEngine,
+  loadSecrets: async (appId) => (await loadAppEnv(deployments.pool, appId, secretsKey)).env.map((kv) => kv.slice(kv.indexOf('=') + 1)),
+});
+const monitor = createMonitor({ activity, collector, intervalMs: Number(process.env.MONITOR_INTERVAL_MS) || 15_000 });
 
 const worker = new Worker(
   DEPLOY_QUEUE,
   jobProcessor({
     activity,
-    deploy: (job) => processDeployJob(job, { secretsKey, github }),
+    deploy: (job) => processDeployJob(job, { secretsKey, github, collector }),
     control: (job) => processControlJob(job),
   }),
   { connection, concurrency: 1, maxStalledCount: 0, autorun: false },
@@ -67,6 +78,7 @@ worker.on('failed', (job, err) => {
 async function shutdown(signal) {
   console.log(`${signal}: letting the current job finish, then exiting`);
   await monitor.stop();
+  await collector.stopAll(); // close every runtime log and record its size
   await worker.close();
   await connection.quit();
   await deployments.pool.end();

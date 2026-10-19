@@ -16,7 +16,7 @@ export async function processDeployJob(
   job,
   {
     secretsKey, deployFn = deploy, db = store, loadEnv = loadAppEnv, pollMs = 1000, github = null,
-    logRoot = defaultLogRoot(), logMaxBytes = DEFAULT_MAX_BYTES,
+    logRoot = defaultLogRoot(), logMaxBytes = DEFAULT_MAX_BYTES, collector = null,
   },
 ) {
   const d = job.data;
@@ -141,6 +141,8 @@ export async function processDeployJob(
         gitEnv,
         log,
         logSink: sink ?? undefined,
+        // Before the old version's container is removed, save the rest of its output.
+        onRetire: collector ? (container) => collector.drain(container, { appId: d.appId }) : undefined,
         signal: controller.signal,
         beforeSwap,
         onStatus: (s) => inOrder(s, () => db.setStatus(id, s)),

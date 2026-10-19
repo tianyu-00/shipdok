@@ -61,6 +61,39 @@ describe('logs a dead worker left open', () => {
   });
 });
 
+describe('runtime logs a dead worker left open', () => {
+  test('are closed with the size of THEIR file, and the previous run\'s record is left alone', async () => {
+    const appId = await makeApp();
+    const depId = await makeDeployment(appId);
+    put(appId, depId, 'runtime.log', 'r'.repeat(321));
+    put(appId, depId, 'runtime.previous.log', 'p'.repeat(99));
+    await pool.query(`INSERT INTO log_files (deployment_id, app_id, kind) VALUES ($1, $2, 'runtime')`, [depId, appId]);
+    await pool.query(`INSERT INTO log_files (deployment_id, app_id, kind, bytes, ended_at) VALUES ($1, $2, 'runtime_previous', 99, now())`, [depId, appId]);
+    await go();
+    const rows = Object.fromEntries((await pool.query('SELECT kind, bytes, ended_at FROM log_files WHERE deployment_id = $1', [depId])).rows.map((r) => [r.kind, r]));
+    assert.equal(Number(rows.runtime.bytes), 321);
+    assert.notEqual(rows.runtime.ended_at, null);
+    assert.equal(Number(rows.runtime_previous.bytes), 99);
+  });
+
+  test('a log that had been cut short at the size cap is still marked cut short after it is closed', async () => {
+    const appId = await makeApp();
+    const depId = await makeDeployment(appId);
+    put(appId, depId, 'runtime.log', 'r'.repeat(50));
+    await pool.query(`INSERT INTO log_files (deployment_id, app_id, kind, truncated) VALUES ($1, $2, 'runtime', true)`, [depId, appId]);
+    await go();
+    const r = (await pool.query(`SELECT truncated, ended_at FROM log_files WHERE deployment_id = $1 AND kind = 'runtime'`, [depId])).rows[0];
+    assert.deepEqual([r.truncated, r.ended_at !== null], [true, true]);
+  });
+
+  test('a deployment\'s directory holding runtime.previous.log counts as ours when it is tidied away', async () => {
+    put(UUID_A, UUID_D, 'runtime.log', 'x');
+    put(UUID_A, UUID_D, 'runtime.previous.log', 'y');
+    await go();
+    assert.ok(!existsSync(logDirFor(root, UUID_A, UUID_D)));
+  });
+});
+
 describe('logs of deployments that no longer exist', () => {
   test('are removed, and the app directory with them when it is empty', async () => {
     put(UUID_A, UUID_D, 'build.log', 'orphan');

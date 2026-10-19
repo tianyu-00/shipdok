@@ -285,6 +285,65 @@ describe('what the monitor must not touch', () => {
   });
 });
 
+describe('collecting the app\'s own output', () => {
+  const withCollector = async (cfg = {}, over = {}) => {
+    const t = await setup(cfg, over);
+    const seen = [];
+    const collector = { sync: async (app, container, facts) => { seen.push([app.id, facts.status]); t.eng.events.push('collector.sync'); } };
+    const monitor = createMonitor({ db: store, eng: t.eng, activity: t.activity, collector, now: () => clock, log: () => {} });
+    return { ...t, seen, monitor };
+  };
+
+  test('every container the monitor looks at is passed to the collector, running or not', async () => {
+    const t = await withCollector();
+    await t.monitor.tick();
+    crashed(t.eng);
+    await t.monitor.tick();
+    assert.deepEqual(t.seen, [[t.appId, 'running'], [t.appId, 'exited']]);
+  });
+
+  test('a stopped app\'s container is passed on too (its last output must still be saved)', async () => {
+    const t = await withCollector();
+    await pool.query(`UPDATE apps SET desired_state = 'stopped' WHERE id = $1`, [t.appId]);
+    crashed(t.eng, { exitCode: 143 });
+    await t.monitor.tick();
+    assert.equal(t.seen.length, 1);
+  });
+
+  test('an app a deployment or control job is working on is left to that job', async () => {
+    const t = await withCollector();
+    await t.activity.run(t.appId, () => t.monitor.tick());
+    assert.deepEqual(t.seen, []);
+  });
+
+  test('the output is looked at BEFORE a crashed container is started again, so the run that died is closed first', async () => {
+    const t = await withCollector();
+    crashed(t.eng);
+    await t.monitor.tick();
+    advance(5000);
+    await t.monitor.tick();
+    const events = t.eng.events;
+    assert.ok(events.indexOf('collector.sync') < events.indexOf('start live-1'));
+  });
+
+  test('a collector that fails cannot stop crash handling', async () => {
+    const t = await setup();
+    const logged = [];
+    const collector = { sync: async () => { throw new Error('disk full'); } };
+    const monitor = createMonitor({ db: store, eng: t.eng, activity: t.activity, collector, now: () => clock, log: (m) => logged.push(m) });
+    crashed(t.eng);
+    await monitor.tick();
+    assert.equal((await rt(t.appId)).state, 'restarting');
+    assert.ok(logged.some((m) => /disk full/.test(m)));
+  });
+
+  test('no collector at all is fine', async () => {
+    const t = await setup();
+    await t.monitor.tick();
+    assert.equal((await rt(t.appId)).state, 'running');
+  });
+});
+
 describe('the loop', () => {
   test('ticks repeatedly until stopped', async () => {
     const { appId, eng } = await setup();

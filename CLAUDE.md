@@ -27,11 +27,11 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 009_log_files
+  migrations/    001_init ... 010_runtime_logs
   src/           app.js, config.js, deployments.js (supersede/cancel), control.js (start/stop/restart requests), routes/ (auth, apps, env, webhooks, github, logs)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
-  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), monitor.js, activity.js, buildlog.js (the log sink), envvars.js, db.js, reconcile.js, paths.js
+  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), monitor.js, activity.js, buildlog.js (the log sink), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
   worker.js      entry point; cli.js: manual deploy
 apps/web/        empty (dashboard not started)
 packages/shared/ @shipdok/shared: crypto (AES-256-GCM), .env parser, github.js (app JWT, installation tokens), logstore.js (log format, masking, safe read/delete), constants
@@ -59,7 +59,7 @@ docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up 
 Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
 socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked).
 
-Tests at last commit: API 292, worker 294, shared 161. Worker tests reuse the `_test` database the API tests create and
+Tests at last commit: API 310, worker 379, shared 163. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -156,27 +156,44 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   a worker killed mid-build, and the orphan tidy-up. Not tested: a volume on a slow SD card; `close` vs `exit` for the last lines
   of a command (correct by Node's docs, but this machine cannot show a loss). There is still no API to delete a deployment itself
   (SQL by hand; the next worker boot then removes its logs).
+- **Runtime logs (verified against real Docker in an isolated compose project):** the monitor hands every container it looks at to
+  the collector (`runtimelog.js`), which streams the app's own output into `<LOG_DIR>/<app-id>/<deployment-id>/runtime.log`.
+  **Administrator's rule: a runtime log resets on every restart and goes away with its deployment.** Whenever the container starts
+  again (manual start/restart, an automatic restart, a recovery; told apart by the container's `StartedAt`, kept in
+  `log_files.run_started_at`) the current log becomes `runtime.previous.log` (ONE earlier run is kept, replacing the older one: an
+  automatic crash restart happens within seconds, so without it the crash output would be wiped before anyone read it) and a fresh
+  `runtime.log` starts. An old version's runtime log stays while its deployment exists (the spec wants logs to outlive container
+  replacement). Lines carry Docker's own timestamps and stdout/stderr labels, secrets are masked with the app's current variable
+  values (if they cannot be read, nothing is collected for that app), 100 MB cap per file (`truncated`; a capped log is not
+  followed again), and new containers get Docker-side rotation (10 MB x 3). Resuming needs no extra state: the time of the last line
+  in the file says where to continue, so a worker restart or a dropped connection neither loses nor repeats lines. At a redeploy the
+  old container's rest is drained into its log before it is removed (`onRetire`, 10 s limit, best effort). A run that began and ended
+  between two looks (a crash loop does this) is collected whole when first seen, bounded at the moment it exited so a later run
+  cannot leak in. API: `GET /api/apps/:id/logs` (the newest successful deployment's runtime log; `?kind=previous` for the run before;
+  `?tail=`, `?offset=&limit=`), and `?kind=build|runtime|previous` on `GET /api/deployments/:id/logs`. Deleting a deployment's logs is
+  refused (409) while its app is running and its output is still being collected. Checked for real: output collected, redeploy drain,
+  restart rotation, secret masked (0 occurrences on disk), a worker restart with 65 lines collected, 0 gaps, 0 duplicates, a crash
+  loop (the crashed run readable as "previous"), delete after stop. Real Docker also found the gap behind the crash-loop fix above.
+  Not tested: a very chatty app on the Pi's SD card, ARM64, Docker versions that return older lines than asked for (the file is
+  protected against that anyway). Known limits: stopping or restarting takes as long as the app needs to shut down (a plain Node
+  process ignoring SIGTERM costs Docker's 10 s grace), and lines inside the same millisecond as the last stored one can be lost on a
+  resume.
 - **Worker git ignores the admin's git config** (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`): a credential helper such as
   Git Credential Manager can otherwise open a window and hang a refused clone.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
 
-1. Runtime logs (the second half of SPEC.md §13): the app's own output, collected by the monitor into `runtime.log` per deployment,
-   drained before the old container is removed at a redeploy, Docker-side rotation (10 MB x 3) on new containers. Administrator's
-   rule: **runtime logs reset on every restart and are removed with the deployment**. Open question to settle first: an automatic
-   crash restart happens within seconds, so a reset on every restart would wipe the crash output before anyone reads it; keep the
-   previous run as `runtime.previous.log` (one generation), or reset only on manual restarts and new deployments.
-2. Image retention, rollback, disk cleanup.
-3. Dashboard (`apps/web`, React + Tailwind).
-4. Live CPU/memory usage and limits display (SPEC.md §12).
-5. Automatic host-port allocation and app deletion (currently SQL by hand: delete `deployments` rows first, `app_id` is
+1. Image retention, rollback, disk cleanup.
+2. Dashboard (`apps/web`, React + Tailwind).
+3. Live CPU/memory usage and limits display (SPEC.md §12).
+4. Automatic host-port allocation and app deletion (currently SQL by hand: delete `deployments` rows first, `app_id` is
    `ON DELETE RESTRICT`; remove containers and `shipdok/*` images yourself).
-6. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so
+5. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so
    other people hosting Shipdok do not fill in the form by hand. Read SPEC.md Milestone 3 first.
-7. Compose follow-ups: add `web` once the dashboard exists (decide: serve it same-origin and proxy `/api`, or cross-origin with
+6. Compose follow-ups: add `web` once the dashboard exists (decide: serve it same-origin and proxy `/api`, or cross-origin with
    CORS and cookie settings); add `cloudflared` to compose (point it at `http://api:4000`, no host networking needed).
-8. Pi: full-stack run in compose (ARM64 builds, firewall vs the health-check path, `DOCKER_GID`), run the tunnel as a service until
+7. Pi: full-stack run in compose (ARM64 builds, firewall vs the health-check path, `DOCKER_GID`), run the tunnel as a service until
    then, hardening, docs (setup options: tunnel, reverse proxy, or manual deploys only), API docs (Scalar).
 
 Known gaps: no API to delete a deployment (logs are tidied at the next worker boot); no audit/rate limit on `reveal`; old `shipdok/*` images pile up; build-time env vars; Railpack; DB backup docs.

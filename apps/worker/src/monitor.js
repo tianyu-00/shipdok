@@ -7,7 +7,7 @@ import { decide, CRASH_WINDOW_MS } from './supervisor.js';
 
 const message = (err) => String(err?.message ?? err);
 
-export function createMonitor({ db = store, eng = realEngine, activity, now = Date.now, intervalMs = 15_000, log = console.log }) {
+export function createMonitor({ db = store, eng = realEngine, activity, collector = null, now = Date.now, intervalMs = 15_000, log = console.log }) {
   async function checkApp(app) {
     if (activity.isBusy(app.id)) return;
     const [container] = await eng.findContainers({ appId: app.id, role: 'live' });
@@ -31,6 +31,16 @@ export function createMonitor({ db = store, eng = realEngine, activity, now = Da
 
     // A job may have started while we were asking Docker; if so, the facts above may be stale. Leave it to the job.
     if (activity.isBusy(app.id)) return;
+
+    // Save the app's own output. Done first, while the facts are fresh: a run that has just died is closed here, before
+    // the decision below may start the container again. A failure here must never stop crash handling.
+    if (collector) {
+      try {
+        await collector.sync({ id: app.id }, container, facts);
+      } catch (err) {
+        log(`monitor: ${app.slug}: could not collect the app's output: ${message(err)}`);
+      }
+    }
 
     const d = decide({
       now: now(), desired: app.desired, busy: false, container: facts, death, runtime: rt, crashesInWindow,

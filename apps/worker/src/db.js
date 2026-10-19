@@ -196,19 +196,57 @@ export const openLogFile = (appId, deploymentId, kind) =>
 
 export const closeLogFile = (deploymentId, kind, { bytes, truncated }) =>
   pool.query(
-    `UPDATE log_files SET bytes = $3, truncated = $4, ended_at = now() WHERE deployment_id = $1 AND kind = $2`,
-    [deploymentId, kind, bytes, truncated]);
+    // truncated left out (undefined) keeps what was recorded: closing a log must not forget that it was cut short.
+    `UPDATE log_files SET bytes = $3, truncated = COALESCE($4::boolean, truncated), ended_at = now() WHERE deployment_id = $1 AND kind = $2`,
+    [deploymentId, kind, bytes, truncated ?? null]);
 
-// Build logs a worker that died never closed.
-export async function listOpenBuildLogs() {
-  const { rows } = await pool.query(
-    `SELECT deployment_id, app_id FROM log_files WHERE kind = 'build' AND ended_at IS NULL`);
-  return rows.map((r) => ({ deploymentId: r.deployment_id, appId: r.app_id }));
-}
 
 // Which of these deployment ids still exist.
 export async function existingDeploymentIds(ids) {
   if (!ids.length) return new Set();
   const { rows } = await pool.query('SELECT id FROM deployments WHERE id = ANY($1::uuid[])', [ids]);
   return new Set(rows.map((r) => r.id));
+}
+
+// ---- Runtime logs: one 'runtime' file per deployment for the CURRENT run of its container, and one 'runtime_previous'
+// for the run before ----
+
+// null if there is no such log yet. runStartedAt is the container's StartedAt (ms): a different value means a restart.
+export async function getLogFile(deploymentId, kind) {
+  const { rows } = await pool.query(
+    'SELECT run_started_at, ended_at, bytes, truncated FROM log_files WHERE deployment_id = $1 AND kind = $2', [deploymentId, kind]);
+  if (!rows[0]) return null;
+  const r = rows[0];
+  return {
+    runStartedAt: r.run_started_at === null ? null : new Date(r.run_started_at).getTime(),
+    endedAt: r.ended_at, bytes: Number(r.bytes), truncated: r.truncated,
+  };
+}
+
+// A new run of the container begins: a fresh runtime log record.
+export const openRuntimeLog = (appId, deploymentId, startedAtMs) =>
+  pool.query(
+    `INSERT INTO log_files (deployment_id, app_id, kind, run_started_at) VALUES ($1, $2, 'runtime', to_timestamp($3::double precision / 1000.0))
+     ON CONFLICT (deployment_id, kind) DO UPDATE
+       SET bytes = 0, truncated = false, started_at = now(), ended_at = NULL, run_started_at = to_timestamp($3::double precision / 1000.0)`,
+    [deploymentId, appId, startedAtMs]);
+
+// The same run is being collected again (the worker restarted, or the log stream dropped).
+export const reopenLog = (deploymentId, kind) =>
+  pool.query('UPDATE log_files SET ended_at = NULL WHERE deployment_id = $1 AND kind = $2', [deploymentId, kind]);
+
+// The run that just ended becomes "the previous run" (replacing any older one).
+export const recordPreviousLog = (appId, deploymentId, { bytes, truncated }) =>
+  pool.query(
+    `INSERT INTO log_files (deployment_id, app_id, kind, bytes, truncated, ended_at) VALUES ($1, $2, 'runtime_previous', $3, $4, now())
+     ON CONFLICT (deployment_id, kind) DO UPDATE SET bytes = $3, truncated = $4, started_at = now(), ended_at = now()`,
+    [deploymentId, appId, bytes, truncated]);
+
+export const updateLogBytes = (deploymentId, kind, { bytes, truncated }) =>
+  pool.query('UPDATE log_files SET bytes = $3, truncated = $4 WHERE deployment_id = $1 AND kind = $2', [deploymentId, kind, bytes, truncated]);
+
+// Logs still marked as being written (any kind). At worker boot nothing is being written.
+export async function listOpenLogs() {
+  const { rows } = await pool.query('SELECT deployment_id, app_id, kind FROM log_files WHERE ended_at IS NULL');
+  return rows.map((r) => ({ deploymentId: r.deployment_id, appId: r.app_id, kind: r.kind }));
 }

@@ -7,21 +7,21 @@ import { join } from "node:path";
 import { docker, LABEL, removeQuietly } from "./docker.js";
 import * as store from "./db.js";
 import { interruptActive } from "./db.js";
-import { logRoot, logFilePath, logDirFor, removeDeploymentLogs } from "@shipdok/shared";
+import { logRoot, logFilePath, logDirFor, removeDeploymentLogs, LOG_FILE_NAMES } from "@shipdok/shared";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const OUR_FILES = new Set(["build.log", "runtime.log"]);
+const OUR_FILES = new Set(LOG_FILE_NAMES);
 
-// Tidies the log directory at boot. (1) Build logs a dead worker never closed get their real size. (2) The logs of
+// Tidies the log directory at boot. (1) Logs a dead worker never closed (any kind) get their real size. (2) The logs of
 // deployments that no longer exist are removed: a deployment's logs live exactly as long as the deployment does.
-// It only ever touches UUID-named directories that contain nothing but our own two log files.
+// It only ever touches UUID-named directories that contain nothing but our own log files.
 export async function reconcileLogs(root, { db = store, log = console.log } = {}) {
   const report = { logsClosed: 0, orphansRemoved: 0 };
 
-  for (const { deploymentId, appId } of await db.listOpenBuildLogs()) {
+  for (const { deploymentId, appId, kind } of await db.listOpenLogs()) {
     let bytes = 0;
-    try { bytes = (await stat(logFilePath(root, appId, deploymentId, "build"))).size; } catch { /* never written */ }
-    await db.closeLogFile(deploymentId, "build", { bytes, truncated: false });
+    try { bytes = (await stat(logFilePath(root, appId, deploymentId, kind))).size; } catch { /* never written */ }
+    await db.closeLogFile(deploymentId, kind, { bytes }); // the recorded "cut short" flag stays
     report.logsClosed++;
   }
 

@@ -88,6 +88,8 @@ export function containerSpec({ image, name, labels, containerPort, hostPort, me
       // Docker's own restart policy is off: the monitor (monitor.js) decides whether and when to restart, so that
       // crashes are counted, limited and shown, and a reboot is handled the same way as a crash.
       RestartPolicy: { Name: "no" },
+      // Docker keeps only a bounded copy of the output; the persistent copy is Shipdok's own (runtime.log).
+      LogConfig: { Type: "json-file", Config: { "max-size": "10m", "max-file": "3" } },
       // No privileged mode, no docker.sock, no host binds.
     },
   };
@@ -135,15 +137,33 @@ export function healthUrl(port, path) {
 export async function containerFacts(container) {
   const info = await container.inspect();
   const ended = Date.parse(info.State.FinishedAt);
+  const started = Date.parse(info.State.StartedAt);
   return {
     status: info.State.Status,
     exitCode: info.State.ExitCode,
     oomKilled: info.State.OOMKilled === true,
     // Docker reports "0001-01-01..." for a container that has not ended; that is "no end time".
     finishedAt: Number.isFinite(ended) && ended > Date.parse("2000-01-01") ? ended : null,
+    // When this RUN of the container began (a restart gives a new value), and which deployment's container it is.
+    startedAt: Number.isFinite(started) && started > Date.parse("2000-01-01") ? started : null,
+    deploymentId: info.Config?.Labels?.[LABEL.deployment] ?? null,
     restartPolicy: info.HostConfig?.RestartPolicy?.Name ?? "",
   };
 }
+
+// ---- The app's own output ----
+const seconds = (ms) => (ms / 1000).toFixed(3); // Docker takes "since"/"until" as seconds with decimals
+
+// A stream of Docker's log frames that keeps going while the container runs. See dockerlogs.js to read it.
+export const followLogs = (container, { since } = {}) =>
+  container.logs({ follow: true, stdout: true, stderr: true, timestamps: true, ...(since != null && { since: seconds(since) }) });
+
+// Everything between two moments, as one buffer of Docker's log frames.
+export const fetchLogs = (container, { since, until } = {}) =>
+  container.logs({
+    follow: false, stdout: true, stderr: true, timestamps: true,
+    ...(since != null && { since: seconds(since) }), ...(until != null && { until: seconds(until) }),
+  });
 
 // One health check, no waiting and no retries: true only for a 2xx answer within the timeout.
 export async function probeHealth(container, { containerPort, health }, { timeoutMs = 2000 } = {}) {

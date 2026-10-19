@@ -1,8 +1,18 @@
 // A stand-in for Docker and child processes, so deploy()'s orchestration (order of steps, cleanup, swap,
 // rollback, cancellation) can be tested without Docker. Every action is appended to `events`.
+import { Readable } from 'node:stream';
 import { abortError, isAbort } from '../src/docker.js';
 
 export { abortError };
+
+// One line the way Docker's log API frames it: [type, 0, 0, 0, length] + "<RFC3339Nano> <text>\n"
+const logFrame = ({ at, stream, text }) => {
+  const payload = Buffer.from(`${new Date(at).toISOString().replace('Z', '000000Z')} ${text}\n`);
+  const header = Buffer.alloc(8);
+  header[0] = stream === 'stderr' ? 2 : 1;
+  header.writeUInt32BE(payload.length, 4);
+  return Buffer.concat([header, payload]);
+};
 
 /**
  * cfg.previous        names of containers already live for the app
@@ -77,6 +87,34 @@ export function fakeEngine(cfg = {}) {
     async probeHealth(c, opts) { ev(`probe ${c.name}`); engine.lastProbe = opts; return typeof engine.probe === 'function' ? engine.probe() : engine.probe; },
     async deathCause(c) { ev(`cause ${c.name}`); return engine.cause; },
     async setRestartPolicyNone(c) { ev(`policy ${c.name}`); engine.facts.restartPolicy = 'no'; },
+    // ---- the app's own output, as Docker holds it: say() adds a line, followers see it live, fetchLogs reads a window ----
+    logLines: [],
+    followers: [],
+    failFetch: cfg.failFetch ?? false,
+    ignoreSince: cfg.ignoreSince ?? false, // behave like a Docker that returns older lines than asked for
+    followSince: [], // the "since" of every follow request
+    say(stream, text, at) {
+      const line = { at, stream, text };
+      engine.logLines.push(line);
+      for (const f of engine.followers) if (!f.destroyed && at >= f.since) f.push(logFrame(line));
+    },
+    async followLogs(c, { since } = {}) {
+      ev(`follow ${c.name}`);
+      engine.followSince.push(since);
+      const s = new Readable({ read() {} });
+      s.since = engine.ignoreSince ? 0 : (since ?? 0);
+      for (const line of engine.logLines) if (line.at >= s.since) s.push(logFrame(line));
+      engine.followers.push(s);
+      return s;
+    },
+    async fetchLogs(c, { since, until } = {}) {
+      ev(`fetch ${c.name}`);
+      if (engine.failFetch) throw Object.assign(new Error('no such container'), { statusCode: 404 });
+      return Buffer.concat(engine.logLines
+        .filter((l) => (engine.ignoreSince || since == null || l.at >= since) && (until == null || l.at < until))
+        .map(logFrame));
+    },
+    dropFollowers() { for (const f of engine.followers) f.push(null); engine.followers = []; }, // a connection that ends
     async imageArch() { return 'amd64'; },
     async hostArchitecture() { return 'x86_64'; },
   };

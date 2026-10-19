@@ -358,3 +358,58 @@ describe('the deployment log', () => {
     assert.ok(build.args.includes('--progress=plain'));
   });
 });
+
+describe('saving the old version\'s output before it is removed', () => {
+  const OLD = 'old';
+  test('the old container is handed over AFTER the new one is live and BEFORE it is removed', async () => {
+    const eng = fakeEngine({ previous: [OLD] });
+    await run({ onRetire: async (c) => { eng.events.push(`RETIRE ${c.name}`); } }, eng);
+    const i = (e) => eng.events.indexOf(e);
+    assert.ok(i('health shipdok-my-app-dep-1-live') < i('RETIRE old'), 'the new version is already serving');
+    assert.ok(i('stop old') < i('RETIRE old'), 'the old one has stopped, so its output is complete');
+    assert.ok(i('RETIRE old') < i('remove old'));
+  });
+
+  test('every old container is handed over', async () => {
+    const eng = fakeEngine({ previous: ['old-a', 'old-b'] });
+    const seen = [];
+    await run({ onRetire: async (c) => { seen.push(c.name); } }, eng);
+    assert.deepEqual(seen, ['old-a', 'old-b']);
+  });
+
+  test('nothing to hand over on a first deployment', async () => {
+    let called = false;
+    await run({ onRetire: async () => { called = true; } }, fakeEngine({ previous: [] }));
+    assert.equal(called, false);
+  });
+
+  test('not handed over when the swap fails and the old version is restored', async () => {
+    const eng = fakeEngine({ previous: [OLD], health: { live: async () => { throw new Error('unhealthy'); } } });
+    let called = false;
+    const r = await run({ onRetire: async () => { called = true; } }, eng);
+    assert.equal(r.ok, false);
+    assert.equal(called, false);
+    assert.ok(eng.events.includes('start old'));
+  });
+
+  test('a hook that fails cannot stop the deployment or the removal', async () => {
+    const eng = fakeEngine({ previous: [OLD] });
+    const r = await run({ onRetire: async () => { throw new Error('disk full'); } }, eng);
+    assert.equal(r.ok, true);
+    assert.ok(eng.events.includes('remove old'));
+  });
+
+  test('a hook that hangs is given up on after a while, and the removal still happens', async () => {
+    const eng = fakeEngine({ previous: [OLD] });
+    const t = Date.now();
+    const r = await run({ onRetire: () => new Promise(() => {}), retireTimeoutMs: 40 }, eng);
+    assert.equal(r.ok, true);
+    assert.ok(eng.events.includes('remove old'));
+    assert.ok(Date.now() - t < 3000);
+  });
+
+  test('without a hook nothing changes', async () => {
+    const eng = fakeEngine({ previous: [OLD] });
+    assert.equal((await run({}, eng)).ok, true);
+  });
+});
