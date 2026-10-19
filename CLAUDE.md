@@ -517,8 +517,11 @@ GitHub page; see "Connect GitHub").
   an image with a planted `.env` and `.pem` (fails, listing both); an unknown image also fails. `infrastructure/compose.yaml` now has only
   `image:` lines (`ghcr.io/tianyu-00/shipdok-api|worker|web:${SHIPDOK_VERSION:-latest}`; secrets, migrate and api share the api image);
   `infrastructure/compose.build.yaml` is the override that adds the `build:` sections. Checked: `docker compose config --images` for both file
-  sets and for a pinned version. **Not tested: the workflow on GitHub, the push to GHCR, the multi-arch build (this machine has no ARM
-  emulation), pulling on the Pi.** To do once, after the first publish: set the three packages to Public on github.com (GHCR starts
+  sets and for a pinned version. **Checked by the administrator on GitHub: the workflow ran, the images were published and made public, each has amd64 and arm64
+  (`docker buildx imagetools inspect` from here, no login).** A second job, `release`, runs after all three images are published (push to `publish`
+  only) and creates the GitHub Release and tag `v<VERSION>` with the image names, the run command and generated notes; if that release exists it
+  leaves it alone (bump `VERSION` for a new release); VERSION is validated. The release script was run locally with a fake `gh` (new, existing,
+  bad version); actionlint clean; **the release job itself has not run on GitHub yet. Not tested: pulling on the Pi.** To do once, after the first publish: set the three packages to Public on github.com (GHCR starts
   private) or `docker compose pull` needs a login. Do a pre-release on the `publish` branch to see it work.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
@@ -531,12 +534,12 @@ administrator provides a public address (own IP, or Nginx / Nginx Proxy Manager 
 the mode (`local` / `webhook` / `full`) and the public address in the DASHBOARD (Settings, Public access; stored in the DB, `SHIPDOK_PUBLIC` / `PUBLIC_URL` in `.env` override and show as locked). Goal: `docker compose up`, log in, press "Connect GitHub", install the app, deploy
 private repos. No periodic polling. Caddy is an optional, low-priority profile only.
 
-Build order (SPEC.md Milestone 6); steps 1 to 5 (password policy and lockout, recovery codes, public access, Connect GitHub, first-run secrets) are built, step 6 is written but not yet run on GitHub, see above:
+Build order (SPEC.md Milestone 6); steps 1 to 5 (password policy and lockout, recovery codes, public access, Connect GitHub, first-run secrets) are built, step 6 is built and published, see above:
 3. Public access is BUILT (see "Public access" under Built and verified); what remains of it is the docs with Nginx / Nginx Proxy Manager / Caddy
    examples, which go with step 7.
 4. Connect GitHub is BUILT (see "Connect GitHub" under Built and verified); the administrator still has to try the real button once.
 5. First-run secrets is BUILT (see above).
-6. Ready-made multi-arch images: BUILT in the repo (see "Published images"); waiting for the first run on GitHub (push to `publish`) and making the packages public.
+6. Ready-made multi-arch images: BUILT and published (see "Published images"); the Pi pull is part of step 7.
 7. Pi: full-stack run on the published images (ARM64, firewall vs the health-check path), hardening, docs (public
    address options, upgrade, backup), API docs (Scalar).
 8. Optional: Caddy compose profile for people without a proxy.

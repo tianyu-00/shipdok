@@ -80,3 +80,40 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
+
+  # After all three images are published: a GitHub Release (and the tag v<VERSION>) with notes of what changed since the last release.
+  # Publishing the same VERSION again updates the images but not the Release: bump VERSION for a new release.
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/publish'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          case "$VERSION" in
+            *[!0-9A-Za-z.-]* | '') echo "VERSION is not a version number: $VERSION" >&2; exit 1 ;;
+          esac
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists; its images were updated, the release page was left as it is. Bump VERSION for a new release."
+            exit 0
+          fi
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          cat > notes.md <<NOTES
+          Images for **linux/amd64** and **linux/arm64**:
+
+          \`\`\`
+          ghcr.io/$OWNER/shipdok-api:$VERSION
+          ghcr.io/$OWNER/shipdok-worker:$VERSION
+          ghcr.io/$OWNER/shipdok-web:$VERSION
+          \`\`\`
+
+          Run this version: \`SHIPDOK_VERSION=$VERSION docker compose -f infrastructure/compose.yaml up -d\`
+          NOTES
+          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "Shipdok v$VERSION" --notes-file notes.md --generate-notes
