@@ -4,6 +4,8 @@ import { hash, verify } from "@node-rs/argon2"; // argon2id by default; prebuilt
 import { timingSafeEqual } from "node:crypto";
 import { config } from "../config.js";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { passwordProblem } from "@shipdok/shared";
+import { addressOf, cleanName, lockedFor, lockMessage, recordAttempt, withAttemptLock } from "../lockout.js";
 
 const USERNAME_RE = /^[A-Za-z0-9_.-]{3,64}$/;
 
@@ -35,10 +37,7 @@ function validCredentials({ username, password }) {
   if (typeof username !== "string" || !USERNAME_RE.test(username)) {
     return "Username must be 3-64 characters: letters, numbers, dot, dash, underscore";
   }
-  if (typeof password !== "string" || password.length < 12 || password.length > 256) {
-    return "Password must be 12-256 characters";
-  }
-  return null;
+  return passwordProblem(password, { username });
 }
 
 function tokenMatches(given) {
@@ -83,29 +82,43 @@ export function authRouter(db) {
         throw err;
       }
       await startSession(req, userId);
+      await recordAttempt(db, { kind: "setup", username: cleanName(username), address: addressOf(req), success: true });
       res.status(201).json({ username });
     } catch (err) {
       next(err);
     }
   });
 
+  // Failed tries are counted per name and per address; after a few, the next ones wait (see lockout.js). The outer
+  // rate limit stays as a cheap first line.
   r.post("/login", limiter(10), async (req, res, next) => {
     try {
       const { username, password } = req.body ?? {};
       if (typeof username !== "string" || typeof password !== "string") {
         return res.status(400).json({ error: "Username and password required" });
       }
-      const { rows } = await db.query("SELECT id, password_hash FROM users WHERE username = $1", [username]);
-      const user = rows[0];
-      let ok = false;
-      try {
-        ok = await verify(user?.password_hash ?? (await getDummyHash()), password);
-      } catch {
-        ok = false;
+      const who = { username: cleanName(username), address: addressOf(req) };
+      const outcome = await withAttemptLock(db, who, async (client) => {
+        const wait = await lockedFor(client, who);
+        if (wait > 0) return { wait };
+        const { rows } = await client.query("SELECT id, password_hash FROM users WHERE username = $1", [username]);
+        const user = rows[0];
+        let ok = false;
+        try {
+          ok = await verify(user?.password_hash ?? (await getDummyHash()), password);
+        } catch {
+          ok = false;
+        }
+        await recordAttempt(client, { kind: "login", ...who, success: Boolean(user && ok) });
+        return { userId: user && ok ? user.id : null };
+      });
+      if (outcome.wait) {
+        res.set("Retry-After", String(outcome.wait));
+        return res.status(429).json({ error: lockMessage(outcome.wait), code: "locked", retryAfterSeconds: outcome.wait });
       }
-      if (!user || !ok) return res.status(401).json({ error: "Invalid username or password" });
+      if (!outcome.userId) return res.status(401).json({ error: "Invalid username or password" });
 
-      await startSession(req, user.id);
+      await startSession(req, outcome.userId);
       res.json({ username });
     } catch (err) {
       next(err);
@@ -120,6 +133,34 @@ export function authRouter(db) {
     });
   });
 
+  // Sign out every browser and device, this one included.
+  r.post("/logout-all", requireAuth, async (req, res, next) => {
+    try {
+      await db.query(`DELETE FROM "session" WHERE sess->>'userId' = $1`, [String(req.session.userId)]);
+      req.session.destroy((err) => {
+        if (err) return next(err);
+        res.clearCookie("shipdok.sid");
+        res.status(204).end();
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // The latest sign-in attempts, good and bad (names typed by strangers included), newest first.
+  r.get("/logins", requireAuth, async (req, res, next) => {
+    try {
+      const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 20));
+      const { rows } = await db.query(
+        "SELECT at, kind, username, address, success FROM login_attempts ORDER BY at DESC, id DESC LIMIT $1",
+        [limit],
+      );
+      res.json({ logins: rows });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // Change the administrator's password. The current one must be given again (a stolen session alone must not be enough).
   // Every other session ends; this one gets a fresh id. A wrong current password is a 403, not a 401: a 401 means "your
   // session ended" to the dashboard.
@@ -129,9 +170,9 @@ export function authRouter(db) {
       if (typeof currentPassword !== "string" || typeof newPassword !== "string") {
         return res.status(400).json({ error: "Give the current password and a new one" });
       }
-      if (newPassword.length < 12 || newPassword.length > 256) {
-        return res.status(400).json({ error: "The new password must be 12-256 characters" });
-      }
+      const { rows: who } = await db.query("SELECT username FROM users WHERE id = $1", [req.session.userId]);
+      const weak = passwordProblem(newPassword, { username: who[0]?.username });
+      if (weak) return res.status(400).json({ error: weak, code: "weak_password" });
       if (newPassword === currentPassword) return res.status(400).json({ error: "The new password must be different from the current one" });
 
       const { rows } = await db.query("SELECT id, password_hash FROM users WHERE id = $1", [req.session.userId]);

@@ -68,6 +68,12 @@ describe("first-run setup", () => {
   test("rejects weak credentials without creating a user", async () => {
     const short = await setup(request(app), { password: "short" });
     expect(short.status).toBe(400);
+    const pattern = await setup(request(app), { password: "abababababababab" });
+    expect(pattern.status).toBe(400);
+    expect(pattern.body.error).toMatch(/pattern/i);
+    const hasName = await setup(request(app), { username: "administrator", password: "my-administrator-pass" });
+    expect(hasName.status).toBe(400);
+    expect(hasName.body.error).toMatch(/username/i);
     const badName = await setup(request(app), { username: "a b!" });
     expect(badName.status).toBe(400);
     const { rows } = await testPool.query("SELECT count(*)::int AS n FROM users");
@@ -153,17 +159,23 @@ describe("session expiry", () => {
 });
 
 describe("rate limiting", () => {
-  test("login is limited after repeated failures", async () => {
+  test("setup is limited to 10 tries per client", async () => {
     await setup(request(app));
     const codes = [];
+    for (let i = 0; i < 12; i++) codes.push((await setup(request(app))).status);
+    expect(codes.slice(0, 9).every((c) => c === 409)).toBe(true); // 1 used by the first setup above
+    expect(codes.slice(9)).toEqual([429, 429, 429]);
+  });
+
+  test("a run of wrong logins from one address, each for a different name, is stopped by the lockout", async () => {
+    await setup(request(app));
+    // Both count by client address, and the lock steps in first (after 5 failures), so these are 429s from the lockout.
+    const codes = [];
     for (let i = 0; i < 12; i++) {
-      const res = await request(app)
-        .post("/api/auth/login")
-        .send({ username: "admin", password: "wrong-password-123" });
-      codes.push(res.status);
+      codes.push((await request(app).post("/api/auth/login").send({ username: `nobody${i}`, password: "wrong-password-123" })).status);
     }
-    expect(codes.slice(0, 10).every((c) => c === 401)).toBe(true);
-    expect(codes.slice(10)).toEqual([429, 429]);
+    expect(codes.slice(0, 5).every((c) => c === 401)).toBe(true);
+    expect(codes.slice(5).every((c) => c === 429)).toBe(true);
   });
 });
 

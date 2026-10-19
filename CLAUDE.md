@@ -27,8 +27,8 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 014_app_stats
-  src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), routes/ (auth, apps, env, webhooks, github, logs)
+  migrations/    001_init ... 015_login_attempts
+  src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), routes/ (auth, apps, env, webhooks, github, logs)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
   src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), deleteapp.js (removing an app), stats.js (CPU and memory samples), monitor.js, activity.js, buildlog.js (the log sink), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
@@ -62,7 +62,7 @@ docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up 
 Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
 socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked), `STATS_INTERVAL_MS` (default 15000: how often CPU and memory are measured), `WEB_HOST_PORT` (default 8080) and `WEB_BIND` (default 127.0.0.1) for the dashboard container; `PORT_RANGE` (default `20000-20999`, in compose passed to the API) is where a new app's host port comes from when none is given; `WEB_ORIGIN` must be the exact address you open it at (several allowed, comma separated; default `http://localhost:<WEB_HOST_PORT>` in compose, `http://localhost:5173` for `npm run dev`).
 
-Tests: API 534, worker 493, shared 176, web 356. Worker tests reuse the `_test` database the API tests create and
+Tests: API 557, worker 493, shared 183, web 388. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -73,7 +73,33 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
 - **Auth:** single admin, argon2id, sessions in Postgres (30 min idle / 12 h absolute), rate limits, Origin-header CSRF check.
   `POST /api/auth/password` ({currentPassword, newPassword}, 12-256 chars, must differ) needs a session AND the current password (a wrong
   one is a 403, not a 401, so the dashboard does not mistake it for an ended session), ends every OTHER session and gives this one a new
-  id; limited like login (10 per 15 min). There is still no "forgot password": delete the `users` row in Postgres to get the setup screen again.
+  id; limited like login (10 per 15 min). There is still no "forgot password": delete the `users` row in Postgres to get the setup screen
+  again (recovery codes and a host reset command are step 2 of "Next").
+- **Password policy, lockout, recent logins (Milestone 6 step 1; verified in a real browser against an isolated compose project):**
+  `passwordProblem` (`packages/shared/src/password.js`, used by setup and change-password; the answer is `weak_password` on change)
+  refuses under 12 or over 256 characters, a whole password made of one 1-4 character unit repeated, a plain run of characters
+  (`123456789012`, `abcdefghijkl`, digits wrapping round), and one that contains the username (3+ characters). **Administrator's
+  decision: no bundled word lists** (neither a common-passwords list nor a passphrase word list), so common passwords such as
+  `password123456`, keyboard walks and short common words are NOT caught, and there is no passphrase generator; the strength bar and the
+  hint to use several random words are the only guidance. SPEC.md section 4 still describes both and has not been updated. **Lockout** (`lockout.js`,
+  table `login_attempts`, migration 015, one row per login/setup attempt, kept 30 days): failures in a row since the last success, per typed
+  name (any name, real or not, so nothing reveals who exists) AND per client address, in the last 24 h. Five failures are answered normally;
+  after the fifth the next tries are refused with 429 `{code:'locked', retryAfterSeconds}` + `Retry-After`: 30 s, doubling per further
+  failure, capped at 15 min per name and 60 min per address (the name cap is short on purpose: anyone can type the administrator's name, so a
+  long lock would let a stranger keep them out). While locked nothing is checked (even the right password is refused) and the refused try
+  is not counted. A success clears the count. An advisory lock per name and per address (taken in a fixed order) makes the check, the
+  password check and the record one step, so nine parallel tries cannot all pass (checked; a bug found by a flaky test: a transaction that
+  began slightly earlier than the failure row it read made a negative age, which locked after only four failures). The old 10 per 15 min
+  limiter stays as an outer layer. Wrong CURRENT password on change-password is only limited by that outer limiter, not counted by the
+  lockout. `GET /api/auth/logins?limit=` (default 20, max 100) lists the latest attempts (good and bad, typed names included, with address
+  and kind login/setup/recovery); `POST /api/auth/logout-all` ends every session including this one. Dashboard: new **Security** page
+  (header link; icon only on phones): the honest "no second login step" note, Change password, **Sign out everywhere** (asks first),
+  recent sign-ins table; the setup form and the change-password dialog show a length-based strength bar and the rules. Checked for real
+  (before the word lists were removed, which touched only the password rules and the generator): pattern passwords refused with the
+  reason, five wrong tries then "Try again in 30 seconds", the right password refused during the wait and
+  accepted after it, failed attempts in the list, Sign out everywhere, no console errors beyond the expected failed requests. Not tested:
+  a hundred simultaneous addresses, behind a real reverse proxy. Known limit: through the dashboard's nginx the address recorded is the
+  Docker gateway (`172.19.0.1`), not the real client, until step 3 (trusted proxies and real client address).
 - **Apps/deployments API:** create/list/get apps, request deployment (row first, then queued), history, cancel. Settings
   snapshotted per deployment. `repo` is `owner/repo`; clone URL built server-side. `host_port` required for now.
 - **Deploy engine:** clone -> build -> candidate on temp port -> health check -> swap -> retire. Failures leave the running
@@ -275,8 +301,8 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   otherwise editing the container port would make a healthy app look unhealthy until it was redeployed (checked for real: edited the port
   and waited several monitor rounds, the app stayed Running). **Storage page** (`/storage`, header link): disk bar and level, per app log
   bytes and image bytes (upper bounds), link to the app's Images tab, "Delete output logs" (refused with a clear reason while the app runs),
-  and "Delete this log" for a finished deployment's build log inside the log window; all behind a confirmation. **Change password**: key
-  icon in the header. Checked for real: port taken (named, typed value kept), edit then rollback = container on the new port with the new
+  and "Delete this log" for a finished deployment's build log inside the log window; all behind a confirmation. **Change password**: now
+  on the Security page (the header key icon was removed). Checked for real: port taken (named, typed value kept), edit then rollback = container on the new port with the new
   memory limit, old port gone, pending list cleared; wrong current password explained inside the dialog; a second browser signed out
   while the first stays in; old password rejected, new one accepted. Not tested: a real push-triggered deployment applying an edit (a
   rollback was used, same code path for settings), a host port held by a non-Shipdok process, a very long session. Known limits: the name
@@ -335,9 +361,7 @@ administrator provides a public address (own IP, or Nginx / Nginx Proxy Manager 
 `SHIPDOK_PUBLIC=off|webhook|full` with `PUBLIC_URL`. Goal: `docker compose up`, log in, press "Connect GitHub", install the app, deploy
 private repos. No periodic polling. Caddy is an optional, low-priority profile only.
 
-Build order (SPEC.md Milestone 6):
-1. Password policy and strength guidance (min 12, common-password list, passphrase generator), progressive lockout per account and
-   address, recent-logins list, "sign out everywhere".
+Build order (SPEC.md Milestone 6); step 1 (password policy, lockout, recent logins, sign out everywhere) is built, see above:
 2. Recovery codes (10, hashed, single use, shown once) and a host-side password reset command.
 3. Public address support: `SHIPDOK_PUBLIC`, `PUBLIC_URL`, trusted proxies and the real client address (the dashboard's nginx must keep an
    address a trusted proxy supplies), `webhook` mode answering 404 except the webhook, docs with Nginx / Nginx Proxy Manager / Caddy.

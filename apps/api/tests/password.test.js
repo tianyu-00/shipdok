@@ -48,6 +48,16 @@ describe("changing the password", () => {
     expect((await request(app).post("/api/auth/login").send({ username: "admin", password: PASSWORD })).status).toBe(200);
   });
 
+  test("applies the same policy as setup: patterns, runs and the username are refused", async () => {
+    const cookie = await login();
+    for (const newPassword of ["123456789012", "abababababababab", "my-admin-secret-phrase"]) {
+      const res = await change(cookie, { currentPassword: PASSWORD, newPassword });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe("weak_password");
+    }
+    expect((await request(app).post("/api/auth/login").send({ username: "admin", password: PASSWORD })).status).toBe(200);
+  });
+
   test("refuses a request without both fields", async () => {
     const cookie = await login();
     expect((await change(cookie, { newPassword: NEW })).status).toBe(400);

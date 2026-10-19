@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { api } from '@/lib/api'
 import { ThemeToggle } from '@/components/theme-toggle'
+import { PasswordHelp } from '@/components/password-help'
 
 // First run: create the one administrator. Afterwards: log in.
 export default function AuthPage({ status }) {
@@ -54,7 +55,7 @@ export default function AuthPage({ status }) {
             <div className="space-y-2">
               <Label htmlFor="password">Password</Label>
               <Input id="password" type="password" autoComplete={setup ? 'new-password' : 'current-password'} value={password} onChange={(e) => setPassword(e.target.value)} />
-              {setup && <p className="text-xs text-muted-foreground">At least 12 characters.</p>}
+              {setup && <PasswordHelp value={password} />}
             </div>
             {setup && (
               <>

@@ -3,6 +3,7 @@ export {
 } from './constants.js';
 export { parseMasterKey, envVarContext, encryptSecret, decryptSecret } from './crypto.js';
 export { parseEnvText } from './envfile.js';
+export { passwordProblem, PASSWORD_MIN, PASSWORD_MAX } from './password.js';
 export {
   GithubError, loadGithubAppConfig, signAppJwt, createGithubClient, gitAuthEnv,
 } from './github.js';

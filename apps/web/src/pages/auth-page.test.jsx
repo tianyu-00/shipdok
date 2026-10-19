@@ -41,7 +41,26 @@ describe('logging in', () => {
   })
 })
 
+describe('a locked login', () => {
+  test('shows how long to wait and the form stays usable', async () => {
+    mockApi({ 'POST /api/auth/login': () => { throw { status: 429, body: { error: 'Too many failed attempts. Try again in 30 seconds.', code: 'locked', retryAfterSeconds: 30 } } } })
+    renderWithProviders(<AuthPage status={{ needsSetup: false, authenticated: false }} />)
+    await userEvent.type(screen.getByLabelText('Username'), 'admin')
+    await userEvent.type(screen.getByLabelText('Password'), 'whatever-it-is-1')
+    await userEvent.click(screen.getByRole('button', { name: 'Log in' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Try again in 30 seconds')
+    expect(screen.getByRole('button', { name: 'Log in' })).toBeEnabled()
+  })
+})
+
 describe('first-run setup', () => {
+  test('shows the strength of the password as it is typed', async () => {
+    renderWithProviders(<AuthPage status={{ needsSetup: true, authenticated: false }} />)
+    await userEvent.type(screen.getByLabelText('Password'), 'x'.repeat(16))
+    expect(screen.getByRole('img', { name: 'Strength: Good' })).toBeInTheDocument()
+  })
+
+
   const fill = async (password, confirm, token) => {
     await userEvent.type(screen.getByLabelText('Username'), 'admin')
     await userEvent.type(screen.getByLabelText('Password'), password)
@@ -75,9 +94,9 @@ describe('first-run setup', () => {
   })
 
   test('the server\'s complaint (a short password) is shown', async () => {
-    mockApi({ 'POST /api/auth/setup': () => { throw { status: 400, body: { error: 'Password must be 12-256 characters' } } } })
+    mockApi({ 'POST /api/auth/setup': () => { throw { status: 400, body: { error: 'The password is a short pattern repeated over and over' } } } })
     renderWithProviders(<AuthPage status={{ needsSetup: true, authenticated: false }} />)
-    await fill('short', 'short')
-    expect(await screen.findByRole('alert')).toHaveTextContent('12-256 characters')
+    await fill('abababababababab', 'abababababababab')
+    expect(await screen.findByRole('alert')).toHaveTextContent('short pattern')
   })
 })

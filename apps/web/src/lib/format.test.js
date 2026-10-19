@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { displayState, timeAgo, formatDuration, formatBytes, shortSha, deploymentReason, parseLogLine, isActiveDeployment, DEPLOYMENT_STATUS, RUNTIME_STATE } from './format'
+import { displayState, timeAgo, formatDuration, formatBytes, shortSha, deploymentReason, parseLogLine, shortAddress, isActiveDeployment, DEPLOYMENT_STATUS, RUNTIME_STATE } from './format'
 
 const NOW = Date.parse('2026-10-19T12:00:00Z')
 
@@ -100,4 +100,14 @@ describe('appAddress', () => {
     expect(appAddress({ host_port: 9000, running_settings: { host_port: 8080 } }, 'pi.local')).toBe('http://pi.local:8080')
     expect(appAddress({ host_port: 9000, running_settings: null }, 'pi.local')).toBe('http://pi.local:9000')
   })
+})
+
+describe('shortAddress', () => {
+  test.each([
+    ['::ffff:192.168.1.20', '192.168.1.20'],
+    ['::FFFF:10.0.0.1', '10.0.0.1'],
+    ['203.0.113.9', '203.0.113.9'],
+    ['2001:db8::1', '2001:db8::1'],
+    [null, ''],
+  ])('%s -> %s', (given, shown) => expect(shortAddress(given)).toBe(shown))
 })

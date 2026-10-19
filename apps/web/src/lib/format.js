@@ -98,3 +98,6 @@ export const appAddress = (app, host = window.location.hostname) => `http://${ho
 
 // The repository's page on GitHub. `repo` is validated as owner/repo by the API; anything else gets no link.
 export const repoUrl = (repo) => (/^(?!\.+\/)[A-Za-z0-9_.-]+\/(?!\.+$)[A-Za-z0-9_.-]+$/.test(repo ?? '') ? `https://github.com/${repo}` : null)
+
+/** An address as people read it: the IPv4-in-IPv6 prefix some servers put in front is noise. */
+export const shortAddress = (address) => String(address ?? '').replace(/^::ffff:/i, '')

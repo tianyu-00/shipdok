@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { api } from '@/lib/api'
+import { PasswordHelp } from '@/components/password-help'
 
 /** The checks the server also makes, done first so a typo does not cost a request (and a rate-limit attempt). */
 export function passwordProblem({ current, next, repeat }) {
@@ -47,7 +48,7 @@ export function ChangePasswordDialog({ onClose }) {
           <div className="space-y-2">
             <Label htmlFor="cp-new">New password</Label>
             <Input id="cp-new" type="password" autoComplete="new-password" value={f.next} onChange={set('next')} />
-            <p className="text-xs text-muted-foreground">At least 12 characters.</p>
+            <PasswordHelp value={f.next} />
           </div>
           <div className="space-y-2">
             <Label htmlFor="cp-repeat">Repeat the new password</Label>
