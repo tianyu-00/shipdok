@@ -33,10 +33,12 @@ apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer;
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
   src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), monitor.js, activity.js, buildlog.js (the log sink), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
   worker.js      entry point; cli.js: manual deploy
-apps/web/        empty (dashboard not started)
+apps/web/        Vite + React (JavaScript) dashboard, Tailwind v4 + shadcn/ui (copied into src/components/ui); Vitest + Testing Library
+  src/           App.jsx, pages/ (auth, apps list, create app, app detail), components/ (tabs, log viewer, actions), lib/ (api client, queries, format)
+  nginx.conf, Dockerfile   production image: nginx serves the build and forwards /api to the API
 packages/shared/ @shipdok/shared: crypto (AES-256-GCM), .env parser, github.js (app JWT, installation tokens), logstore.js (log format, masking, safe read/delete), constants
 infrastructure/  compose.yaml (Postgres 16, Redis 7 on 127.0.0.1; migrate, api, worker services), .env (never committed)
-apps/api/Dockerfile, apps/worker/Dockerfile, .dockerignore   images built from the repo root (see "Run it")
+apps/api/Dockerfile, apps/worker/Dockerfile, apps/web/Dockerfile, .dockerignore   images built from the repo root (see "Run it")
 ```
 
 ## Run it
@@ -46,20 +48,21 @@ docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up 
 npm run migrate -w apps/api
 npm run dev -w apps/api          # API on 127.0.0.1:4000
 npm start -w apps/worker         # reconciles on boot, then waits for jobs
-npm test                         # API (Jest), worker (node:test), shared (node:test)
+npm run dev -w apps/web          # dashboard on http://localhost:5173 (Vite forwards /api to the API on 4000)
+npm test                         # API (Jest), worker (node:test), shared (node:test), web (Vitest)
 ```
 
 Or run the whole platform in Docker instead (do not mix with the npm commands above; both would use port 4000 and one queue).
-Develop with npm: start only the data services with `... up -d postgres redis`. A bare `up -d` starts api and worker too.
+Develop with npm: start only the data services with `... up -d postgres redis`. A bare `up -d` starts api, worker and web too.
 
 ```bash
 docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up -d --build
 ```
 
 Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
-socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked).
+socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked), `WEB_HOST_PORT` (default 8080) and `WEB_BIND` (default 127.0.0.1) for the dashboard container; `WEB_ORIGIN` must be the exact address you open it at (several allowed, comma separated; default `http://localhost:<WEB_HOST_PORT>` in compose, `http://localhost:5173` for `npm run dev`).
 
-Tests: API 399, worker 445, shared 173. Worker tests reuse the `_test` database the API tests create and
+Tests: API 403, worker 445, shared 173, web 158. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -220,21 +223,43 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   fake measurement), a build that fills the disk, ARM64, a real push-triggered build after this change (the build step itself was
   only re-indented; unit tests cover it). Known limits: the layer-usage measure also counts anything else Docker does during the
   clean-up; dangling build cache is not cleaned (no per-app ownership; a separate "clean build cache" action is later work).
+- **Dashboard (slice 1, verified in a real browser against the full Docker stack):** `apps/web` is Vite + React in plain JavaScript,
+  Tailwind v4, shadcn/ui components (JavaScript mode; the CLI wrongly installed an unrelated npm package `cn`, removed: components import
+  `@/lib/utils`), React Router, TanStack Query (polling). **Same origin**: in development Vite forwards `/api`; in Docker the `web`
+  container (nginx, port 8080 on 127.0.0.1 by default) serves the build and forwards `/api` to the API, so cookies just work and there
+  is no CORS. nginx re-resolves `api` (survives its recreation), overwrites `X-Forwarded-For`, and sends a strict CSP; the API gets
+  `TRUST_PROXY=loopback,uniquelocal` in compose so rate limits count the real client. Theme: Light, Dark or System (next-themes,
+  remembered in the browser); dark is a very dark near-black gray (`#0f0f10`, cards `#151516`), never pure black. Screens: login and
+  first-run setup (a session that ends sends you back to the login form, then back to the page you were on), apps list with a disk
+  warning, create app (repository list from the GitHub App, or typed), app page with tabs: Overview (what runs, limits, status,
+  crash history), Deployments (history with reasons, Cancel, build log window), Logs (the app's own output, following, with the
+  previous run), Variables (masked, reveal on request, edit, delete, `.env` import with line-by-line problems, pending-changes
+  notice). Deploy asks "deploy anyway?" when the API answers `disk_critical`; a stopped app offers "Deploy and start"; Stop asks
+  first; while a Stop or Start has been requested but not carried out the badge says "Stopping…" / "Starting…". If the browser's
+  address is not in `WEB_ORIGIN` every button would fail with a bare 403, so the dashboard says which address was refused and which
+  setting to change. Slice 2 (not built): images, rollback, prune, retention settings, delete a deployment, storage page, editing an
+  app's other settings. Checked for real (headless Chromium in a throwaway container, isolated compose project): setup, login (wrong
+  password, expiry), create app, a running app collected by the worker, live-following log, restart (earlier run kept), stop/start,
+  failed deployment with its build log, variables (secret never in the page until revealed), theme switching and persistence, deep
+  links and reloads, a phone-width screen without sideways scroll, no console or CSP errors. Not tested: other browsers, a screen
+  reader, a very long log in the page (capped at 5000 lines in memory), `WEB_BIND` on a real LAN, ARM64 image builds, the dashboard
+  with a GitHub App configured (the repository list was only tested with a fake answer). Known limits: failed deployments show the
+  API's short summary (`git exited 128`), the reason is in the build log; the login rate limit (10 per 15 minutes) also blocks the
+  administrator after repeated tries from the same address.
 - **Worker git ignores the admin's git config** (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`): a credential helper such as
   Git Credential Manager can otherwise open a window and hang a refused clone.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
 
-1. Dashboard (`apps/web`, React + Tailwind).
+1. Dashboard slice 2: images and rollback, prune and retention settings, delete a deployment, storage page, app settings.
 2. Live CPU/memory usage and limits display (SPEC.md §12).
 3. Automatic host-port allocation and app deletion (currently SQL by hand: delete `deployments` rows first, `app_id` is
    `ON DELETE RESTRICT`; remove containers and `shipdok/*` images yourself; with the new `DELETE /api/deployments/:id` the rows and
    images can go through the API first).
 4. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so
    other people hosting Shipdok do not fill in the form by hand. Read SPEC.md Milestone 3 first.
-5. Compose follow-ups: add `web` once the dashboard exists (decide: serve it same-origin and proxy `/api`, or cross-origin with
-   CORS and cookie settings); add `cloudflared` to compose (point it at `http://api:4000`, no host networking needed).
+5. Compose follow-ups: add `cloudflared` to compose (point it at `http://api:4000`, no host networking needed).
 6. Pi: full-stack run in compose (ARM64 builds, firewall vs the health-check path, `DOCKER_GID`), run the tunnel as a service until
    then, hardening, docs (setup options: tunnel, reverse proxy, or manual deploys only), API docs (Scalar).
 
