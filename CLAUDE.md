@@ -328,11 +328,25 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
 
 ## Next
 
-1. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so
-   other people hosting Shipdok do not fill in the form by hand. Read SPEC.md Milestone 3 first.
-2. Compose follow-ups: add `cloudflared` to compose (point it at `http://api:4000`, no host networking needed).
-3. Pi: full-stack run in compose (ARM64 builds, firewall vs the health-check path, `DOCKER_GID`), run the tunnel as a service until
-   then, hardening, docs (setup options: tunnel, reverse proxy, or manual deploys only), API docs (Scalar).
+Direction decided by the administrator and now written into SPEC.md (section 4 password policy and recovery codes, section 5 Connect
+GitHub, section 8 "Public exposure", section 20 Milestone 6): Shipdok does NOT ship or manage a tunnel (no `cloudflared`). One admin
+account only. No two-factor login; instead a strong password policy, progressive lockout, recent logins and recovery codes. The
+administrator provides a public address (own IP, or Nginx / Nginx Proxy Manager / Caddy, possibly behind a tunnel they run) and picks
+`SHIPDOK_PUBLIC=off|webhook|full` with `PUBLIC_URL`. Goal: `docker compose up`, log in, press "Connect GitHub", install the app, deploy
+private repos. No periodic polling. Caddy is an optional, low-priority profile only.
+
+Build order (SPEC.md Milestone 6):
+1. Password policy and strength guidance (min 12, common-password list, passphrase generator), progressive lockout per account and
+   address, recent-logins list, "sign out everywhere".
+2. Recovery codes (10, hashed, single use, shown once) and a host-side password reset command.
+3. Public address support: `SHIPDOK_PUBLIC`, `PUBLIC_URL`, trusted proxies and the real client address (the dashboard's nginx must keep an
+   address a trusted proxy supplies), `webhook` mode answering 404 except the webhook, docs with Nginx / Nginx Proxy Manager / Caddy.
+4. Connect GitHub (App Manifest flow, credentials encrypted in the DB, `.env` still overrides, Disconnect), using the public address.
+5. First-run secrets generated into a protected volume (`.env` still overrides).
+6. Ready-made multi-arch images (amd64 + ARM64) on GitHub's container registry via GitHub Actions; compose pulls instead of builds.
+7. Pi: full-stack run on the published images (ARM64, firewall vs the health-check path, `DOCKER_GID`), hardening, docs (public
+   address options, upgrade, backup), API docs (Scalar).
+8. Optional: Caddy compose profile for people without a proxy.
 
 Known gaps: no audit/rate limit on `reveal`; old `shipdok/*` images pile up until the administrator prunes (or turns on `auto_prune`); no "clean build cache" action; build-time env vars; Railpack; DB backup docs.
 The portfolio backend (`tianyu-00/TianYuSiteV2`, `backend/`, port 9090) is not yet deployed through the platform.

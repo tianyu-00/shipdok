@@ -23,6 +23,8 @@ The initial target is a Raspberry Pi 4 with 8 GB RAM. The design must remain use
 - Preserve the last successful version when a new deployment fails, where technically possible.
 - Keep applications and persistent data safe during cleanup and platform recovery.
 - Operate privately on a LAN or VPN by default.
+- Let the administrator choose, explicitly, to make Shipdok reachable from the internet on an address they provide: either the GitHub webhook only, or the whole dashboard (see section 8, "Public exposure").
+- Be installable with Docker Compose alone: prebuilt multi-architecture images, secrets generated on first run, and the GitHub App created from the dashboard with one click.
 
 ### Non-goals for the MVP
 
@@ -30,7 +32,8 @@ The initial target is a Raspberry Pi 4 with 8 GB RAM. The design must remain use
 - Multi-host scheduling or remote build agents.
 - Full Docker Compose application import or multi-container application deployment.
 - Public registration, teams, invitations, or multi-tenant access.
-- Built-in domain routing, TLS certificate issuance, or certificate renewal.
+- Built-in domain routing for deployed applications, or TLS certificate issuance and renewal in the core platform. Shipdok does not ship, run, or manage a tunnel (for example Cloudflare Tunnel). An optional, off-by-default Caddy profile may be provided purely as a convenience for administrators who have no reverse proxy of their own.
+- Two-factor authentication. The administrator's protection is a strong password, login lockout, and recovery codes (section 4). Optional two-factor login may be added later.
 - Pull-request preview deployments.
 - Provisioning or managing databases for deployed applications.
 - Automatic scheduled backups of Shipdok's database or application volumes.
@@ -45,7 +48,7 @@ The initial target is a Raspberry Pi 4 with 8 GB RAM. The design must remain use
 - **Development environment:** Windows with WSL2 and Docker Desktop.
 - **Architecture:** Native host architecture only in the MVP. On the Pi, target the host's actual architecture, expected to be ARM64 where the OS is 64-bit.
 - Detect incompatible images or dependencies and show clear errors. Do not attempt cross-architecture emulation in the MVP.
-- **Network access:** Private LAN/VPN access by default. Shipdok must not configure router port forwarding or public exposure.
+- **Network access:** Private LAN/VPN access by default. Shipdok must not configure router port forwarding itself. Public exposure is an explicit administrator choice made through a public address that the administrator provides and a proxy or port forward that the administrator operates (section 8, "Public exposure").
 - **Build concurrency:** One active build at a time; other build jobs wait in a persistent queue.
 - **Resource constraints:** The host's RAM, CPU, and disk are shared by Shipdok, builds, and deployed applications.
 - **Internet dependency:** Existing applications and the local dashboard should continue to work during an internet outage where the host and LAN remain operational. Internet-dependent builds fail clearly and require manual retry.
@@ -65,7 +68,9 @@ The initial target is a Raspberry Pi 4 with 8 GB RAM. The design must remain use
 
 ### Platform services
 
-Shipdok itself is run through Docker Compose and includes the dashboard, API, worker, PostgreSQL, and Redis. A reverse proxy is optional and external to the core MVP.
+Shipdok itself is run through Docker Compose and includes the dashboard, API, worker, PostgreSQL, and Redis. A reverse proxy or tunnel is optional and external to the core MVP: the administrator supplies it if they want a public address. Shipdok ships no tunnel. An optional Caddy compose profile (off by default) may be provided for administrators who have no proxy.
+
+Compose pulls prebuilt images (`shipdok-api`, `shipdok-worker`, `shipdok-web`) for both amd64 and ARM64 from GitHub's container registry, built and published by a GitHub Actions workflow on tagged releases. A new installation needs only the Compose file and, optionally, a small environment file. Building from source remains possible for development through an override file. Published images must never contain secrets.
 
 User application containers are created dynamically by the worker through the Docker Engine API. They are **not** declared as static services in Shipdok's own Compose file.
 
@@ -95,30 +100,47 @@ The exact monorepo tooling and package-manager choice can be decided during impl
 
 ## 4. Identity, administrator setup, and authentication
 
-- Shipdok is single-administrator in the MVP.
+- Shipdok is single-administrator in the MVP: exactly one account, which administers the whole dashboard. There are no other users, roles, or invitations.
 - On first launch, guide the user through creating the administrator account.
 - Disable first-run setup atomically after the account is created; concurrent setup requests must not create multiple administrators.
 - No public registration or invitation system.
 - Hash passwords using a modern password-hashing algorithm; never store plaintext passwords.
-- Rate-limit login attempts.
 - Use secure session cookies (`HttpOnly`, appropriate `SameSite`, and `Secure` when served over HTTPS).
 - Protect state-changing requests against CSRF where applicable.
 - Use a sliding inactivity timeout and a maximum session lifetime. Exact timeout values remain an implementation decision.
-- Support logout and session revocation.
+- Support logout and session revocation, including a "sign out everywhere" action.
+
+### Password policy and login protection
+
+Because the dashboard may be exposed to the internet by the administrator's choice, the password is the main protection and is treated that way:
+
+- Enforce a minimum length of 12 characters, and reject the most common passwords using a bundled list (checked offline; nothing is sent to a third party).
+- Show a strength indicator and a plain message that a dashboard reachable from the internet needs a long, unique password. Offer a "generate a passphrase" action that produces a random multi-word passphrase.
+- Rate-limit and slow down login attempts progressively, counted per account and per client address. Do not reveal whether a username exists, and keep response times uniform.
+- Show a list of recent logins (time, address, success or failure), including any use of a recovery code.
+- Two-factor authentication is not part of the MVP. The security documentation must say so honestly and explain that anyone who signs in can deploy and run arbitrary containers through the worker.
+
+### Recovery codes
+
+- When the administrator account is created (and on request later), generate a set of 10 long random recovery codes, shown once with copy, print, and download options and an explicit "I have saved these" confirmation.
+- Store only hashes of recovery codes. Each code works once. Regenerating the set invalidates the previous set.
+- A recovery code can be used on the login screen to set a new password. Using one signs out all other sessions, requires a new password immediately, and is recorded in the recent-logins list.
+- Recovery-code attempts are rate-limited like logins.
+- Provide a second recovery path for whoever controls the host: a documented command that resets the administrator's password (for example through `docker compose exec`). Access to the host is already full control.
 
 ### Platform secrets
 
-**Open decision (Q50):** Decide how Shipdok's own secrets are supplied and stored. Candidates discussed:
+**Decision (Q50):** Environment variables and protected secret files remain supported and always take precedence. By default, secrets that the administrator did not supply (session secret, encryption key, database and Redis passwords) are generated on first run into a protected volume, so that `docker compose up` works without a hand-made environment file. The trade-off, which the documentation must state, is that the encryption key then lives on the same disk as the database volume; administrators who want them separate supply the key themselves.
 
-1. Environment variables and protected mounted secret files.
-2. Encrypted values managed in PostgreSQL.
-3. An external secret manager.
+Credentials created by the GitHub App flow (private key, webhook secret, client secret) are stored encrypted in PostgreSQL with the platform encryption key, never returned to the browser after creation, and can be deleted with a "Disconnect GitHub" action. Environment-based GitHub App settings continue to work and take precedence.
 
-Regardless of the choice, real secrets must never be committed to source control, included in public images, or intentionally written to logs. Provide `.env.example` with placeholders only and protect actual secret files with restrictive permissions.
+Regardless of the source, real secrets must never be committed to source control, included in public images, or intentionally written to logs. Provide `.env.example` with placeholders only and protect actual secret files with restrictive permissions.
 
 ## 5. GitHub integration
 
 - Use a GitHub App rather than long-lived personal access tokens.
+- **Connect GitHub from the dashboard.** A single button starts GitHub's App Manifest flow: Shipdok sends the administrator to github.com with a prepared app definition (name, `contents: read`, the push event, and the webhook URL derived from the public address), the administrator confirms once, GitHub returns a one-time code, and the API exchanges it for the app's credentials. The exchange is an outbound call from the API, so the flow works on `localhost` or a LAN address; only webhook delivery needs a public address. The flow uses a random `state` value bound to the administrator's session, accepts each code once, supports personal and organisation accounts, and never logs or returns the private key. Afterwards the administrator installs the app on selected repositories. Public repositories work without a GitHub App.
+- The webhook URL is a setting. When the public address changes, Shipdok updates the app's webhook URL through GitHub's API instead of asking the administrator to edit it on github.com.
 - Request repository-scoped permissions and let the administrator install the app on selected repositories.
 - List repositories available to the installation.
 - Use short-lived installation access tokens; keep the app private key and webhook secret on the trusted platform side.
@@ -126,7 +148,7 @@ Regardless of the choice, real secrets must never be committed to source control
 - Deduplicate deliveries by GitHub delivery ID.
 - Record webhook processing failures without logging secrets.
 - Deploy only pushes to the application's configured branch.
-- Do not poll GitHub periodically in the MVP. If a webhook is missed, the administrator can inspect GitHub's delivery history and manually redeploy.
+- Do not poll GitHub periodically in the MVP. If a webhook is missed, the administrator can inspect GitHub's delivery history and manually redeploy. An administrator who does not provide a public address uses manual deployment.
 - Manual deployment and redeployment are available from the dashboard.
 
 ### Latest-commit-wins policy
@@ -231,20 +253,38 @@ Because a direct host port cannot usually be bound by both old and candidate con
 - If a requested port conflicts, fail clearly; do not silently choose another port.
 - Port allocation must be race-safe and account for the actual Docker host state.
 - Persist port settings across redeployments.
-- Default access is private LAN/VPN through the host IP and assigned port.
-- Shipdok must not configure router port forwarding or public exposure.
+- Default access to deployed applications is private LAN/VPN through the host IP and assigned port. Shipdok does not make deployed applications public and has no domain routing for them.
+- Shipdok must not configure router port forwarding. Making Shipdok itself reachable from the internet is covered by "Public exposure" below.
 - Applications are isolated from the control plane and from each other by default.
 - Outbound internet access is allowed by default, subject to host policy.
 - LAN access to private devices and inter-app communication require deliberate administrator-controlled configuration.
 - Docker networks alone are not a complete host/LAN security boundary. Validate the actual host firewall and Docker-published-port behaviour.
 - Do not grant application containers access to the Docker management socket or API.
 
+### Public exposure
+
+The administrator chooses one mode with a single setting, `SHIPDOK_PUBLIC`, and gives the public address in `PUBLIC_URL` (for example `https://shipdok.example.com`). Both are environment settings in the MVP; entering the domain in the dashboard is deferred.
+
+1. **`off` (default):** nothing is reachable from the internet. The dashboard listens on loopback by default and is reached from the same machine, over the LAN by binding it to a LAN address, or over a VPN.
+2. **`webhook`:** only `POST /api/webhooks/github` is reachable through the public address. Every other path answers 404. The dashboard stays private. This is the lowest-risk way to receive GitHub pushes.
+3. **`full`:** the whole dashboard is reachable on the public address, for administrators who want to manage Shipdok from outside their network. The password policy, lockout, recent logins, and recovery codes in section 4 apply, and the dashboard shows a banner whenever it is reachable from the internet.
+
+Shipdok ships and manages no tunnel and no certificate authority. The administrator provides the public address in whatever way suits them: their own public IP with a port forward, a reverse proxy such as Nginx, Nginx Proxy Manager, or Caddy, or a tunnel they run themselves in front of such a proxy. HTTPS is terminated by that proxy.
+
+Behind a proxy, Shipdok must:
+
+- Derive the allowed origin, secure cookies, and the GitHub webhook URL from `PUBLIC_URL`.
+- Accept forwarded headers only from trusted proxies configured with a trusted-proxy setting, and use the real client address from those headers for rate limits, lockout, and the recent-logins list. The dashboard's own web server must not discard an address that a trusted proxy supplies.
+- Never expose the dashboard port in `webhook` mode, and document that the proxy must forward only the webhook path, with Nginx and Caddy examples.
+- Keep the API, PostgreSQL, and Redis unreachable from outside the Compose network or loopback.
+
 ### TLS
 
-- Direct host-port access is the MVP path.
-- Shipdok does not manage TLS certificates or built-in domain routing.
-- Document optional Nginx Proxy Manager integration for domains and HTTPS.
-- Explain that HTTP does not encrypt traffic; protect dashboard access and credentials accordingly.
+- Direct host-port access is the MVP path for deployed applications.
+- The core platform does not issue or renew TLS certificates and has no built-in domain routing. HTTPS for a public address is provided by the administrator's proxy.
+- An optional Caddy compose profile, off by default and lower priority, may provide automatic HTTPS for administrators who have no proxy.
+- Document Nginx Proxy Manager and Nginx integration, including using a tunnel in front of them.
+- Explain that HTTP does not encrypt traffic; protect dashboard access and credentials accordingly, and do not use `full` mode without HTTPS.
 
 ## 9. Persistent volumes and external databases
 
@@ -372,7 +412,7 @@ Provide **Start**, **Stop**, and **Restart** controls:
 
 ### Platform upgrades
 
-- Upgrade Shipdok manually by updating its Docker images and following documented steps.
+- Upgrade Shipdok manually by pulling newer published images (`docker compose pull`, then `up -d`) and following documented steps. Images are versioned, so administrators can pin a release.
 - Use versioned, ordered database migrations.
 - Recommend a database backup before an upgrade.
 - Document diagnosis and recovery for failed migrations.
@@ -404,6 +444,9 @@ Security is a core requirement because the worker interacts with Docker and proc
 - Use scoped GitHub App permissions, verify webhook signatures, and protect private keys.
 - Encrypt application secrets at rest and mask them in the UI/API.
 - Protect session cookies, login routes, and state-changing requests.
+- When a public address is configured, apply the controls in section 4 and section 8: strong password policy, progressive lockout per account and address, recent-logins list, recovery codes stored hashed, security headers (including HSTS over HTTPS), an origin check taken from `PUBLIC_URL`, and trusted-proxy handling of client addresses.
+- State the residual risk plainly: there is no two-factor login in the MVP, and anyone who signs in can run arbitrary containers through a worker that controls Docker. Compromise of the dashboard is therefore compromise of the host.
+- Keep GitHub App credentials encrypted at rest and never return the private key to the browser.
 - Use ownership labels and stable internal IDs to scope cleanup.
 - Keep applications isolated by default and test host/LAN access controls.
 - BuildKit is not, by itself, a complete security boundary. Prototype and test isolation before claiming arbitrary untrusted repositories are safe. Document residual risks honestly.
@@ -432,6 +475,10 @@ The MVP should not be considered ready until automated tests cover at least:
 
 - First-run administrator setup is atomic and cannot create multiple admins.
 - Authentication, session expiry, logout, rate limits, and CSRF-sensitive routes.
+- Password policy (minimum length, common-password rejection), progressive lockout per account and per address, and the recent-logins list.
+- Recovery codes: generated once, stored hashed, single use, invalidated by regeneration, rate-limited, and ending other sessions when used.
+- Public modes: `off` exposes nothing; `webhook` answers 404 for every path except the webhook; `full` applies the origin check, secure cookies, and the real client address behind a trusted proxy, and ignores forwarded headers from untrusted sources.
+- The GitHub App Manifest flow: `state` binding, one-time code use, encrypted storage of credentials, no private key in any response or log, and Disconnect.
 - GitHub webhook signature verification and duplicate delivery handling.
 - Branch filtering and latest-commit-wins cancellation.
 - Stopped-app behaviour for incoming pushes and manual deployments.
@@ -468,7 +515,7 @@ Prototype tests must specifically validate Railpack ARM64 compatibility, restric
 
 ### Milestone 3 — End-to-end GitHub integration
 
-- GitHub App configuration and installation flow.
+- GitHub App configuration and installation flow, created from the dashboard with one click (App Manifest flow, section 5).
 - Repository/branch selection and verified webhooks.
 - Initial deployment review/confirmation.
 - Automatic configured-branch deployments and latest-commit-wins policy.
@@ -490,11 +537,27 @@ Prototype tests must specifically validate Railpack ARM64 compatibility, restric
 - Manual upgrade and migration documentation.
 - Security and ARM64/BuildKit/Railpack validation.
 
+### Milestone 6 — Public access and distribution
+
+In this order:
+
+1. Password policy and strength guidance, progressive lockout, and the recent-logins list.
+2. Recovery codes and the host-side password reset command.
+3. Public address support: `SHIPDOK_PUBLIC` (`off`, `webhook`, `full`), `PUBLIC_URL`, trusted proxies, real client address, and documentation with Nginx, Nginx Proxy Manager, and Caddy examples.
+4. The GitHub App Manifest flow ("Connect GitHub") using the public address, with the credentials stored encrypted.
+5. First-run secret generation, so that `docker compose up` needs no hand-made environment file.
+6. Prebuilt amd64 and ARM64 images published to GitHub's container registry by a GitHub Actions workflow, and a Compose file that pulls them.
+7. A full run on the Raspberry Pi using the published images.
+8. Optional, lower priority: an off-by-default Caddy compose profile for administrators without a proxy.
+
 ## 21. Open decisions and validation checklist
 
 ### Open decisions
 
-- **Platform secret storage (Q50):** environment variables/protected files, encrypted database storage, or an external secret manager.
+- **Platform secret storage (Q50):** decided in section 4 (environment and files take precedence; generated on first run into a protected volume otherwise; GitHub App credentials encrypted in PostgreSQL). Revisit if the same-disk key placement proves unacceptable.
+- Whether to add optional two-factor login after the MVP.
+- Whether to let the administrator enter the public domain in the dashboard (which would require controlling a proxy), instead of the environment.
+- Whether to include the optional Caddy profile at all.
 - Exact session inactivity and maximum lifetime values.
 - Exact CPU quota default after benchmarking.
 - Monorepo/package manager choice.
