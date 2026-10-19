@@ -11,7 +11,8 @@ import { appsRouter, deploymentsRouter } from './routes/apps.js';
 import { envRouter } from './routes/env.js';
 import { webhookReceiver, deliveriesRouter } from './routes/webhooks.js';
 import { githubRouter } from './routes/github.js';
-import { loadGithubAppConfig, createGithubClient } from '@shipdok/shared';
+import { loadGithubAppConfig, createGithubClient, logRoot } from '@shipdok/shared';
+import { deploymentLogsRouter, storageRouter, defaultDiskUsage } from './routes/logs.js';
 
 // The GitHub App client exists only when GITHUB_APP_ID and a private key are configured.
 function defaultGithub() {
@@ -26,6 +27,7 @@ export function createApp({
   db = pool, queue, secretsKey = loadSecretsKey(),
   webhookSecret = config.webhookSecret, webhookRateLimit = 120,
   github = defaultGithub(),
+  logDir = logRoot(), diskUsage = defaultDiskUsage,
 } = {}) {
   const app = express();
   app.disable('x-powered-by');
@@ -67,6 +69,8 @@ export function createApp({
   app.use('/api/apps', requireAuth, appsRouter({ db, queue, github }));
   app.use('/api/github', requireAuth, githubRouter({ github }));
   app.use('/api/deployments', requireAuth, deploymentsRouter({ db, queue }));
+  app.use('/api/deployments', requireAuth, deploymentLogsRouter({ db, logDir }));
+  app.use('/api/storage', requireAuth, storageRouter({ db, logDir, diskUsage }));
   app.use('/api/webhooks/deliveries', requireAuth, deliveriesRouter({ db }));
 
   app.use((req, res) => res.status(404).json({ error: 'Not found' }));

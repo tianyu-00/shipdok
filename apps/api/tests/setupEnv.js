@@ -11,3 +11,8 @@ process.env.COOKIE_SECURE = "false";
 // A fixed key that is NOT your real one: tests never touch infrastructure/.env's key.
 process.env.APP_SECRETS_KEY = "a1".repeat(32);
 process.env.GITHUB_WEBHOOK_SECRET = "test-webhook-secret-0123456789abcdef";
+// Deployment logs go to a throwaway directory, never to the real ~/.shipdok/logs.
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+process.env.LOG_DIR = mkdtempSync(join(tmpdir(), "shipdok-api-test-logs-"));
