@@ -36,6 +36,24 @@ const createSchema = z.object({
   auto_prune: z.boolean().default(false),
 }).strict();
 
+// What can be edited later. Not the repository (delete and recreate instead) and not the slug (it names the images and containers).
+// A name change keeps the slug. keep_previous_images/auto_prune have their own endpoint; desired_state is Start/Stop.
+const updateSchema = z.object({
+  name: createSchema.shape.name,
+  branch: createSchema.shape.branch.unwrap(),
+  root_dir: createSchema.shape.root_dir.unwrap(),
+  container_port: createSchema.shape.container_port,
+  host_port: createSchema.shape.host_port,
+  health_path: z.string().regex(/^\/[^\s]*$/, 'Must start with / and contain no spaces').max(200).nullable(),
+  memory_mb: createSchema.shape.memory_mb.unwrap(),
+  cpus: createSchema.shape.cpus.unwrap(),
+  max_restarts: createSchema.shape.max_restarts.unwrap(),
+}).partial().strict().refine((v) => Object.keys(v).length > 0, 'Give at least one setting to change');
+
+// The settings a deployment bakes into its container. An edit to one of these is "pending" until the next deployment; the name
+// and the restart limit are read live, so they never are.
+const SNAPSHOT_SETTINGS = ['branch', 'root_dir', 'container_port', 'host_port', 'health_path', 'memory_mb', 'cpus'];
+
 const retentionSchema = z.object({
   keep_previous_images: z.number().int().min(0).max(10).optional(),
   auto_prune: z.boolean().optional(),
@@ -59,6 +77,11 @@ const DEPLOYMENT_COLUMNS = `id, app_id, commit_sha, trigger, status, image_ref, 
 const RUNTIME = `(SELECT row_to_json(r) FROM (
     SELECT state, last_action, last_error, last_exit_code, oom_killed, health_failures, next_restart_at, updated_at
       FROM app_runtime WHERE app_id = a.id) r)`;
+
+// The settings the running version was deployed with: the newest successful deployment's snapshot (null until one succeeded).
+// An edit to the app changes the NEXT deployment, so the dashboard shows these for "what runs now" (never the env versions).
+const RUNNING_SETTINGS = `(SELECT config_snapshot - 'env' FROM deployments
+    WHERE app_id = a.id AND status = 'successful' ORDER BY seq DESC LIMIT 1)`;
 
 // What the last clean-up of the app's images did (null until one has run).
 const CLEANUP = `(SELECT row_to_json(c) FROM (
@@ -119,18 +142,68 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
           (SELECT row_to_json(x) FROM (
              SELECT id, status, commit_sha, queued_at, finished_at FROM deployments
              WHERE app_id = a.id ORDER BY queued_at DESC LIMIT 1) x) AS latest_deployment,
-          ${RUNTIME} AS runtime, ${CLEANUP} AS cleanup
+          ${RUNTIME} AS runtime, ${CLEANUP} AS cleanup, ${RUNNING_SETTINGS} AS running_settings
         FROM apps a ORDER BY a.created_at DESC`);
       res.json(rows);
     } catch (err) { next(err); }
   });
 
+  // The app as the dashboard shows it, plus which edited settings the running version does not have yet (null: nothing deployed).
+  async function appDetail(id) {
+    const { rows } = await db.query(`SELECT a.*, ${RUNTIME} AS runtime, ${CLEANUP} AS cleanup, ${RUNNING_SETTINGS} AS running_settings FROM apps a WHERE a.id = $1`, [id]);
+    const a = rows[0];
+    if (!a) return null;
+    const snap = a.running_settings;
+    // A record that lacks a key (an older version of Shipdok wrote it) is not treated as a difference.
+    a.settings_pending = snap
+      ? SNAPSHOT_SETTINGS.filter((k) => k in snap && (k === 'cpus' ? Number(snap[k]) !== Number(a[k]) : (snap[k] ?? null) !== (a[k] ?? null)))
+      : null;
+    return a;
+  }
+
   r.get('/:id', async (req, res, next) => {
     try {
       if (!isUuid(req.params.id)) return res.status(404).json({ error: 'App not found' });
-      const { rows } = await db.query(`SELECT a.*, ${RUNTIME} AS runtime, ${CLEANUP} AS cleanup FROM apps a WHERE a.id = $1`, [req.params.id]);
-      if (!rows[0]) return res.status(404).json({ error: 'App not found' });
-      res.json(rows[0]);
+      const a = await appDetail(req.params.id);
+      if (!a) return res.status(404).json({ error: 'App not found' });
+      res.json(a);
+    } catch (err) { next(err); }
+  });
+
+  // Edit settings. Nothing running is touched: the next deployment uses the new values (see settings_pending). A host port
+  // another app has, or a name another app has, is refused and the answer says which app.
+  r.put('/:id', async (req, res, next) => {
+    try {
+      if (!isUuid(req.params.id)) return res.status(404).json({ error: 'App not found' });
+      const parsed = updateSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Invalid app settings', details: parsed.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`) });
+      }
+      const v = parsed.data;
+      if (v.name !== undefined && !slugify(v.name)) return res.status(400).json({ error: 'Name must contain letters or numbers' });
+      const { rows: found } = await db.query('SELECT id FROM apps WHERE id = $1', [req.params.id]);
+      if (!found[0]) return res.status(404).json({ error: 'App not found' });
+
+      const conflict = async (column, value) => {
+        const { rows } = await db.query(`SELECT id, name FROM apps WHERE ${column} = $1 AND id <> $2`, [value, req.params.id]);
+        return rows[0] ?? null;
+      };
+      const taken = (code, what, owner) => ({
+        error: owner ? `${what} is already used by the app "${owner.name}"` : `${what} is already used by another app`,
+        code, ...(owner ? { app: { id: owner.id, name: owner.name } } : {}),
+      });
+      const keys = Object.keys(v); // only the schema's own keys ever reach the SQL text
+      try {
+        await db.query(
+          `UPDATE apps SET ${keys.map((k, i) => `${k} = $${i + 2}`).join(', ')}, updated_at = now() WHERE id = $1`,
+          [req.params.id, ...keys.map((k) => v[k])]);
+      } catch (err) {
+        // The database's unique indexes decide (one place, so two edits at the same moment cannot both win).
+        if (err.code === '23505' && err.constraint === 'apps_host_port_key') return res.status(409).json(taken('port_taken', `Port ${v.host_port}`, await conflict('host_port', v.host_port)));
+        if (err.code === '23505' && err.constraint === 'apps_name_key') return res.status(409).json(taken('name_taken', `The name "${v.name}"`, await conflict('name', v.name)));
+        throw err;
+      }
+      res.json(await appDetail(req.params.id));
     } catch (err) { next(err); }
   });
 

@@ -93,9 +93,19 @@ export async function interruptActive() {
 }
 
 // ---- Apps: what the control actions need ----
+// The administrator can edit an app's settings while it runs, but the running container keeps what the deployment that created
+// it used. Health checks of that container must use those settings (the newest successful deployment's snapshot), or an edit
+// would make a healthy app look unhealthy until it is redeployed. Old records without the keys fall back to the app's values.
+const RUNNING_PORT = `COALESCE((s.snap->>'container_port')::int, a.container_port)`;
+const RUNNING_HEALTH = `CASE WHEN s.snap ? 'health_path' THEN s.snap->>'health_path' ELSE a.health_path END`;
+const RUNNING_SNAP = `LEFT JOIN LATERAL (SELECT config_snapshot AS snap FROM deployments
+                       WHERE app_id = a.id AND status = 'successful' ORDER BY seq DESC LIMIT 1) s ON true`;
+
 export async function getApp(appId) {
   const { rows } = await pool.query(
-    'SELECT id, slug, container_port, health_path, desired_state, keep_previous_images, auto_prune FROM apps WHERE id = $1', [appId]);
+    `SELECT a.id, a.slug, ${RUNNING_PORT} AS container_port, ${RUNNING_HEALTH} AS health_path,
+            a.desired_state, a.keep_previous_images, a.auto_prune
+       FROM apps a ${RUNNING_SNAP} WHERE a.id = $1`, [appId]);
   return rows[0] ?? null;
 }
 
@@ -127,9 +137,9 @@ const ms = (d) => (d == null ? null : new Date(d).getTime());
 // Every app with what we last recorded about it, as plain numbers (milliseconds) the monitor can compare.
 export async function listSupervised() {
   const { rows } = await pool.query(
-    `SELECT a.id, a.slug, a.container_port, a.health_path, a.desired_state, a.max_restarts,
+    `SELECT a.id, a.slug, ${RUNNING_PORT} AS container_port, ${RUNNING_HEALTH} AS health_path, a.desired_state, a.max_restarts,
             r.state AS rt_state, r.next_restart_at, r.health_failures, r.last_death_at, r.last_error
-       FROM apps a LEFT JOIN app_runtime r ON r.app_id = a.id ORDER BY a.created_at`);
+       FROM apps a ${RUNNING_SNAP} LEFT JOIN app_runtime r ON r.app_id = a.id ORDER BY a.created_at`);
   return rows.map((r) => ({
     id: r.id, slug: r.slug, containerPort: r.container_port, healthPath: r.health_path,
     desired: r.desired_state, maxRestarts: r.max_restarts,

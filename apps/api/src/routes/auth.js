@@ -120,6 +120,39 @@ export function authRouter(db) {
     });
   });
 
+  // Change the administrator's password. The current one must be given again (a stolen session alone must not be enough).
+  // Every other session ends; this one gets a fresh id. A wrong current password is a 403, not a 401: a 401 means "your
+  // session ended" to the dashboard.
+  r.post("/password", requireAuth, limiter(10), async (req, res, next) => {
+    try {
+      const { currentPassword, newPassword } = req.body ?? {};
+      if (typeof currentPassword !== "string" || typeof newPassword !== "string") {
+        return res.status(400).json({ error: "Give the current password and a new one" });
+      }
+      if (newPassword.length < 12 || newPassword.length > 256) {
+        return res.status(400).json({ error: "The new password must be 12-256 characters" });
+      }
+      if (newPassword === currentPassword) return res.status(400).json({ error: "The new password must be different from the current one" });
+
+      const { rows } = await db.query("SELECT id, password_hash FROM users WHERE id = $1", [req.session.userId]);
+      if (!rows[0]) return res.status(401).json({ error: "Not authenticated" });
+      let ok = false;
+      try {
+        ok = await verify(rows[0].password_hash, currentPassword);
+      } catch {
+        ok = false;
+      }
+      if (!ok) return res.status(403).json({ error: "The current password is not correct", code: "wrong_password" });
+
+      await db.query("UPDATE users SET password_hash = $2 WHERE id = $1", [rows[0].id, await hash(newPassword)]);
+      await db.query(`DELETE FROM "session" WHERE sess->>'userId' = $1`, [String(rows[0].id)]); // all of them, this one included
+      await startSession(req, rows[0].id); // ... and this one comes back with a new id
+      res.status(204).end();
+    } catch (err) {
+      next(err);
+    }
+  });
+
   r.get("/me", requireAuth, async (req, res, next) => {
     try {
       const { rows } = await db.query("SELECT username FROM users WHERE id = $1", [req.session.userId]);
