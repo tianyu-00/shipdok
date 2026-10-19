@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { ScrollText, XCircle } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { RotateCcw, ScrollText, Trash2, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
@@ -7,18 +7,41 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { api } from '@/lib/api'
-import { useDeployments } from '@/lib/queries'
+import { useDeployments, useImages } from '@/lib/queries'
+import { deleteBlockedReason, deleteRemovesImage, versionsById } from '@/lib/versions'
 import { deploymentReason, formatDuration, isActiveDeployment, shortSha, timeAgo } from '@/lib/format'
 import { DeploymentStatusBadge } from '@/components/status-badge'
 import { Empty, ListSkeleton, LoadError } from '@/components/states'
 import { LogViewer } from '@/components/log-viewer'
+import { RollbackDialog } from '@/components/rollback-dialog'
+import { DeleteDeploymentDialog } from '@/components/delete-deployment-dialog'
+import { VersionBadge } from '@/components/version-badge'
 
 const TRIGGER = { manual: 'Manual', webhook: 'Push', rollback: 'Rollback' }
+
+// A button that cannot be used says why (a title, and for screen readers a description), instead of just being grey.
+function DeleteButton({ reason, onClick }) {
+  return (
+    <span title={reason ?? undefined}>
+      <Button variant="ghost" size="sm" disabled={reason !== null} aria-label={reason ? `Delete (unavailable: ${reason})` : 'Delete'} onClick={onClick}>
+        <Trash2 className="size-4" />Delete
+      </Button>
+    </span>
+  )
+}
 
 export default function DeploymentsTab({ app }) {
   const client = useQueryClient()
   const deployments = useDeployments(app.id)
+  const images = useImages(app.id) // a failure here only hides the version labels and the rollback/delete buttons
+  const versions = versionsById(images.data)
+  // A deployment appearing or finishing changes which version is live, so the labels are re-read at once, not on the next poll.
+  const signature = (deployments.data ?? []).map((d) => `${d.id}:${d.status}`).join()
+  const { refetch: refetchImages } = images
+  useEffect(() => { if (signature) refetchImages() }, [signature, refetchImages])
   const [logFor, setLogFor] = useState(null)
+  const [rollbackFor, setRollbackFor] = useState(null)
+  const [deleteFor, setDeleteFor] = useState(null)
 
   const cancel = useMutation({
     mutationFn: (id) => api(`/deployments/${id}/cancel`, { method: 'POST' }),
@@ -47,6 +70,7 @@ export default function DeploymentsTab({ app }) {
                   <div className="flex items-center gap-2">
                     <DeploymentStatusBadge status={d.status} />
                     {d.trigger !== 'manual' && <Badge variant="outline">{TRIGGER[d.trigger] ?? d.trigger}</Badge>}
+                    {versions.get(d.id) && <VersionBadge state={versions.get(d.id).state} />}
                   </div>
                 </TableCell>
                 <TableCell className="font-mono text-xs">{shortSha(d.commit_sha)}</TableCell>
@@ -59,6 +83,10 @@ export default function DeploymentsTab({ app }) {
                     {isActiveDeployment(d.status) && (
                       <Button variant="ghost" size="sm" disabled={cancel.isPending} onClick={() => cancel.mutate(d.id)}><XCircle className="size-4" />Cancel</Button>
                     )}
+                    {versions.get(d.id)?.canRollBackTo && (
+                      <Button variant="ghost" size="sm" onClick={() => setRollbackFor(d)}><RotateCcw className="size-4" />Roll back</Button>
+                    )}
+                    {images.data && !isActiveDeployment(d.status) && <DeleteButton reason={deleteBlockedReason(d, images.data)} onClick={() => setDeleteFor(d)} />}
                   </div>
                 </TableCell>
               </TableRow>
@@ -66,6 +94,9 @@ export default function DeploymentsTab({ app }) {
           </TableBody>
         </Table>
       </div>
+
+      {rollbackFor && <RollbackDialog app={app} deployment={rollbackFor} onClose={() => setRollbackFor(null)} />}
+      {deleteFor && <DeleteDeploymentDialog app={app} deployment={deleteFor} removesImage={deleteRemovesImage(deleteFor, images.data)} onClose={() => setDeleteFor(null)} />}
 
       <Dialog open={logFor !== null} onOpenChange={(open) => !open && setLogFor(null)}>
         <DialogContent className="max-w-4xl">

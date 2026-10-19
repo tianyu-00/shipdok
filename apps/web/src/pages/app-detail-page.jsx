@@ -12,10 +12,11 @@ import { RepoLink } from '@/components/repo-link'
 import { DeployButton, ControlButtons } from '@/components/app-actions'
 import OverviewTab from '@/components/overview-tab'
 import DeploymentsTab from '@/components/deployments-tab'
+import ImagesTab from '@/components/images-tab'
 import LogsTab from '@/components/logs-tab'
 import VariablesTab from '@/components/variables-tab'
 
-const TABS = ['overview', 'deployments', 'logs', 'variables']
+const TABS = ['overview', 'deployments', 'images', 'logs', 'variables']
 
 export default function AppDetailPage() {
   const { id } = useParams()
@@ -61,14 +62,18 @@ export default function AppDetailPage() {
       </div>
 
       <Tabs value={tab} onValueChange={(t) => navigate(t === 'overview' ? `/apps/${id}` : `/apps/${id}/${t}`)}>
-        <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="deployments">Deployments</TabsTrigger>
-          <TabsTrigger value="logs">Logs</TabsTrigger>
-          <TabsTrigger value="variables">Variables</TabsTrigger>
-        </TabsList>
+        <div className="-mx-1 overflow-x-auto px-1 py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <TabsList className="w-max">
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="deployments">Deployments</TabsTrigger>
+            <TabsTrigger value="images">Images</TabsTrigger>
+            <TabsTrigger value="logs">Logs</TabsTrigger>
+            <TabsTrigger value="variables">Variables</TabsTrigger>
+          </TabsList>
+        </div>
         <TabsContent value="overview"><OverviewTab app={a} /></TabsContent>
         <TabsContent value="deployments"><DeploymentsTab app={a} /></TabsContent>
+        <TabsContent value="images"><ImagesTab app={a} /></TabsContent>
         <TabsContent value="logs"><LogsTab app={a} /></TabsContent>
         <TabsContent value="variables"><VariablesTab app={a} /></TabsContent>
       </Tabs>

@@ -61,6 +61,13 @@ describe('the app page', () => {
     expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
   })
 
+  test('the Images tab opens from its address', async () => {
+    mockApi(base({ [`GET /api/apps/${APP_ID}/images`]: { keep_previous_images: 1, auto_prune: false, cleanup: null, prunableBytes: 0, versions: [] } }))
+    page(`/apps/${APP_ID}/images`)
+    expect(await screen.findByRole('tab', { name: 'Images' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByRole('button', { name: /clean up now/i })).toBeInTheDocument()
+  })
+
   test('an unknown tab in the address falls back to the overview', async () => {
     mockApi(base())
     page(`/apps/${APP_ID}/nonsense`)

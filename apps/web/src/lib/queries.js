@@ -43,3 +43,6 @@ export const useRepos = () => useQuery({
 export const useEnv = (id) => useQuery({ queryKey: ['env', id], queryFn: () => api(`/apps/${id}/env`) })
 
 export const useStorage = () => useQuery({ queryKey: ['storage'], queryFn: () => api('/storage'), refetchInterval: 30_000 })
+
+// The versions that have an image (live / previous / prunable / removed), the retention settings and the last clean-up.
+export const useImages = (id) => useQuery({ queryKey: ['images', id], queryFn: () => api(`/apps/${id}/images`), refetchInterval: 6000 })

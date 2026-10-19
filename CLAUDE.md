@@ -62,7 +62,7 @@ docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up 
 Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
 socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked), `WEB_HOST_PORT` (default 8080) and `WEB_BIND` (default 127.0.0.1) for the dashboard container; `WEB_ORIGIN` must be the exact address you open it at (several allowed, comma separated; default `http://localhost:<WEB_HOST_PORT>` in compose, `http://localhost:5173` for `npm run dev`).
 
-Tests: API 403, worker 445, shared 173, web 158. Worker tests reuse the `_test` database the API tests create and
+Tests: API 403, worker 445, shared 173, web 199. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -237,8 +237,8 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   notice). Deploy asks "deploy anyway?" when the API answers `disk_critical`; a stopped app offers "Deploy and start"; Stop asks
   first; while a Stop or Start has been requested but not carried out the badge says "Stopping…" / "Starting…". If the browser's
   address is not in `WEB_ORIGIN` every button would fail with a bare 403, so the dashboard says which address was refused and which
-  setting to change. Slice 2 (not built): images, rollback, prune, retention settings, delete a deployment, storage page, editing an
-  app's other settings. Checked for real (headless Chromium in a throwaway container, isolated compose project): setup, login (wrong
+  setting to change. Slice 2a (below) added images, rollback and delete; still not built (slice 2b): storage page, editing an
+  app's other settings, change password. Checked for real (headless Chromium in a throwaway container, isolated compose project): setup, login (wrong
   password, expiry), create app, a running app collected by the worker, live-following log, restart (earlier run kept), stop/start,
   failed deployment with its build log, variables (secret never in the page until revealed), theme switching and persistence, deep
   links and reloads, a phone-width screen without sideways scroll, no console or CSP errors. Not tested: other browsers, a screen
@@ -246,13 +246,24 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   with a GitHub App configured (the repository list was only tested with a fake answer). Known limits: failed deployments show the
   API's short summary (`git exited 128`), the reason is in the build log; the login rate limit (10 per 15 minutes) also blocks the
   administrator after repeated tries from the same address.
+- **Dashboard slice 2a: versions, rollback, clean-up, delete a deployment (verified in a real browser against real Docker in an isolated
+  compose project):** the Deployments tab labels each successful version (Live / Previous / Old image / Image removed; two records that
+  share one image share the label, so after a rollback two rows say Live), offers **Roll back** where an image still exists (asks first;
+  a stopped app can "Roll back and start") and **Delete** (disabled, with the reason, for the running version and the kept previous
+  one; the app's name must be typed; says whether its image goes too). New **Images** tab: keep-N (0 to 10) and automatic clean-up
+  settings, the versions with image sizes, the last clean-up's result, and **Clean up now**, which first lists exactly the images
+  that will be removed (and says logs are never touched), then shows "running" until the result changes. The version labels are re-read
+  as soon as a deployment appears or finishes. The repository name links to its GitHub page. Checked for real: rollback to the
+  previous version (the app answered with the old code), clean-up removing exactly the listed old image, delete with the typed name,
+  settings surviving a reload, light and dark, phone width without sideways scroll (the five tabs scroll inside their own bar). Not
+  tested: a rollback to an image removed behind Shipdok's back from the UI, a very long history.
 - **Worker git ignores the admin's git config** (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`): a credential helper such as
   Git Credential Manager can otherwise open a window and hang a refused clone.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
 
-1. Dashboard slice 2: images and rollback, prune and retention settings, delete a deployment, storage page, app settings.
+1. Dashboard slice 2b: storage page, app settings (edit branch, port, memory, CPU, health path), change password.
 2. Live CPU/memory usage and limits display (SPEC.md §12).
 3. Automatic host-port allocation and app deletion (currently SQL by hand: delete `deployments` rows first, `app_id` is
    `ON DELETE RESTRICT`; remove containers and `shipdok/*` images yourself; with the new `DELETE /api/deployments/:id` the rows and

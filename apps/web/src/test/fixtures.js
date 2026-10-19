@@ -17,3 +17,13 @@ export const makeDeployment = (over = {}) => ({
 
 export const APP_ID = ID
 export const line = (n, stream = 'stdout', text = `line ${n}`) => `2026-10-19T12:00:${String(n).padStart(2, '0')}.000Z ${stream} ${text}\n`
+
+export const makeVersion = (over = {}) => ({
+  deploymentId: 'dep-1', commit: 'b'.repeat(40), trigger: 'manual', finishedAt: '2026-10-19T11:51:00Z', image: 'shipdok/my-app:dep-1', bytes: 50_000_000,
+  state: 'live', rollbackOf: null, canRollBackTo: false, ...over,
+})
+
+export const makeImages = (versions = [makeVersion()], over = {}) => ({
+  keep_previous_images: 1, auto_prune: false, cleanup: null,
+  prunableBytes: versions.filter((v) => v.state === 'prunable').reduce((a, v) => a + (v.bytes ?? 0), 0), versions, ...over,
+})
