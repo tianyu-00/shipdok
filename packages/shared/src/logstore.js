@@ -1,10 +1,11 @@
 // Persistent logs on disk: where they live, the one-line format, masking secrets, and reading/removing them safely.
 // The worker writes these files and the API reads them, so the rules live here, once.
 //
-//   <LOG_DIR>/<app-id>/<deployment-id>/build.log      clone + docker build + deployment progress (kept until the deployment is deleted)
-//   <LOG_DIR>/<app-id>/<deployment-id>/runtime.log    the app's own output, for the CURRENT run of its container
-//   <LOG_DIR>/<app-id>/<deployment-id>/runtime.previous.log   the run before that (one generation), so the output of the
-//                                                             run that crashed is still readable after it is restarted
+//   <LOG_DIR>/<app-id>/<deployment-id>/build.log   clone + docker build + deployment progress (kept until the deployment is deleted)
+//   <LOG_DIR>/<app-id>/runtime.log                 the app's own output, for the CURRENT run of its container (one per app: a
+//                                                  new deployment or a restart resets it)
+//   <LOG_DIR>/<app-id>/runtime.previous.log        the run before that (one generation), so the output of the run that
+//                                                  crashed is still readable after it is restarted
 //
 // Paths are built only from validated UUIDs and a fixed list of kinds, never from anything a client sends.
 import { open, readdir, rm, rmdir, stat } from 'node:fs/promises';
@@ -13,9 +14,12 @@ import { join, resolve, sep } from 'node:path';
 
 export const MAX_LINE_BYTES = 16 * 1024;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const KIND_FILES = { build: 'build.log', runtime: 'runtime.log', runtime_previous: 'runtime.previous.log' };
+const KIND_FILES = { build: 'build.log' };
+const RUNTIME_FILES = { runtime: 'runtime.log', runtime_previous: 'runtime.previous.log' };
 /** Every file name a deployment's log directory may hold. Anything else in there is not ours. */
 export const LOG_FILE_NAMES = Object.values(KIND_FILES);
+/** The app-level runtime files. Older versions kept these inside each deployment's directory too. */
+export const RUNTIME_FILE_NAMES = Object.values(RUNTIME_FILES);
 const STREAMS = ['stdout', 'stderr', 'shipdok'];
 
 export const logRoot = (env = process.env) => (env.LOG_DIR ? env.LOG_DIR : join(homedir(), '.shipdok', 'logs'));
@@ -29,9 +33,16 @@ export function logDirFor(root, appId, deploymentId) {
   return join(root, assertId(appId), assertId(deploymentId));
 }
 
+/** A deployment's own log (kind 'build'). */
 export function logFilePath(root, appId, deploymentId, kind) {
   if (!Object.hasOwn(KIND_FILES, kind)) throw new Error('Invalid log kind');
   return join(logDirFor(root, appId, deploymentId), KIND_FILES[kind]);
+}
+
+/** An app's runtime log (kind 'runtime' or 'runtime_previous'): one of each per app, whatever the deployment. */
+export function runtimeLogPath(root, appId, kind) {
+  if (!Object.hasOwn(RUNTIME_FILES, kind)) throw new Error('Invalid log kind');
+  return join(root, assertId(appId), RUNTIME_FILES[kind]);
 }
 
 // ---- Writing: one line per message ----
@@ -170,6 +181,23 @@ export async function removeDeploymentLogs(root, appId, deploymentId) {
     throw err;
   }
   await rm(dir, { recursive: true, force: true });
-  await rmdir(join(root, appId)).catch(() => {}); // the app's directory too, if that was its last deployment
+  await rmdir(join(root, appId)).catch(() => {}); // the app's directory too, if that was its last file (it fails while runtime logs are in it)
+  return freed;
+}
+
+/** Deletes an app's two runtime logs (not its deployments' build logs). Returns the bytes freed. */
+export async function removeRuntimeLogs(root, appId) {
+  let freed = 0;
+  for (const kind of Object.keys(RUNTIME_FILES)) {
+    const file = runtimeLogPath(root, appId, kind);
+    try {
+      freed += (await stat(file)).size;
+    } catch (err) {
+      if (err.code === 'ENOENT') continue;
+      throw err;
+    }
+    await rm(file, { force: true });
+  }
+  await rmdir(join(root, appId)).catch(() => {});
   return freed;
 }

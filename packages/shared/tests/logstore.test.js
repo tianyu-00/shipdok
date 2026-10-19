@@ -5,8 +5,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  MAX_LINE_BYTES, logRoot, logFilePath, formatLine, createRedactor, secretsFromGitEnv,
-  readChunk, readTail, removeDeploymentLogs, gitAuthEnv, LOG_FILE_NAMES,
+  MAX_LINE_BYTES, logRoot, logFilePath, runtimeLogPath, formatLine, createRedactor, secretsFromGitEnv,
+  readChunk, readTail, removeDeploymentLogs, removeRuntimeLogs, gitAuthEnv, LOG_FILE_NAMES, RUNTIME_FILE_NAMES,
 } from '../src/index.js';
 
 const APP = '11111111-1111-4111-8111-111111111111';
@@ -25,14 +25,24 @@ describe('where logs live', () => {
     assert.match(logRoot({ LOG_DIR: '' }), /\.shipdok[\\/]logs$/);
   });
 
-  test('the path is built only from the two ids and the kind', () => {
+  test('a deployment\'s build log is built only from the two ids and the kind', () => {
     assert.equal(logFilePath('/r', APP, DEP, 'build'), `/r/${APP}/${DEP}/build.log`);
-    assert.equal(logFilePath('/r', APP, DEP, 'runtime'), `/r/${APP}/${DEP}/runtime.log`);
-    assert.equal(logFilePath('/r', APP, DEP, 'runtime_previous'), `/r/${APP}/${DEP}/runtime.previous.log`);
   });
 
-  test('every kind has its own file name, and LOG_FILE_NAMES lists exactly those files', () => {
-    assert.deepEqual([...LOG_FILE_NAMES].sort(), ['build.log', 'runtime.log', 'runtime.previous.log']);
+  test('the runtime logs belong to the app, not to a deployment', () => {
+    assert.equal(runtimeLogPath('/r', APP, 'runtime'), `/r/${APP}/runtime.log`);
+    assert.equal(runtimeLogPath('/r', APP, 'runtime_previous'), `/r/${APP}/runtime.previous.log`);
+  });
+
+  test('a deployment has no runtime log of its own, and an app has no build log', () => {
+    assert.throws(() => logFilePath('/r', APP, DEP, 'runtime'), /invalid/i);
+    assert.throws(() => logFilePath('/r', APP, DEP, 'runtime_previous'), /invalid/i);
+    assert.throws(() => runtimeLogPath('/r', APP, 'build'), /invalid/i);
+  });
+
+  test('the file name lists say exactly which files are ours', () => {
+    assert.deepEqual([...LOG_FILE_NAMES], ['build.log']);
+    assert.deepEqual([...RUNTIME_FILE_NAMES].sort(), ['runtime.log', 'runtime.previous.log']);
   });
 
   for (const [label, app, dep, kind] of [
@@ -46,6 +56,14 @@ describe('where logs live', () => {
     ['a non-string id', null, DEP, 'build'],
   ]) {
     test(`refuses ${label}`, () => assert.throws(() => logFilePath('/r', app, dep, kind), /invalid/i));
+  }
+  for (const [label, app, kind] of [
+    ['a traversal in the app id (runtime)', '../../etc', 'runtime'],
+    ['an empty app id (runtime)', '', 'runtime'],
+    ['a non-UUID app id (runtime)', 'my-app', 'runtime_previous'],
+    ['a kind that is a file name (runtime)', APP, 'runtime.log'],
+  ]) {
+    test(`refuses ${label}`, () => assert.throws(() => runtimeLogPath('/r', app, kind), /invalid/i));
   }
 });
 
@@ -230,9 +248,16 @@ describe('removeDeploymentLogs', () => {
     const dir = join(root, APP, DEP);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'build.log'), 'x'.repeat(1000));
-    writeFileSync(join(dir, 'runtime.log'), 'y'.repeat(234));
+    writeFileSync(join(dir, 'runtime.log'), 'y'.repeat(234)); // an older version kept this here too
     assert.equal(await removeDeploymentLogs(root, APP, DEP), 1234);
     assert.ok(!existsSync(dir));
+  });
+  test('never touches the app\'s own runtime logs', async () => {
+    mkdirSync(join(root, APP, DEP), { recursive: true });
+    writeFileSync(join(root, APP, DEP, 'build.log'), 'b');
+    writeFileSync(join(root, APP, 'runtime.log'), 'keep me');
+    await removeDeploymentLogs(root, APP, DEP);
+    assert.equal(readFileSync(join(root, APP, 'runtime.log'), 'utf8'), 'keep me');
   });
   test('leaves other deployments and other apps alone', async () => {
     const other = '33333333-3333-4333-8333-333333333333';
@@ -250,5 +275,30 @@ describe('removeDeploymentLogs', () => {
     await assert.rejects(removeDeploymentLogs(root, APP, '../..'), /invalid/i);
     await assert.rejects(removeDeploymentLogs(root, APP, ''), /invalid/i);
     assert.ok(existsSync(root));
+  });
+});
+
+describe('removeRuntimeLogs', () => {
+  const APP2 = '55555555-5555-4555-8555-555555555555';
+  test('removes both runtime logs, reports the bytes, and leaves the build logs alone', async () => {
+    mkdirSync(join(root, APP2, DEP), { recursive: true });
+    writeFileSync(join(root, APP2, 'runtime.log'), 'a'.repeat(100));
+    writeFileSync(join(root, APP2, 'runtime.previous.log'), 'b'.repeat(23));
+    writeFileSync(join(root, APP2, DEP, 'build.log'), 'keep');
+    assert.equal(await removeRuntimeLogs(root, APP2), 123);
+    assert.ok(!existsSync(join(root, APP2, 'runtime.log')));
+    assert.ok(!existsSync(join(root, APP2, 'runtime.previous.log')));
+    assert.equal(readFileSync(join(root, APP2, DEP, 'build.log'), 'utf8'), 'keep');
+  });
+  test('only one of the two present, or none, is fine', async () => {
+    const APP3 = '66666666-6666-4666-8666-666666666666';
+    assert.equal(await removeRuntimeLogs(root, APP3), 0);
+    mkdirSync(join(root, APP3), { recursive: true });
+    writeFileSync(join(root, APP3, 'runtime.previous.log'), 'xyz');
+    assert.equal(await removeRuntimeLogs(root, APP3), 3);
+  });
+  test('refuses an id that could point elsewhere', async () => {
+    await assert.rejects(removeRuntimeLogs(root, '..'), /invalid/i);
+    await assert.rejects(removeRuntimeLogs(root, ''), /invalid/i);
   });
 });
