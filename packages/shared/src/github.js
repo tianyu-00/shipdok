@@ -5,7 +5,6 @@
 // Secrets: the private key and tokens are never logged and never appear in error messages. Errors carry
 // only a status code. Installation tokens used for cloning are scoped to ONE repository, read-only.
 import { createPrivateKey, sign as cryptoSign } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
 import { REPO_FULL_NAME_RE } from './constants.js';
 
 const REPO_NAME_RE = /^(?!\.{1,2}$)[A-Za-z0-9_.-]+$/; // a bare repository name, never `.` or `..`
@@ -26,53 +25,22 @@ export class GithubError extends Error {
   }
 }
 
-// ---------------------------------------------------------------- configuration
+// ---------------------------------------------------------------- the private key
 
 /**
- * Reads the GitHub App settings from the environment.
- * Returns null when nothing is set (public repositories only), throws a clear error when the settings are
- * partial or wrong, and never puts key material in a message.
- *   GITHUB_APP_ID                numeric App ID from the app's settings page
- *   GITHUB_APP_PRIVATE_KEY_FILE  path to the downloaded .pem (recommended; keep it chmod 600)
- *   GITHUB_APP_PRIVATE_KEY       the PEM itself, with \n for newlines (alternative)
+ * The private key as GitHub hands it out (a PEM text; GitHub's download is PKCS#1, "BEGIN RSA PRIVATE KEY"), as a key object.
+ * Throws a clear error that never contains key material. Surrounding spaces and Windows line endings are tolerated.
  */
-export function loadGithubAppConfig(env = process.env, io = { readFileSync, statSync }) {
-  const appId = env.GITHUB_APP_ID?.trim();
-  const keyFile = env.GITHUB_APP_PRIVATE_KEY_FILE?.trim();
-  const keyInline = env.GITHUB_APP_PRIVATE_KEY;
-  if (!appId && !keyFile && !keyInline) return null;
-
-  if (!appId || !/^\d+$/.test(appId)) {
-    throw new Error('GITHUB_APP_ID must be the numeric App ID shown on the GitHub App settings page');
-  }
-  if (!keyFile && !keyInline) {
-    throw new Error('GITHUB_APP_PRIVATE_KEY_FILE (the path to the .pem file) is required when GITHUB_APP_ID is set');
-  }
-  if (keyFile && keyInline) {
-    throw new Error('Set only one of GITHUB_APP_PRIVATE_KEY_FILE and GITHUB_APP_PRIVATE_KEY');
-  }
-
-  const warnings = [];
-  let pem;
-  if (keyFile) {
-    try {
-      pem = io.readFileSync(keyFile, 'utf8');
-    } catch {
-      throw new Error(`Could not read GITHUB_APP_PRIVATE_KEY_FILE (${keyFile})`);
-    }
-    if (io.statSync(keyFile).mode & 0o077) warnings.push(`${keyFile} can be read by other users; run: chmod 600 ${keyFile}`);
-  } else {
-    pem = keyInline.replace(/\\n/g, '\n');
-  }
-
-  let privateKey;
+export function parsePrivateKeyPem(text) {
+  if (typeof text !== 'string' || !text.trim()) throw new Error('The private key is empty');
+  let key;
   try {
-    privateKey = createPrivateKey(pem);
+    key = createPrivateKey(text.trim().replace(/\r\n/g, '\n'));
   } catch {
-    throw new Error('The GitHub App private key is not a valid PEM private key');
+    throw new Error('The private key is not a valid PEM private key');
   }
-  if (privateKey.asymmetricKeyType !== 'rsa') throw new Error('The GitHub App private key must be an RSA key');
-  return { appId, privateKey, warnings };
+  if (key.asymmetricKeyType !== 'rsa') throw new Error('The GitHub App private key must be an RSA key');
+  return key;
 }
 
 // ---------------------------------------------------------------- app JWT
@@ -159,7 +127,21 @@ export function createGithubClient({
     /** The app's own details; also a cheap way to check the credentials work. */
     async getApp() {
       const { json } = await api('/app', { bearer: appJwt() });
-      return { id: json.id, slug: json.slug, name: json.name, htmlUrl: json.html_url };
+      return { id: json.id, slug: json.slug, name: json.name, htmlUrl: json.html_url, ownerLogin: json.owner?.login ?? null };
+    },
+
+    /** The address GitHub sends this app's webhooks to (null if none is set). The secret is never read back. */
+    async getWebhookConfig() {
+      const { json } = await api('/app/hook/config', { bearer: appJwt() });
+      return { url: typeof json?.url === 'string' && json.url ? json.url : null };
+    },
+
+    /** Point the app's webhooks at a new address. Only the address is sent: the secret and the rest stay as they are. */
+    async updateWebhookUrl(url) {
+      let parsed;
+      try { parsed = new URL(url); } catch { throw new TypeError('Invalid webhook address'); }
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new TypeError('Invalid webhook address');
+      await api('/app/hook/config', { method: 'PATCH', bearer: appJwt(), body: { url: parsed.toString() } });
     },
 
     /**
@@ -227,6 +209,48 @@ export function createGithubClient({
     },
   };
   return client;
+}
+
+// ---------------------------------------------------------------- the manifest flow
+
+const MANIFEST_CODE_RE = /^[A-Za-z0-9_-]{8,100}$/;
+
+/**
+ * The last step of "Connect GitHub": GitHub gives the browser a one-time code, and this trades it for the app's credentials. It is an
+ * outbound call with no login, so it works from localhost. The code can be used once and only briefly. Returns what is to be stored
+ * (the private key as PEM text); errors carry only a status, never the answer.
+ */
+export async function exchangeManifestCode(code, { fetch = globalThis.fetch, apiBase = 'https://api.github.com' } = {}) {
+  if (typeof code !== 'string' || !MANIFEST_CODE_RE.test(code)) throw new TypeError('Invalid manifest code');
+  let res;
+  try {
+    res = await fetch(`${apiBase}/app-manifests/${code}/conversions`, {
+      method: 'POST',
+      headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'shipdok' },
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    throw new GithubError('Could not reach GitHub', undefined);
+  }
+  if (!res.ok) throw new GithubError(`GitHub API request failed (HTTP ${res.status})`, res.status);
+  let json;
+  try { json = await res.json(); } catch { throw new GithubError('GitHub sent an unreadable response', res.status); }
+  const unusable = () => new GithubError('GitHub sent an unexpected app description', res.status);
+  const id = json?.id;
+  if (!(Number.isSafeInteger(id) && id > 0) && !(typeof id === 'string' && /^\d{1,20}$/.test(id))) throw unusable();
+  if (typeof json.webhook_secret !== 'string' || !json.webhook_secret) throw unusable();
+  try { parsePrivateKeyPem(json.pem); } catch { throw unusable(); }
+  return {
+    appId: String(id),
+    slug: typeof json.slug === 'string' ? json.slug : null,
+    name: typeof json.name === 'string' ? json.name : null,
+    htmlUrl: typeof json.html_url === 'string' ? json.html_url : null,
+    ownerLogin: json.owner?.login ?? null,
+    clientId: typeof json.client_id === 'string' ? json.client_id : null,
+    clientSecret: typeof json.client_secret === 'string' && json.client_secret ? json.client_secret : null,
+    webhookSecret: json.webhook_secret,
+    privateKeyPem: json.pem,
+  };
 }
 
 // ---------------------------------------------------------------- git

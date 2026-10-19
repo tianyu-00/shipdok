@@ -346,6 +346,31 @@ describe('public access', () => {
     expect(toasts.success).not.toHaveBeenCalled()
   })
 
+  test('a new address that was also sent to GitHub says how that went', async () => {
+    mockApi(routes({}, { 'PUT /api/settings/public': { ...ACCESS, publicUrl: 'https://shipdok.example.com', githubWebhook: { updated: true } } }))
+    page()
+    const c = await card()
+    await userEvent.type(c.getByLabelText('Public address'), 'https://shipdok.example.com')
+    await userEvent.click(c.getByRole('button', { name: /^save/i }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.type(within(dialog).getByLabelText('Current password'), 'my-current-password')
+    await userEvent.click(within(dialog).getByRole('button', { name: /confirm/i }))
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('Webhook address updated on GitHub'))
+  })
+
+  test('a failure to update GitHub is a warning, and the setting is still saved', async () => {
+    mockApi(routes({}, { 'PUT /api/settings/public': { ...ACCESS, publicUrl: 'https://shipdok.example.com', githubWebhook: { updated: false, error: 'GitHub did not accept the new webhook address.' } } }))
+    page()
+    const c = await card()
+    await userEvent.type(c.getByLabelText('Public address'), 'https://shipdok.example.com')
+    await userEvent.click(c.getByRole('button', { name: /^save/i }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.type(within(dialog).getByLabelText('Current password'), 'my-current-password')
+    await userEvent.click(within(dialog).getByRole('button', { name: /confirm/i }))
+    await waitFor(() => expect(toasts.warning).toHaveBeenCalledWith('GitHub did not accept the new webhook address.'))
+    expect(toasts.success).toHaveBeenCalledWith('Public access saved')
+  })
+
   test('a bad address is caught before the password is asked for', async () => {
     const api = mockApi(routes())
     page()
@@ -402,6 +427,16 @@ describe('public access', () => {
 })
 
 describe('the sign-ins list', () => {
+  test('a GitHub change is named', async () => {
+    mockApi({
+      'GET /api/auth/logins': { logins: [{ at: new Date().toISOString(), kind: 'github', username: 'admin', address: '192.168.1.20', success: true }] },
+      'GET /api/auth/recovery': { remaining: 10, createdAt: null },
+      'GET /api/settings/public': { mode: 'local', publicUrl: '', modeLocked: false, urlLocked: false, visitor: 'local' },
+    })
+    page()
+    expect(await screen.findByText('GitHub changed')).toBeInTheDocument()
+  })
+
   test('a public access change is named', async () => {
     mockApi({
       'GET /api/auth/logins': { logins: [{ at: new Date().toISOString(), kind: 'settings', username: 'admin', address: '192.168.1.20', success: true }] },

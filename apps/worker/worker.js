@@ -3,7 +3,7 @@
 //
 // Run: npm start -w apps/worker      (loads infrastructure/.env, including APP_SECRETS_KEY)
 import { Worker } from 'bullmq';
-import { parseMasterKey, loadGithubAppConfig, createGithubClient, logRoot } from '@shipdok/shared';
+import { parseMasterKey, createGithubProvider, oldGithubEnvNotice, logRoot } from '@shipdok/shared';
 import { reconcile } from './src/reconcile.js';
 import { DEPLOY_QUEUE, redisConnection } from './src/queue.js';
 import * as deployments from './src/db.js';
@@ -28,21 +28,12 @@ try {
   process.exit(1);
 }
 
-// GitHub App (optional): lets the worker clone private repositories. Without it, only public ones.
-let github = null;
-try {
-  const cfg = loadGithubAppConfig();
-  if (cfg) {
-    cfg.warnings.forEach((w) => console.warn(`Warning: ${w}`));
-    github = createGithubClient(cfg);
-    console.log(`GitHub App configured (app id ${cfg.appId}): private repositories can be cloned`);
-  } else {
-    console.log('GitHub App not configured: only public repositories can be cloned');
-  }
-} catch (err) {
-  console.error(err.message);
-  process.exit(1);
-}
+// GitHub App (optional): lets the worker clone private repositories. It is connected in the dashboard and stored encrypted in the
+// database, so it is read when a job needs it (cached for a few seconds), not at startup. Without it, only public repositories.
+if (oldGithubEnvNotice()) console.warn(`Warning: ${oldGithubEnvNotice()}`);
+const githubProvider = createGithubProvider(deployments.pool, secretsKey, {
+  onProblem: (err) => console.warn(`Warning: ${err.message}`),
+});
 
 const connection = redisConnection();
 const activity = createActivity(); // which apps a job is working on; the monitor leaves those alone
@@ -62,7 +53,7 @@ const worker = new Worker(
   DEPLOY_QUEUE,
   jobProcessor({
     activity,
-    deploy: (job) => processDeployJob(job, { secretsKey, github, collector }),
+    deploy: (job) => processDeployJob(job, { secretsKey, github: () => githubProvider.client(), collector }),
     control: (job) => processControlJob(job),
     prune: (job) => processPruneJob(job),
     deleteApp: (job) => processDeleteJob(job, { collector }),

@@ -16,27 +16,34 @@ import { appsRouter, deploymentsRouter } from './routes/apps.js';
 import { envRouter } from './routes/env.js';
 import { webhookReceiver, deliveriesRouter } from './routes/webhooks.js';
 import { githubRouter } from './routes/github.js';
-import { loadGithubAppConfig, createGithubClient, logRoot } from '@shipdok/shared';
+import { githubConnectRouter } from './routes/githubconnect.js';
+import { createGithubProvider, logRoot } from '@shipdok/shared';
 import { deploymentLogsRouter, appLogsRouter, storageRouter } from './routes/logs.js';
 import { defaultDiskUsage } from './disk.js';
 
-// The GitHub App client exists only when GITHUB_APP_ID and a private key are configured.
-function defaultGithub() {
-  const cfg = loadGithubAppConfig();
-  if (!cfg) return null;
-  cfg.warnings.forEach((w) => console.warn(`Warning: ${w}`));
-  return createGithubClient(cfg);
+// What the API asks about GitHub: the client, the webhook secret, a status. Normally read from the database (the app is connected in the
+// dashboard); tests can pass a fixed client and secret instead.
+function fixedGithub({ github = null, webhookSecret = null }) {
+  return {
+    client: async () => github,
+    webhookSecret: async () => webhookSecret,
+    status: async () => ({ app: null, problem: null }),
+    invalidate() {},
+  };
 }
 
 // db, queue and secretsKey are injectable so tests can pass a test pool and a fake queue.
 export function createApp({
   db = pool, queue, secretsKey = loadSecretsKey(),
-  webhookSecret = config.webhookSecret, webhookRateLimit = 120,
-  github = defaultGithub(),
+  webhookSecret, webhookRateLimit = 120,
+  github, githubProvider, githubFetch,
   logDir = logRoot(), diskUsage = defaultDiskUsage, portRange = parsePortRange(config.portRangeText),
   trustProxy = process.env.TRUST_PROXY || 'loopback',
   settings = createSettings(db),
 } = {}) {
+  const provider = githubProvider ?? (github !== undefined || webhookSecret !== undefined
+    ? fixedGithub({ github, webhookSecret })
+    : createGithubProvider(db, secretsKey, { fetch: githubFetch, onProblem: (err) => console.warn(`Warning: ${err.message}`) }));
   const app = express();
   app.disable('x-powered-by');
   // Believe X-Forwarded-For only when the connection itself comes from a proxy we run: by default this machine (the
@@ -53,7 +60,7 @@ export function createApp({
 
   // The GitHub webhook is public and signature-protected. It is mounted BEFORE the JSON parser, the session
   // and the origin check: it needs the raw bytes to verify the signature, and it has no cookies or Origin.
-  app.use('/api/webhooks/github', webhookReceiver({ db, queue, secret: webhookSecret, rateLimitPerMinute: webhookRateLimit, logDir, diskUsage }));
+  app.use('/api/webhooks/github', webhookReceiver({ db, queue, secret: () => provider.webhookSecret(), rateLimitPerMinute: webhookRateLimit, logDir, diskUsage }));
 
   app.use(express.json({ limit: '100kb' }));
 
@@ -79,13 +86,14 @@ export function createApp({
     }
   });
 
-  app.use('/api/settings', requireAuth, settingsRouter({ db, settings }));
+  app.use('/api/settings', requireAuth, settingsRouter({ db, settings, provider }));
   app.use('/api/auth', authRouter(db));
   app.use('/api/auth', recoveryRouter(db));
   app.use('/api/apps/:id/env', requireAuth, envRouter({ db, secretsKey }));
-  app.use('/api/apps', requireAuth, appsRouter({ db, queue, github, logDir, diskUsage, portRange }));
+  app.use('/api/apps', requireAuth, appsRouter({ db, queue, github: () => provider.client(), logDir, diskUsage, portRange }));
   app.use('/api/apps', requireAuth, appLogsRouter({ db, logDir }));
-  app.use('/api/github', requireAuth, githubRouter({ github }));
+  app.use('/api/github/connect', githubConnectRouter({ db, provider, secretsKey, settings, fetch: githubFetch })); // before the router below: the callback is a page navigation and answers with redirects
+  app.use('/api/github', requireAuth, githubRouter({ db, provider, secretsKey, fetch: githubFetch, settings }));
   app.use('/api/deployments', requireAuth, deploymentsRouter({ db, queue, logDir }));
   app.use('/api/deployments', requireAuth, deploymentLogsRouter({ db, logDir }));
   app.use('/api/storage', requireAuth, storageRouter({ db, logDir, diskUsage }));

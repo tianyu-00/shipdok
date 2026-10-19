@@ -454,6 +454,33 @@ describe('GitHub authentication in the job', () => {
     assert.equal(deployFn.calls[0].gitEnv, undefined);
   });
 
+  test('a client given as a function is asked at the time of the job (the app can be connected in the dashboard while the worker runs)', async () => {
+    const appId = await makeApp(); const depId = await makeDeployment(appId);
+    const deployFn = fakeDeploy();
+    let asked = 0;
+    await processDeployJob(jobWith(appId, depId), { secretsKey: KEY, deployFn, github: async () => { asked += 1; return gh(); } });
+    assert.equal(asked, 1);
+    assert.equal(deployFn.calls[0].gitEnv.GIT_CONFIG_KEY_0, 'http.extraHeader');
+  });
+
+  test('a function that finds no app means public repositories only', async () => {
+    const appId = await makeApp(); const depId = await makeDeployment(appId);
+    const deployFn = fakeDeploy();
+    await processDeployJob(jobWith(appId, depId), { secretsKey: KEY, deployFn, github: async () => null });
+    assert.equal(deployFn.calls[0].gitEnv, undefined);
+  });
+
+  test('a function that fails fails the deployment with a safe message and never runs the build', async () => {
+    const appId = await makeApp(); const depId = await makeDeployment(appId);
+    const deployFn = fakeDeploy();
+    await assert.rejects(processDeployJob(jobWith(appId, depId), { secretsKey: KEY, deployFn, github: async () => { throw new Error(`boom ${TOKEN}`); } }));
+    assert.equal(deployFn.calls.length, 0);
+    const d = await getDeployment(depId);
+    assert.equal(d.status, 'failed');
+    assert.match(d.error_summary, /Could not prepare GitHub access/);
+    assert.ok(!JSON.stringify(d).includes(TOKEN));
+  });
+
   test('a token failure fails the deployment with a safe message and never runs the build', async () => {
     const appId = await makeApp(); const depId = await makeDeployment(appId);
     const deployFn = fakeDeploy();

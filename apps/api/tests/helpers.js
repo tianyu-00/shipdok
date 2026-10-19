@@ -13,7 +13,9 @@ export const testPool = new pg.Pool(config);
 // A fresh app per call also means fresh in-memory rate limiters.
 export async function makeApp({ queue, ...rest } = {}) {
   const { createApp } = await import("../src/app.js");
-  return createApp({ db: testPool, queue, ...rest });
+  // Webhooks need a secret: a fixed one for tests unless the test connects a GitHub App (githubProvider) or gives its own.
+  const fixedSecret = rest.githubProvider ? {} : { webhookSecret: process.env.GITHUB_WEBHOOK_SECRET };
+  return createApp({ db: testPool, queue, ...fixedSecret, ...rest });
 }
 
 export async function resetDb() {

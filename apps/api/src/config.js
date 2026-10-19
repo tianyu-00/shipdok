@@ -10,8 +10,6 @@ export const config = {
   // Origins allowed to make state-changing requests (the dashboard's origin(s)).
   webOrigins: (process.env.WEB_ORIGIN ?? "http://localhost:5173").split(",").map((s) => s.trim()),
   setupToken: process.env.SETUP_TOKEN || null, // optional: required on first-run setup if set
-  // Shared secret GitHub signs webhooks with. Unset = the webhook endpoint is disabled.
-  webhookSecret: process.env.GITHUB_WEBHOOK_SECRET || null,
   // "true"/"false" force it; anything else (compose's default, "auto") sets the Secure flag only on requests that came in over HTTPS
   // (as reported by a trusted proxy), so the same install works on plain http locally and behind an https proxy.
   secureCookies: process.env.COOKIE_SECURE === "true" ? true : process.env.COOKIE_SECURE === "false" ? false : "auto",
@@ -43,7 +41,4 @@ export function assertConfig() {
   }
   loadSecretsKey();
   parsePortRange(config.portRangeText);
-  if (config.webhookSecret && config.webhookSecret.length < 16) {
-    throw new Error("GITHUB_WEBHOOK_SECRET must be at least 16 characters (try: openssl rand -hex 32)");
-  }
 }

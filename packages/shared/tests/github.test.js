@@ -1,11 +1,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createVerify, createPublicKey } from 'node:crypto';
-import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import {
-  GithubError, loadGithubAppConfig, signAppJwt, createGithubClient, gitAuthEnv, REPO_FULL_NAME_RE,
+  GithubError, parsePrivateKeyPem, signAppJwt, createGithubClient, exchangeManifestCode, gitAuthEnv, REPO_FULL_NAME_RE,
 } from '../src/index.js';
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -60,54 +57,49 @@ describe('signAppJwt', () => {
   });
 });
 
-describe('loadGithubAppConfig', () => {
-  const tmp = mkdtempSync(join(tmpdir(), 'ghkey-'));
-  const keyFile = (mode) => { const f = join(tmp, `k${mode}.pem`); writeFileSync(f, pem); chmodSync(f, mode); return f; };
-  const load = (env) => loadGithubAppConfig(env);
-
-  test('nothing set means GitHub is not configured (public repositories only)', () => {
-    assert.equal(load({}), null);
+describe('parsePrivateKeyPem', () => {
+  test('reads the PKCS#8 text', () => {
+    assert.equal(parsePrivateKeyPem(pem).asymmetricKeyType, 'rsa');
   });
 
-  test('loads a key from a file', () => {
-    const cfg = load({ GITHUB_APP_ID: APP_ID, GITHUB_APP_PRIVATE_KEY_FILE: keyFile(0o600) });
-    assert.equal(cfg.appId, APP_ID);
-    assert.equal(cfg.privateKey.asymmetricKeyType, 'rsa');
-    assert.deepEqual(cfg.warnings, []);
+  test('reads the PKCS#1 text GitHub hands out ("BEGIN RSA PRIVATE KEY")', () => {
+    const pkcs1 = privateKey.export({ type: 'pkcs1', format: 'pem' });
+    assert.match(pkcs1, /BEGIN RSA PRIVATE KEY/);
+    assert.equal(parsePrivateKeyPem(pkcs1).asymmetricKeyType, 'rsa');
   });
 
-  test('loads an inline key written with \\n escapes', () => {
-    const cfg = load({ GITHUB_APP_ID: APP_ID, GITHUB_APP_PRIVATE_KEY: pem.replace(/\n/g, '\\n') });
-    assert.equal(cfg.privateKey.asymmetricKeyType, 'rsa');
+  test('tolerates spaces around it and Windows line endings', () => {
+    assert.equal(parsePrivateKeyPem(`\n  ${pem}  \n`).asymmetricKeyType, 'rsa');
+    assert.equal(parsePrivateKeyPem(pem.replace(/\n/g, '\r\n')).asymmetricKeyType, 'rsa');
   });
 
-  test('a key file other users can read produces a warning', () => {
-    const cfg = load({ GITHUB_APP_ID: APP_ID, GITHUB_APP_PRIVATE_KEY_FILE: keyFile(0o644) });
-    assert.equal(cfg.warnings.length, 1);
-    assert.match(cfg.warnings[0], /chmod 600/);
+  test('the key it returns signs what the original signs', () => {
+    const a = signAppJwt({ appId: APP_ID, privateKey: parsePrivateKeyPem(pem), now: T0 });
+    const b = signAppJwt({ appId: APP_ID, privateKey, now: T0 });
+    assert.equal(a, b);
   });
 
-  for (const [label, env, message] of [
-    ['an app id without a key', { GITHUB_APP_ID: APP_ID }, /GITHUB_APP_PRIVATE_KEY_FILE/],
-    ['a key without an app id', { GITHUB_APP_PRIVATE_KEY: 'x' }, /GITHUB_APP_ID/],
-    ['a non-numeric app id', { GITHUB_APP_ID: 'abc', GITHUB_APP_PRIVATE_KEY: 'x' }, /numeric/],
-    ['both key sources', { GITHUB_APP_ID: APP_ID, GITHUB_APP_PRIVATE_KEY: 'x', GITHUB_APP_PRIVATE_KEY_FILE: '/x' }, /only one/],
-    ['a missing key file', { GITHUB_APP_ID: APP_ID, GITHUB_APP_PRIVATE_KEY_FILE: '/definitely/not/here.pem' }, /Could not read/],
-    ['garbage instead of a key', { GITHUB_APP_ID: APP_ID, GITHUB_APP_PRIVATE_KEY: 'not a pem' }, /not a valid PEM/],
+  for (const [label, input, message] of [
+    ['nothing', '', /empty/],
+    ['only spaces', '   \n ', /empty/],
+    ['not text', undefined, /empty/],
+    ['a number', 12345, /empty/],
+    ['garbage', 'not a pem', /not a valid PEM/],
+    ['a truncated key', pem.slice(0, 80), /not a valid PEM/],
+    ['a public key', publicKey.export({ type: 'spki', format: 'pem' }), /not a valid PEM/],
   ]) {
-    test(`rejects ${label} with a clear message`, () => assert.throws(() => load(env), message));
+    test(`rejects ${label} with a clear message`, () => assert.throws(() => parsePrivateKeyPem(input), message));
   }
 
   test('rejects a key that is not RSA', () => {
     const { privateKey: ed } = generateKeyPairSync('ed25519');
-    const edPem = ed.export({ type: 'pkcs8', format: 'pem' });
-    assert.throws(() => load({ GITHUB_APP_ID: APP_ID, GITHUB_APP_PRIVATE_KEY: edPem }), /must be an RSA key/);
+    assert.throws(() => parsePrivateKeyPem(ed.export({ type: 'pkcs8', format: 'pem' })), /must be an RSA key/);
   });
 
   test('error messages never contain key material', () => {
     const body = pem.split('\n')[1];
-    for (const env of [{ GITHUB_APP_ID: 'abc', GITHUB_APP_PRIVATE_KEY: pem }, { GITHUB_APP_ID: APP_ID, GITHUB_APP_PRIVATE_KEY: `${pem.slice(0, 60)} broken` }]) {
-      try { load(env); } catch (err) { assert.ok(!err.message.includes(body)); }
+    for (const input of [pem.slice(0, 60) + ' broken', publicKey.export({ type: 'spki', format: 'pem' })]) {
+      try { parsePrivateKeyPem(input); } catch (err) { assert.ok(!err.message.includes(body)); }
     }
   });
 });
@@ -297,8 +289,110 @@ describe('listing repositories', () => {
   });
 
   test('getApp reports the app and proves the credentials work', async () => {
-    const fetch = fakeFetch(() => ({ json: { id: 1, slug: 'shipdok', name: 'Shipdok', html_url: 'https://github.com/apps/shipdok', secret_stuff: 'ignored' } }));
-    assert.deepEqual(await makeClient(fetch).getApp(), { id: 1, slug: 'shipdok', name: 'Shipdok', htmlUrl: 'https://github.com/apps/shipdok' });
+    const fetch = fakeFetch(() => ({ json: { id: 1, slug: 'shipdok', name: 'Shipdok', html_url: 'https://github.com/apps/shipdok', owner: { login: 'tianyu-00' }, secret_stuff: 'ignored' } }));
+    assert.deepEqual(await makeClient(fetch).getApp(), { id: 1, slug: 'shipdok', name: 'Shipdok', htmlUrl: 'https://github.com/apps/shipdok', ownerLogin: 'tianyu-00' });
+  });
+
+  test('getApp copes with an app that reports no owner', async () => {
+    const fetch = fakeFetch(() => ({ json: { id: 1, slug: 'shipdok', name: 'Shipdok', html_url: 'https://github.com/apps/shipdok' } }));
+    assert.equal((await makeClient(fetch).getApp()).ownerLogin, null);
+  });
+
+  test('getWebhookConfig reads the address GitHub sends webhooks to', async () => {
+    const fetch = fakeFetch(() => ({ json: { url: 'https://shipdok.example.com/api/webhooks/github', content_type: 'json', secret: '********', insecure_ssl: '0' } }));
+    const cfg = await makeClient(fetch).getWebhookConfig();
+    assert.deepEqual(cfg, { url: 'https://shipdok.example.com/api/webhooks/github' });
+    assert.equal(fetch.calls[0].url, 'https://api.github.com/app/hook/config');
+    assert.equal(fetch.calls[0].method, 'GET');
+    assert.match(fetch.calls[0].headers.Authorization, /^Bearer /);
+  });
+
+  test('getWebhookConfig says there is no address when GitHub has none', async () => {
+    const fetch = fakeFetch(() => ({ json: { content_type: 'json' } }));
+    assert.deepEqual(await makeClient(fetch).getWebhookConfig(), { url: null });
+  });
+
+  test('updateWebhookUrl changes ONLY the address (the secret and content type are not sent)', async () => {
+    const fetch = fakeFetch(() => ({ json: { url: 'https://new.example.com/api/webhooks/github' } }));
+    await makeClient(fetch).updateWebhookUrl('https://new.example.com/api/webhooks/github');
+    const [call] = fetch.calls;
+    assert.equal(call.url, 'https://api.github.com/app/hook/config');
+    assert.equal(call.method, 'PATCH');
+    assert.deepEqual(call.body, { url: 'https://new.example.com/api/webhooks/github' });
+    assert.match(call.headers.Authorization, /^Bearer /);
+  });
+
+  test('updateWebhookUrl refuses anything that is not an http(s) address, without calling GitHub', async () => {
+    const fetch = fakeFetch(() => ({ json: {} }));
+    for (const bad of ['', 'javascript:alert(1)', 'ftp://x.example.com', 'not a url', undefined, 12]) {
+      await assert.rejects(() => makeClient(fetch).updateWebhookUrl(bad), TypeError);
+    }
+    assert.equal(fetch.calls.length, 0);
+  });
+
+  test('a failure of the webhook calls carries only the status', async () => {
+    const fetch = fakeFetch(() => ({ status: 403, json: { message: 'secret internal detail' } }));
+    await assert.rejects(() => makeClient(fetch).updateWebhookUrl('https://x.example.com/h'), (e) => e instanceof GithubError && e.status === 403 && !/secret/.test(e.message));
+    await assert.rejects(() => makeClient(fetch).getWebhookConfig(), (e) => e.status === 403);
+  });
+});
+
+describe('exchangeManifestCode', () => {
+  const converted = (over = {}) => ({
+    id: 123456, slug: 'shipdok-ab12', name: 'Shipdok-ab12', html_url: 'https://github.com/apps/shipdok-ab12', owner: { login: 'tianyu-00' },
+    client_id: 'Iv1.abc', client_secret: 'client-secret-value', webhook_secret: 'hook-secret-0123456789', pem, ...over,
+  });
+
+  test('trades the one-time code for the app, sending no credentials, and returns what is needed', async () => {
+    const fetch = fakeFetch(() => ({ status: 201, json: converted() }));
+    const app = await exchangeManifestCode('abc123DEF456ghi', { fetch });
+    assert.equal(fetch.calls[0].url, 'https://api.github.com/app-manifests/abc123DEF456ghi/conversions');
+    assert.equal(fetch.calls[0].method, 'POST');
+    assert.equal(fetch.calls[0].headers.Authorization, undefined);
+    assert.deepEqual({ ...app, privateKeyPem: undefined }, {
+      appId: '123456', slug: 'shipdok-ab12', name: 'Shipdok-ab12', htmlUrl: 'https://github.com/apps/shipdok-ab12', ownerLogin: 'tianyu-00',
+      clientId: 'Iv1.abc', clientSecret: 'client-secret-value', webhookSecret: 'hook-secret-0123456789', privateKeyPem: undefined,
+    });
+    assert.equal(parsePrivateKeyPem(app.privateKeyPem).asymmetricKeyType, 'rsa');
+  });
+
+  test('refuses a code that could change the address, without calling GitHub', async () => {
+    const fetch = fakeFetch(() => ({ status: 201, json: converted() }));
+    for (const bad of ['', 'a/b', 'a b', '../x', 'a?b=c', 'x'.repeat(200), undefined, 12]) {
+      await assert.rejects(() => exchangeManifestCode(bad, { fetch }), TypeError);
+    }
+    assert.equal(fetch.calls.length, 0);
+  });
+
+  test('a code GitHub does not know (used, expired) is an error carrying only the status', async () => {
+    const fetch = fakeFetch(() => ({ status: 404, json: { message: 'Not Found with secret detail' } }));
+    await assert.rejects(() => exchangeManifestCode('abc123DEF456ghi', { fetch }), (e) => e instanceof GithubError && e.status === 404 && !/secret/.test(e.message));
+  });
+
+  test('GitHub being unreachable is an error without a status', async () => {
+    await assert.rejects(() => exchangeManifestCode('abc123DEF456ghi', { fetch: async () => { throw new Error('boom'); } }), (e) => e instanceof GithubError && e.status === undefined);
+  });
+
+  for (const [label, over] of [
+    ['no app id', { id: undefined }], ['a non-numeric app id', { id: 'abc' }], ['no key', { pem: undefined }], ['a key that is not a key', { pem: 'nope' }],
+    ['no webhook secret', { webhook_secret: undefined }], ['an empty webhook secret', { webhook_secret: '' }],
+  ]) {
+    test(`an answer with ${label} is refused as unusable`, async () => {
+      const fetch = fakeFetch(() => ({ status: 201, json: converted(over) }));
+      await assert.rejects(() => exchangeManifestCode('abc123DEF456ghi', { fetch }), (e) => e instanceof GithubError && /unexpected/i.test(e.message));
+    });
+  }
+
+  test('an unusable answer does not leak the key into the error', async () => {
+    const fetch = fakeFetch(() => ({ status: 201, json: converted({ id: undefined }) }));
+    await assert.rejects(() => exchangeManifestCode('abc123DEF456ghi', { fetch }), (e) => !e.message.includes(pem.split('\n')[1]));
+  });
+
+  test('works without a client secret or owner (they are optional)', async () => {
+    const fetch = fakeFetch(() => ({ status: 201, json: converted({ client_secret: undefined, owner: undefined }) }));
+    const app = await exchangeManifestCode('abc123DEF456ghi', { fetch });
+    assert.equal(app.clientSecret, null);
+    assert.equal(app.ownerLogin, null);
   });
 });
 

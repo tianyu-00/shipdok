@@ -145,9 +145,10 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
         // Is the GitHub App installed on this repository? Best effort and NEVER blocks creation:
         // public repositories work without it, and the app can be installed later.
         let warning;
-        if (github) {
+        const gh = typeof github === 'function' ? await github().catch(() => null) : github;
+        if (gh) {
           try {
-            const installationId = await github.findInstallationForRepo(a.repo);
+            const installationId = await gh.findInstallationForRepo(a.repo);
             if (installationId) {
               await db.query('UPDATE apps SET github_installation_id = $2 WHERE id = $1', [created.id, installationId]);
               created.github_installation_id = installationId;

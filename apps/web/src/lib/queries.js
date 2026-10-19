@@ -58,3 +58,9 @@ export const useRecovery = () => useQuery({ queryKey: ['recovery'], queryFn: () 
 
 // Who may reach Shipdok from outside, and the public address (also tells whether THIS visit counts as local or outside).
 export const usePublicAccess = () => useQuery({ queryKey: ['public-access'], queryFn: () => api('/settings/public'), retry: false })
+
+// The GitHub App: connected or not, and its details (never a secret).
+export const useGithub = () => useQuery({ queryKey: ['github'], queryFn: () => api('/github'), retry: false })
+
+// Does GitHub send webhooks to the address Shipdok expects? Only asked while an app is connected.
+export const useGithubWebhook = (enabled) => useQuery({ queryKey: ['github-webhook'], queryFn: () => api('/github/webhook'), enabled, retry: false })

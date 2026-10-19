@@ -24,8 +24,12 @@ function ConfirmDialog({ body, onClose, onSaved }) {
   const [problem, setProblem] = useState(null)
   const save = useMutation({
     mutationFn: () => api('/settings/public', { method: 'PUT', body: { password, ...body } }),
-    onSuccess: () => {
+    onSuccess: (data) => {
       toast.success('Public access saved')
+      // A new address is also sent to GitHub, if an app is connected: say how that went (the setting is saved either way).
+      if (data?.githubWebhook?.updated) toast.success('Webhook address updated on GitHub')
+      else if (data?.githubWebhook) toast.warning(data.githubWebhook.error)
+      client.invalidateQueries({ queryKey: ['github-webhook'] })
       client.invalidateQueries({ queryKey: ['public-access'] })
       client.invalidateQueries({ queryKey: ['logins'] })
       onSaved()

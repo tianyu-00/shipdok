@@ -1,11 +1,12 @@
 import { Router } from "express";
 import { verify } from "@node-rs/argon2";
+import { GithubError } from "@shipdok/shared";
 import { limiter } from "../authutil.js";
 import { PUBLIC_MODES, normalizePublicUrl } from "../publicurl.js";
 import { accessFor } from "../middleware/publicAccess.js";
 import { addressOf, recordAttempt } from "../lockout.js";
 
-export function settingsRouter({ db, settings }) {
+export function settingsRouter({ db, settings, provider }) {
   const r = Router();
 
   r.get("/public", async (req, res, next) => {
@@ -47,9 +48,25 @@ export function settingsRouter({ db, settings }) {
         return res.status(409).json({ error: "That setting is fixed by the server's environment (SHIPDOK_PUBLIC or PUBLIC_URL) and cannot be changed here", code: "locked_by_environment" });
       }
       await settings.setPublic({ mode: now.modeLocked ? undefined : mode, publicUrl: now.urlLocked ? undefined : url });
+      const after = await settings.public();
       await recordAttempt(db, { kind: "settings", username: rows[0].username, address: addressOf(req), success: true });
+      // A new public address means GitHub must be told where to send webhooks. Best effort: the setting is saved either way, and the
+      // GitHub page can retry.
+      let githubWebhook;
+      if (after.publicUrl && after.publicUrl !== now.publicUrl) {
+        const github = await provider.client().catch(() => null);
+        if (github) {
+          try {
+            await github.updateWebhookUrl(`${after.publicUrl}/api/webhooks/github`);
+            githubWebhook = { updated: true };
+          } catch (err) {
+            const rejected = err instanceof GithubError && [401, 403, 404].includes(err.status);
+            githubWebhook = { updated: false, error: rejected ? 'GitHub did not accept the new webhook address. Check the app on the GitHub page.' : 'Could not update the webhook address on GitHub. Try again on the GitHub page.' };
+          }
+        }
+      }
       const { visitor } = await accessFor(req, settings);
-      res.json({ ...(await settings.public()), visitor });
+      res.json({ ...after, visitor, ...(githubWebhook ? { githubWebhook } : {}) });
     } catch (err) {
       next(err);
     }

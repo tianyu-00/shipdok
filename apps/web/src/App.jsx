@@ -13,6 +13,7 @@ import CreateAppPage from '@/pages/create-app-page'
 import AppDetailPage from '@/pages/app-detail-page'
 import StoragePage from '@/pages/storage-page'
 import SecurityPage from '@/pages/security-page'
+import GithubPage from '@/pages/github-page'
 
 export default function App() {
   const client = useQueryClient()
@@ -41,6 +42,7 @@ export default function App() {
           <Route path="/" element={<AppsPage />} />
           <Route path="/storage" element={<StoragePage />} />
           <Route path="/security" element={<SecurityPage />} />
+          <Route path="/github" element={<GithubPage />} />
           <Route path="/apps/new" element={<CreateAppPage />} />
           <Route path="/apps/:id/*" element={<AppDetailPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -78,8 +78,10 @@ export async function processDeployJob(
     // one repository. The token lives only in memory and only reaches git's environment, never docker or the container.
     let gitEnv;
     try {
+      // The GitHub client can be a function: the app is connected in the dashboard, so ask now, not at startup.
+      const githubClient = typeof github === 'function' ? await github() : github;
       ({ gitEnv } = await resolveGitAuth({
-        github, db, installationId: d.installationId, appId: d.appId, repoFullName: d.repoFullName, log,
+        github: githubClient, db, installationId: d.installationId, appId: d.appId, repoFullName: d.repoFullName, log,
       }));
     } catch (err) {
       const message = err instanceof GitAuthError ? err.message : 'Could not prepare GitHub access';

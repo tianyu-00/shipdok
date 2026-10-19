@@ -78,11 +78,12 @@ export function webhookReceiver({ db, queue, secret, rateLimitPerMinute = 120, l
     let deliveryId = null;
     try {
       // 1. Disabled until a secret is configured: never accept unsigned traffic "because nothing is set up".
-      if (!secret) return res.status(503).json({ error: 'Webhooks are not configured' });
+      const secretNow = typeof secret === 'function' ? await secret() : secret; // read live: connecting GitHub in the dashboard switches it on
+      if (!secretNow) return res.status(503).json({ error: 'Webhooks are not configured' });
 
       // 2. Signature over the EXACT bytes received (hence the raw body parser, not JSON).
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-      if (!validSignature(secret, raw, req.get('x-hub-signature-256'))) {
+      if (!validSignature(secretNow, raw, req.get('x-hub-signature-256'))) {
         return res.status(401).json({ error: 'Invalid signature' });
       }
 

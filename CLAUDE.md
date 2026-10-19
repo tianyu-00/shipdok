@@ -27,7 +27,7 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 017_settings
+  migrations/    001_init ... 018_github_app
   src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), recovery.js (recovery codes), resetpassword.js (host-side reset), authutil.js, settings.js + publicurl.js (public-access settings), visitor.js (local or outside), middleware/ (originCheck, publicAccess, requireAuth), routes/ (auth, recovery, settings, apps, env, webhooks, github, logs)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`), reset-password.js (host-side password reset; `npm run reset-password`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
@@ -60,13 +60,13 @@ docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up 
 ```
 
 Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
-socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked), `STATS_INTERVAL_MS` (default 15000: how often CPU and memory are measured), `WEB_HOST_PORT` (default 8080) and `WEB_BIND` (default 127.0.0.1) for the dashboard container; `PORT_RANGE` (default `20000-20999`, in compose passed to the API) is where a new app's host port comes from when none is given; `WEB_ORIGIN` must be the exact address you open it at (several allowed, comma separated; default `http://localhost:<WEB_HOST_PORT>` in compose, `http://localhost:5173` for `npm run dev`).
+socket's group), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked), `STATS_INTERVAL_MS` (default 15000: how often CPU and memory are measured), `WEB_HOST_PORT` (default 8080) and `WEB_BIND` (default 127.0.0.1) for the dashboard container; `PORT_RANGE` (default `20000-20999`, in compose passed to the API) is where a new app's host port comes from when none is given; `WEB_ORIGIN` must be the exact address you open it at (several allowed, comma separated; default `http://localhost:<WEB_HOST_PORT>` in compose, `http://localhost:5173` for `npm run dev`).
 
-Tests: API 739, worker 493, shared 183, web 451. Worker tests reuse the `_test` database the API tests create and
+Tests: API 847, worker 504, shared 206, web 517. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
-stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
-`SETUP_TOKEN`, `COOKIE_SECURE`, and for the GitHub App: `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE` (chmod 600).
+stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, optional
+`SETUP_TOKEN`, `COOKIE_SECURE`, `SHIPDOK_PUBLIC`, `PUBLIC_URL`. **The GitHub App is NOT configured here any more** (dashboard, GitHub page; see "Connect GitHub").
 
 ## Built and verified
 
@@ -162,6 +162,52 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   forwarded straight from the router (WEB_BIND=0.0.0.0) through Docker's userland proxy can lose the real address and look local, so never forward
   the dashboard port directly, always go through a proxy; trusted proxies stay in `.env`; the docs with Nginx / Nginx Proxy Manager / Caddy examples
   are not written yet.
+- **Connect GitHub (Milestone 6 step 4; verified with a fake GitHub in tests, against the real api.github.com for the error path, and in a real
+  browser through the real nginx):** **Administrator's decisions: GitHub App credentials live ONLY in the dashboard, encrypted in the DB; no
+  import from `.env` (re-enter once by hand); Disconnect and replacing credentials ask for the password; a new GitHub page in the header; the app
+  is created private with a name `Shipdok-xxxx` (editable).** Table `github_app` (migration 018, one row, `id = 1`): app id, slug, name, owner, page
+  link, client id and three encrypted fields (private key, webhook secret, client secret; AES-256-GCM with the platform key, each bound to its
+  field name `github:<field>`; a value moved between fields does not decrypt). `packages/shared/src/githubapp.js`: `saveGithubApp`,
+  `loadGithubApp`, `githubAppSummary`, `deleteGithubApp` and `createGithubProvider(db, key)` which the API AND the worker use: it hands out the
+  GitHub client (built once per saved version, keeps its token cache), the webhook secret and a status, reading the DB at most every 5 s (the
+  API drops its cache at once on a change), keeps what it knew if the DB is briefly unreachable, and reports `cannot_decrypt` when the platform
+  key does not fit. The webhook receiver reads its secret per request and answers 503 until an app is connected; the worker asks for the client
+  when a job needs it (`github` may be a function in `processDeployJob`). `loadGithubAppConfig` is gone; `parsePrivateKeyPem` accepts GitHub's
+  PKCS#1 download (and PKCS#8, CRLF, surrounding spaces; RSA only). **Routes:** `GET /api/github` ({connected, app (no secrets), problem}),
+  `POST /api/github/manual` ({password, appId, privateKey, webhookSecret}: validated, password checked, THEN proven with a real `GET /app` (401/403/404 =
+  `github_rejected`, id differs = `app_id_mismatch`, unreachable = 502 `github_unreachable`) and only then stored, so a typo never replaces a working
+  connection), `DELETE /api/github` ({password}; running apps untouched; Shipdok cannot delete the app on github.com), `GET /api/github/repos`
+  and `/installations` (501 until connected), `GET /api/github/webhook` ({expected = public address + /api/webhooks/github, actual from GitHub,
+  matches}) and `POST /api/github/webhook/sync` (PATCH `/app/hook/config`, only the address). Changing the public address in Public access also
+  updates GitHub when an app is connected (`githubWebhook` in the answer: updated, or a plain failure that does not undo the setting). Connecting,
+  replacing and disconnecting are recorded in the sign-ins list as kind `github` ("GitHub changed"). **Manifest flow** (`routes/githubconnect.js`):
+  `POST /api/github/connect/start` ({owner?, name?}; refused while an app exists; needs an Origin that is one of the dashboard's addresses) returns
+  `{postUrl, manifest}` and keeps a random 256-bit `state` in the session for 10 minutes; the manifest asks only for `contents: read` +
+  `metadata: read`, the `push` event, `public: false`, the webhook address from the public address (or the dashboard's own address as a stand-in
+  until one is set) and `redirect_url` = this dashboard + `/api/github/connect/callback`. The dashboard posts the manifest to github.com in a form
+  (`lib/githubconnect.js` refuses any target but https://github.com; nginx's `form-action` now allows it). `GET /api/github/connect/callback` is
+  mounted before the authenticated router and answers only with redirects to `/github?connected=1` or `/github?error=login|state|exchange_failed|
+  github_unreachable|already_connected`: state compared in constant time and consumed whatever happens (a wrong guess burns the real one), code
+  shape checked, `POST /app-manifests/{code}/conversions` (outbound, no login, works on localhost), answer validated (id, webhook secret, a usable
+  key), saved encrypted, no secret ever in a redirect, log or answer. **Leftover settings:** the API and worker log one warning naming
+  `GITHUB_APP_ID` etc. if they are still set (names only). `scripts/send-webhook.js` now reads the secret from the DB. Dashboard (`/github`, header
+  link): not connected shows two cards (the Connect GitHub button with personal/organisation choice, app name, a note when no public address is set;
+  and "I already have a GitHub App" with app ID, private key, webhook secret, password, cleared after success and kept after a failure); connected
+  shows the app (link, ID, owner, how it was added), "Install on repositories" + "Check again" (installations asked only on demand), a Webhook
+  address card (right address / different address with an "Update on GitHub" button / no public address) and Disconnect (password). Checked for real:
+  the manual form with a made-up key against the real GitHub (refused with the plain message, form kept), a callback nobody started (redirect and
+  message, gone on reload), Connect GitHub leaving for github.com/login with no CSP error, the leftover-setting warning in both api and worker logs.
+  **Bug found on the administrator's real setup right after connecting a NEW app: "Deployment failed: Could not get a GitHub access token (HTTP 404)".**
+  Installation ids belong to ONE GitHub App, but each Shipdok app remembers the installation id found for the OLD app, so the new app got a 404
+  for it. Fixed twice: (1) entering, connecting or disconnecting an app now clears every remembered `apps.github_installation_id` (`forgetInstallations`,
+  only after a successful save, never after a refusal); (2) the worker, when a REMEMBERED installation answers 404 (only 404, only a remembered
+  id), looks the repository up once more, remembers the new id and retries with the same scoped token (this repository, `contents: read`), or, if the
+  app is not installed there, forgets the id and tries an anonymous clone with a build-log line saying so; a lookup that fails, or a second refusal,
+  fails with the status only. **NOT tested (needs the administrator's GitHub account): the real confirmation on github.com and the real conversion, installing the app, and a
+  real push through the new app.** Unknown until then: whether GitHub accepts a manifest whose webhook address is the dashboard's own (localhost)
+  address when no public address is set; if it does not, the fix is to require a public address before Connect GitHub. Known limits: the app is
+  only ever one (no multiple apps); a manifest app created while another is connected is refused at start; replacing an app requires Disconnect
+  first for the button flow (the by-hand form replaces directly); the page cannot delete the app on github.com.
 - **Apps/deployments API:** create/list/get apps, request deployment (row first, then queued), history, cancel. Settings
   snapshotted per deployment. `repo` is `owner/repo`; clone URL built server-side. `host_port` required for now.
 - **Deploy engine:** clone -> build -> candidate on temp port -> health check -> swap -> retire. Failures leave the running
@@ -188,9 +234,11 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   else is a Cloudflare 404 (checked: `/api/auth/me`, `/api/webhooks/deliveries`). Needs no port forwarding. Run with
   `cloudflared tunnel run shipdok`; it is not yet a service. The API sets `trust proxy` to `loopback`, so the webhook rate
   limit (120/min) counts each real client separately and ignores forged `X-Forwarded-For` values.
-- **GitHub App config:** the App's ID, private key (`GITHUB_APP_PRIVATE_KEY_FILE`, kept at `~/.shipdok/github-app.pem`, chmod
-  600) and webhook secret live in `infrastructure/.env`; API and worker both load it. Created by hand on github.com
-  (webhook URL above, Contents read-only, Push event, installed on selected repos only).
+- **GitHub App config (replaced by "Connect GitHub" below):** the administrator's own App was created by hand on github.com
+  (webhook URL above, Contents read-only, Push event, installed on selected repos only). Its ID, key and webhook secret used to live in
+  `infrastructure/.env`; they are now entered once on the dashboard's GitHub page and `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE` and
+  `GITHUB_WEBHOOK_SECRET` are no longer read (`GITHUB_APP_ID` is still passed into the containers so that a leftover value gets a log
+  warning naming it).
 - **Docker Compose hosting (api, migrate, worker verified on x86/WSL2 in an isolated project):** `migrate` runs once, then `api`
   (loopback-published, `/health` healthcheck) and `worker` start. Images are `shipdok-api` / `shipdok-worker`, deliberately NOT under
   `shipdok/` (that prefix is deployed apps; image cleanup will target it). The worker image has git and the Docker CLI + buildx; only
@@ -423,17 +471,21 @@ administrator provides a public address (own IP, or Nginx / Nginx Proxy Manager 
 the mode (`local` / `webhook` / `full`) and the public address in the DASHBOARD (Settings, Public access; stored in the DB, `SHIPDOK_PUBLIC` / `PUBLIC_URL` in `.env` override and show as locked). Goal: `docker compose up`, log in, press "Connect GitHub", install the app, deploy
 private repos. No periodic polling. Caddy is an optional, low-priority profile only.
 
-Build order (SPEC.md Milestone 6); steps 1 (password policy, lockout, recent logins, sign out everywhere), 2 (recovery codes, host reset) and 3 (public access) are built, see above:
+Build order (SPEC.md Milestone 6); steps 1 (password policy, lockout, recent logins, sign out everywhere), 2 (recovery codes, host reset), 3 (public access) and 4 (Connect GitHub) are built, see above:
 3. Public access is BUILT (see "Public access" under Built and verified); what remains of it is the docs with Nginx / Nginx Proxy Manager / Caddy
    examples, which go with step 7.
-4. Connect GitHub (App Manifest flow, plus an "I already have a GitHub App" form for entering app ID, private key and webhook secret by hand),
-   using the public address. Credentials live ONLY in the dashboard, encrypted in the DB: `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE` and
-   `GITHUB_WEBHOOK_SECRET` stop being read from `.env` (no import: the administrator re-enters them once by hand), plus Disconnect.
+4. Connect GitHub is BUILT (see "Connect GitHub" under Built and verified); the administrator still has to try the real button once.
 5. First-run secrets generated into a protected volume (`.env` still overrides).
 6. Ready-made multi-arch images (amd64 + ARM64) on GitHub's container registry via GitHub Actions; compose pulls instead of builds.
 7. Pi: full-stack run on the published images (ARM64, firewall vs the health-check path, `DOCKER_GID`), hardening, docs (public
    address options, upgrade, backup), API docs (Scalar).
 8. Optional: Caddy compose profile for people without a proxy.
+
+Later (idea from the administrator, not started, decided to come back to it): deploying from several GitHub accounts or organisations. Option A (small):
+a checkbox on Connect GitHub that makes the app public so one app can be installed on any account the administrator controls, plus an allow-list of
+accounts so a stranger's installation does not show up in the repository picker. Option B (large): several separate GitHub Apps (a table instead of
+one row, the webhook receiver finds the secret from the app id header GitHub sends, each Shipdok app records its GitHub app, a client per app in the
+worker, a merged repository picker, webhook sync per app). Do A first if repositories live on more than one unrelated account; B only for isolation.
 
 Known gaps: no audit/rate limit on `reveal`; old `shipdok/*` images pile up until the administrator prunes (or turns on `auto_prune`); no "clean build cache" action; build-time env vars; Railpack; DB backup docs.
 The portfolio backend (`tianyu-00/TianYuSiteV2`, `backend/`, port 9090) is not yet deployed through the platform.

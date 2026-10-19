@@ -11,6 +11,7 @@ describe('the header', () => {
     renderWithProviders(<Shell username="admin"><p>page</p></Shell>)
     expect(screen.getByRole('link', { name: /storage/i })).toHaveAttribute('href', '/storage')
     expect(screen.getByRole('link', { name: /security/i })).toHaveAttribute('href', '/security')
+    expect(screen.getByRole('link', { name: 'GitHub' })).toHaveAttribute('href', '/github')
     expect(screen.getByRole('link', { name: /shipdok/i })).toHaveAttribute('href', '/')
     expect(screen.getByText('admin')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Change password' })).toBeNull() // it lives on the Security page

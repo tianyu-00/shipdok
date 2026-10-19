@@ -64,6 +64,89 @@ describe('resolveGitAuth', () => {
     });
   });
 
+  describe('a stored installation that GitHub does not know (another GitHub App was connected, or this one was uninstalled)', () => {
+    const stale = (extra = {}) => mkGithub({
+      async getInstallationToken(id, opts) {
+        this.tokenCalls.push({ id, opts });
+        if (id === 7) { const e = new Error('Not Found'); e.status = 404; throw e; }
+        return TOKEN;
+      },
+      async findInstallationForRepo() { return 42; },
+      ...extra,
+    });
+
+    test('is looked up again, the new one is remembered and used', async () => {
+      const github = stale(); const db = mkDb(); const logs = [];
+      const { gitEnv } = await resolveGitAuth({ ...base, github, db, installationId: 7, log: (m) => logs.push(m) });
+      assert.ok(gitEnv);
+      assert.deepEqual(github.tokenCalls.map((c) => c.id), [7, 42]);
+      assert.deepEqual(db.saved, [['a1', 42]]);
+      assert.match(logs.join('\n'), /look(ing)? it up again/i);
+    });
+
+    test('the retry is scoped like the first try: this repository only, read-only contents', async () => {
+      const github = stale();
+      await resolveGitAuth({ ...base, github, db: mkDb(), installationId: 7 });
+      assert.deepEqual(github.tokenCalls[1].opts, { repo: 'o/r', permissions: { contents: 'read' } });
+    });
+
+    test('the app is not installed on the repository any more: the stale id is forgotten and the clone is anonymous', async () => {
+      const github = stale({ async findInstallationForRepo() { return null; } }); const db = mkDb(); const logs = [];
+      assert.deepEqual(await resolveGitAuth({ ...base, github, db, installationId: 7, log: (m) => logs.push(m) }), {});
+      assert.deepEqual(db.saved, [['a1', null]]);
+      assert.match(logs.join('\n'), /not installed/i);
+    });
+
+    test('if the new installation is refused too it fails with the status only', async () => {
+      const github = stale({ async getInstallationToken(id) { const e = new Error(`bad ${TOKEN}`); e.status = id === 7 ? 404 : 403; throw e; } });
+      await assert.rejects(resolveGitAuth({ ...base, github, db: mkDb(), installationId: 7 }), (err) => {
+        assert.ok(err instanceof GitAuthError);
+        assert.match(err.message, /403/);
+        assert.ok(!err.message.includes(TOKEN));
+        return true;
+      });
+    });
+
+    test('a failed lookup fails clearly instead of guessing, and never leaks details', async () => {
+      const github = stale({ async findInstallationForRepo() { throw new Error(`boom ${TOKEN}`); } });
+      await assert.rejects(resolveGitAuth({ ...base, github, db: mkDb(), installationId: 7 }), (err) => {
+        assert.ok(err instanceof GitAuthError);
+        assert.match(err.message, /404/);
+        assert.ok(!err.message.includes(TOKEN));
+        return true;
+      });
+    });
+
+    test('only a 404 triggers this: a 401 or 403 on a stored installation is reported as it is, with no lookup', async () => {
+      for (const status of [401, 403, 500]) {
+        let lookups = 0;
+        const github = mkGithub({
+          async getInstallationToken() { const e = new Error('x'); e.status = status; throw e; },
+          async findInstallationForRepo() { lookups += 1; return 42; },
+        });
+        await assert.rejects(resolveGitAuth({ ...base, github, db: mkDb(), installationId: 7 }), (err) => err instanceof GitAuthError && err.message.includes(String(status)));
+        assert.equal(lookups, 0, `status ${status}`);
+      }
+    });
+
+    test('an installation found by lookup that then gives a 404 is not looked up a second time', async () => {
+      let lookups = 0;
+      const github = mkGithub({
+        async findInstallationForRepo() { lookups += 1; return 42; },
+        async getInstallationToken() { const e = new Error('x'); e.status = 404; throw e; },
+      });
+      await assert.rejects(resolveGitAuth({ ...base, github, db: mkDb() }), (err) => err instanceof GitAuthError && /404/.test(err.message));
+      assert.equal(lookups, 1);
+    });
+
+    test('a failing database write while forgetting or remembering does not fail the deploy', async () => {
+      const db = { async setInstallationId() { throw new Error('db down'); } };
+      assert.ok((await resolveGitAuth({ ...base, github: stale(), db, installationId: 7 })).gitEnv);
+      const none = stale({ async findInstallationForRepo() { return null; } });
+      assert.deepEqual(await resolveGitAuth({ ...base, github: none, db, installationId: 7 }), {});
+    });
+  });
+
   test('rejects dot-segment and malformed repository names', async () => {
     for (const repoFullName of ['../x', 'a/..', 'nope', 'a/b/c', undefined]) {
       await assert.rejects(resolveGitAuth({ ...base, repoFullName, github: mkGithub(), db: mkDb(), installationId: 1 }), GitAuthError);

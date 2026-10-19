@@ -3,9 +3,12 @@ export {
 } from './constants.js';
 export { parseMasterKey, envVarContext, encryptSecret, decryptSecret } from './crypto.js';
 export { parseEnvText } from './envfile.js';
+export {
+  githubFieldContext, GithubStoreError, saveGithubApp, githubAppSummary, loadGithubApp, deleteGithubApp, createGithubProvider, oldGithubEnvNotice,
+} from './githubapp.js';
 export { passwordProblem, PASSWORD_MIN, PASSWORD_MAX } from './password.js';
 export {
-  GithubError, loadGithubAppConfig, signAppJwt, createGithubClient, gitAuthEnv,
+  GithubError, parsePrivateKeyPem, signAppJwt, createGithubClient, exchangeManifestCode, gitAuthEnv,
 } from './github.js';
 export {
   MAX_LINE_BYTES, LOG_FILE_NAMES, RUNTIME_FILE_NAMES, logRoot, logDirFor, logFilePath, runtimeLogPath, formatLine, createRedactor, secretsFromGitEnv,

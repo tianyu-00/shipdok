@@ -7,9 +7,13 @@
 //   ... --delivery <id> to resend the SAME delivery (it should answer "duplicate")
 //   ... --url http://localhost:4000 to target a different address
 //
-// Reads GITHUB_WEBHOOK_SECRET from the environment (infrastructure/.env). The secret is never printed.
+// Reads the webhook secret of the connected GitHub App from the database (it is entered in the dashboard) with the platform key from
+// infrastructure/.env. The secret is never printed.
 import { createHmac, randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
+import pg from "pg";
+import { loadGithubApp, parseMasterKey } from "@shipdok/shared";
+import { pgConfig } from "../src/db/pool.js";
 
 const { values: a, positionals } = parseArgs({
   allowPositionals: true,
@@ -22,14 +26,22 @@ const { values: a, positionals } = parseArgs({
   },
 });
 const event = positionals[0];
-const secret = process.env.GITHUB_WEBHOOK_SECRET;
 
 if (!["ping", "push"].includes(event)) {
   console.error("Usage: send-webhook.js <ping|push> [--repo owner/name --branch main --sha <commit>]");
   process.exit(2);
 }
+let secret;
+{
+  const pool = new pg.Pool(pgConfig());
+  try {
+    secret = (await loadGithubApp(pool, parseMasterKey(process.env.APP_SECRETS_KEY)))?.webhookSecret;
+  } finally {
+    await pool.end();
+  }
+}
 if (!secret) {
-  console.error("GITHUB_WEBHOOK_SECRET is not set (add it to infrastructure/.env)");
+  console.error("No GitHub App is connected: connect it on the GitHub page of the dashboard first (the webhook secret is stored there)");
   process.exit(2);
 }
 

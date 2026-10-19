@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { HardDrive, LogOut, Ship, ShieldCheck } from 'lucide-react'
+import { GitBranch, HardDrive, LogOut, Ship, ShieldCheck } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
@@ -22,6 +22,7 @@ export function Shell({ username, children }) {
           <Link to="/" className="flex items-center gap-2 font-semibold"><Ship className="size-5 text-primary" aria-hidden="true" />Shipdok</Link>
           <div className="ml-auto flex items-center gap-1">
             <Button variant="ghost" size="sm" asChild><Link to="/storage" aria-label="Storage"><HardDrive className="size-4" aria-hidden="true" /><span className="hidden sm:inline">Storage</span></Link></Button>
+            <Button variant="ghost" size="sm" asChild><Link to="/github" aria-label="GitHub"><GitBranch className="size-4" aria-hidden="true" /><span className="hidden sm:inline">GitHub</span></Link></Button>
             <Button variant="ghost" size="sm" asChild><Link to="/security" aria-label="Security"><ShieldCheck className="size-4" aria-hidden="true" /><span className="hidden sm:inline">Security</span></Link></Button>
             <span className="mr-2 hidden text-sm text-muted-foreground sm:inline">{username}</span>
             <ThemeToggle />

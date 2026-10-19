@@ -25,7 +25,8 @@ export async function resolveGitAuth({ github, db, installationId, appId, repoFu
     throw new GitAuthError('Invalid repository name');
   }
 
-  let id = installationId ? Number(installationId) : null;
+  const stored = Boolean(installationId);
+  let id = stored ? Number(installationId) : null;
   if (!id) {
     // The app might have been installed after this Shipdok app was created: look it up now.
     try {
@@ -38,11 +39,33 @@ export async function resolveGitAuth({ github, db, installationId, appId, repoFu
     await Promise.resolve(db.setInstallationId(appId, id)).catch(() => {}); // remember it; a failed write must not fail the deploy
   }
 
+  // Least privilege: a token that can read ONLY this repository's contents, and only for about an hour.
+  const tokenFor = (installation) => github.getInstallationToken(installation, { repo: repoFullName, permissions: { contents: 'read' } });
+  const failure = (err) => new GitAuthError(`Could not get a GitHub access token${err?.status ? ` (HTTP ${err.status})` : ''}`);
+
   try {
-    // Least privilege: a token that can read ONLY this repository's contents, and only for about an hour.
-    const token = await github.getInstallationToken(id, { repo: repoFullName, permissions: { contents: 'read' } });
-    return { gitEnv: gitAuthEnv(token) };
+    return { gitEnv: gitAuthEnv(await tokenFor(id)) };
   } catch (err) {
-    throw new GitAuthError(`Could not get a GitHub access token${err?.status ? ` (HTTP ${err.status})` : ''}`);
+    // GitHub does not know the installation we remembered. That happens when a DIFFERENT GitHub App was connected since (installation
+    // ids belong to one app) or when the app was uninstalled. Look the repository up again, once, instead of failing every deploy.
+    if (!(stored && err?.status === 404)) throw failure(err);
+    log('The remembered GitHub installation is not valid for the connected app: looking it up again');
+    let fresh;
+    try {
+      fresh = await github.findInstallationForRepo(repoFullName);
+    } catch {
+      throw failure(err);
+    }
+    if (!fresh) {
+      log('The GitHub App is not installed on this repository (install it on GitHub for private repositories); trying an anonymous clone');
+      await Promise.resolve(db.setInstallationId(appId, null)).catch(() => {});
+      return {};
+    }
+    await Promise.resolve(db.setInstallationId(appId, fresh)).catch(() => {});
+    try {
+      return { gitEnv: gitAuthEnv(await tokenFor(fresh)) };
+    } catch (second) {
+      throw failure(second);
+    }
   }
 }
