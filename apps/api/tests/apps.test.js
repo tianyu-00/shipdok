@@ -73,10 +73,11 @@ describe("creating apps", () => {
     expect(rows[0].n).toBe(0);
   });
 
-  test("rejects a missing host port", async () => {
+  test("a missing host port is chosen automatically (see appdelete.test.js for the rules)", async () => {
     const { host_port, ...rest } = VALID;
     const res = await agent.post("/api/apps").send(rest);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(201);
+    expect(res.body.host_port).toBeGreaterThanOrEqual(1024);
   });
 
   test("a duplicate name is a 409", async () => {

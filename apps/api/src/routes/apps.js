@@ -5,6 +5,7 @@ import { requestControl, CONTROL_ACTIONS } from '../control.js';
 import { diskStatus, defaultDiskUsage } from '../disk.js';
 import { listVersions, prunableBytes } from '../images.js';
 import { removeDeploymentLogs } from '@shipdok/shared';
+import { nextFreePort, parsePortRange } from '../ports.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (s) => typeof s === 'string' && UUID_RE.test(s);
@@ -23,8 +24,8 @@ const createSchema = z.object({
   branch: z.string().trim().regex(/^[A-Za-z0-9_][A-Za-z0-9._\/-]{0,254}$/, 'Invalid branch name').default('main'),
   root_dir: rootDir.default('.'),
   container_port: z.number().int().min(1).max(65535),
-  // Required for now; race-safe auto-allocation is a later milestone item.
-  host_port: z.number().int().min(1024).max(65535),
+  // Left out: the lowest free port in PORT_RANGE is chosen (see ports.js).
+  host_port: z.number().int().min(1024).max(65535).optional(),
   health_path: z.string().regex(/^\/[^\s]*$/, 'Must start with / and contain no spaces').max(200).nullish(),
   memory_mb: z.number().int().min(64).max(8192).default(512),
   cpus: z.number().min(0.1).max(4).default(1),
@@ -43,7 +44,7 @@ const updateSchema = z.object({
   branch: createSchema.shape.branch.unwrap(),
   root_dir: createSchema.shape.root_dir.unwrap(),
   container_port: createSchema.shape.container_port,
-  host_port: createSchema.shape.host_port,
+  host_port: createSchema.shape.host_port.unwrap(),
   health_path: z.string().regex(/^\/[^\s]*$/, 'Must start with / and contain no spaces').max(200).nullable(),
   memory_mb: createSchema.shape.memory_mb.unwrap(),
   cpus: createSchema.shape.cpus.unwrap(),
@@ -63,6 +64,9 @@ const rollbackSchema = z.object({
   deploymentId: z.string().regex(UUID_RE, 'Must be a deployment id').optional(),
   start: z.boolean().optional(),
 }).strict();
+
+// An app being deleted accepts nothing but "delete again" (a retry): everything else would fight the worker that is removing it.
+const DELETING = { error: 'This app is being deleted', code: 'deleting' };
 
 const UNIQUE_MESSAGES = {
   apps_name_key: 'An app with this name already exists',
@@ -91,7 +95,7 @@ const CLEANUP = `(SELECT row_to_json(c) FROM (
 // ignoreDiskWarning: the administrator has seen the "disk is nearly full" answer and wants to build anyway.
 const deploySchema = z.object({ start: z.boolean().optional(), ignoreDiskWarning: z.boolean().optional() }).strict();
 
-export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = defaultDiskUsage }) {
+export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = defaultDiskUsage, portRange = parsePortRange() }) {
   const r = Router();
 
   r.post('/', async (req, res, next) => {
@@ -105,11 +109,25 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       if (!slug) return res.status(400).json({ error: 'Name must contain letters or numbers' });
 
       try {
-        const { rows } = await db.query(
-          `INSERT INTO apps (name, slug, repo, branch, root_dir, container_port, host_port, health_path, memory_mb, cpus, max_restarts, keep_previous_images, auto_prune)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-          [a.name, slug, a.repo, a.branch, a.root_dir, a.container_port, a.host_port, a.health_path ?? null, a.memory_mb, a.cpus, a.max_restarts, a.keep_previous_images, a.auto_prune],
-        );
+        // Without a host port, take the lowest free one in the range. Two creations at the same moment can pick the same port;
+        // the unique index decides, and the loser simply picks again.
+        let rows;
+        for (let attempt = 0; ; attempt += 1) {
+          const hostPort = a.host_port ?? await nextFreePort(db, portRange);
+          if (hostPort === null) {
+            return res.status(409).json({ error: `Every port from ${portRange.min} to ${portRange.max} is taken. Choose a host port yourself, or widen PORT_RANGE.`, code: 'no_free_port' });
+          }
+          try {
+            ({ rows } = await db.query(
+              `INSERT INTO apps (name, slug, repo, branch, root_dir, container_port, host_port, health_path, memory_mb, cpus, max_restarts, keep_previous_images, auto_prune)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+              [a.name, slug, a.repo, a.branch, a.root_dir, a.container_port, hostPort, a.health_path ?? null, a.memory_mb, a.cpus, a.max_restarts, a.keep_previous_images, a.auto_prune],
+            ));
+            break;
+          } catch (err) {
+            if (!(err.code === '23505' && err.constraint === 'apps_host_port_key' && a.host_port === undefined && attempt < 20)) throw err;
+          }
+        }
         const created = rows[0];
         // Is the GitHub App installed on this repository? Best effort and NEVER blocks creation:
         // public repositories work without it, and the app can be installed later.
@@ -181,8 +199,9 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       }
       const v = parsed.data;
       if (v.name !== undefined && !slugify(v.name)) return res.status(400).json({ error: 'Name must contain letters or numbers' });
-      const { rows: found } = await db.query('SELECT id FROM apps WHERE id = $1', [req.params.id]);
+      const { rows: found } = await db.query('SELECT id, deleting_at FROM apps WHERE id = $1', [req.params.id]);
       if (!found[0]) return res.status(404).json({ error: 'App not found' });
+      if (found[0].deleting_at) return res.status(409).json(DELETING);
 
       const conflict = async (column, value) => {
         const { rows } = await db.query(`SELECT id, name FROM apps WHERE ${column} = $1 AND id <> $2`, [value, req.params.id]);
@@ -238,6 +257,7 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       const { rows: appRows } = await db.query('SELECT * FROM apps WHERE id = $1', [req.params.id]);
       const app = appRows[0];
       if (!app) return res.status(404).json({ error: 'App not found' });
+      if (app.deleting_at) return res.status(409).json(DELETING);
       if (!queue) return res.status(503).json({ error: 'Deployment queue unavailable' });
       const body = deploySchema.safeParse(req.body ?? {});
       if (!body.success) return res.status(400).json({ error: 'Invalid request', details: body.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) });
@@ -272,6 +292,7 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       const { rows: appRows } = await db.query('SELECT * FROM apps WHERE id = $1', [req.params.id]);
       const app = appRows[0];
       if (!app) return res.status(404).json({ error: 'App not found' });
+      if (app.deleting_at) return res.status(409).json(DELETING);
       if (!queue) return res.status(503).json({ error: 'Deployment queue unavailable' });
       const body = rollbackSchema.safeParse(req.body ?? {});
       if (!body.success) return res.status(400).json({ error: 'Invalid request', details: body.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) });
@@ -320,8 +341,9 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
   r.post('/:id/prune', async (req, res, next) => {
     try {
       if (!isUuid(req.params.id)) return res.status(404).json({ error: 'App not found' });
-      const { rows } = await db.query('SELECT id FROM apps WHERE id = $1', [req.params.id]);
+      const { rows } = await db.query('SELECT id, deleting_at FROM apps WHERE id = $1', [req.params.id]);
       if (!rows[0]) return res.status(404).json({ error: 'App not found' });
+      if (rows[0].deleting_at) return res.status(409).json(DELETING);
       if (!queue) return res.status(503).json({ error: 'Job queue unavailable' });
       try {
         await queue.add('prune', { appId: req.params.id, trigger: 'manual' });
@@ -341,10 +363,43 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       if (!body.success) return res.status(400).json({ error: 'Invalid settings', details: body.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`) });
       const { rows } = await db.query(
         `UPDATE apps SET keep_previous_images = COALESCE($2, keep_previous_images), auto_prune = COALESCE($3, auto_prune), updated_at = now()
-          WHERE id = $1 RETURNING keep_previous_images, auto_prune`,
+          WHERE id = $1 AND deleting_at IS NULL RETURNING keep_previous_images, auto_prune`,
         [req.params.id, body.data.keep_previous_images ?? null, body.data.auto_prune ?? null]);
-      if (!rows[0]) return res.status(404).json({ error: 'App not found' });
+      if (!rows[0]) {
+        const { rows: exists } = await db.query('SELECT deleting_at FROM apps WHERE id = $1', [req.params.id]);
+        return exists[0]?.deleting_at ? res.status(409).json(DELETING) : res.status(404).json({ error: 'App not found' });
+      }
       res.json(rows[0]);
+    } catch (err) { next(err); }
+  });
+
+  // Delete the app: its containers, images, logs, variables and every deployment record. The worker does it (the API never
+  // touches Docker); this only marks the app and queues the job. The exact name must be sent, so a stray request cannot do it.
+  // Asking again while it is marked (a retry after a failure, or a worker that was down) queues the job again: every step is repeatable.
+  r.delete('/:id', async (req, res, next) => {
+    try {
+      if (!isUuid(req.params.id)) return res.status(404).json({ error: 'App not found' });
+      const { rows } = await db.query('SELECT id, name, desired_state, deleting_at FROM apps WHERE id = $1', [req.params.id]);
+      const app = rows[0];
+      if (!app) return res.status(404).json({ error: 'App not found' });
+      if (typeof req.body?.confirm !== 'string' || req.body.confirm !== app.name) {
+        return res.status(400).json({ error: 'Send the exact name of the app as "confirm" to delete it', code: 'confirm_mismatch' });
+      }
+      if (!queue) return res.status(503).json({ error: 'Job queue unavailable' });
+      const { rows: active } = await db.query(
+        `SELECT 1 FROM deployments WHERE app_id = $1 AND status IN ('queued','building','starting','validating') LIMIT 1`, [app.id]);
+      if (active[0]) return res.status(409).json({ error: 'A deployment is still running. Cancel it first.', code: 'deployment_active' });
+
+      // Stopped at once, so a push cannot start anything new while the worker gets to the job.
+      await db.query(`UPDATE apps SET deleting_at = COALESCE(deleting_at, now()), delete_error = NULL, desired_state = 'stopped', updated_at = now() WHERE id = $1`, [app.id]);
+      try {
+        await queue.add('deleteapp', { appId: app.id });
+      } catch (err) {
+        console.error('Enqueue failed:', err.message);
+        if (!app.deleting_at) await db.query(`UPDATE apps SET deleting_at = NULL, desired_state = $2 WHERE id = $1`, [app.id, app.desired_state]);
+        return res.status(503).json({ error: 'Could not queue the deletion' });
+      }
+      res.status(202).json({ deleting: true });
     } catch (err) { next(err); }
   });
 
@@ -355,6 +410,7 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
         if (!isUuid(req.params.id)) return res.status(404).json({ error: 'App not found' });
         const { rows } = await db.query('SELECT * FROM apps WHERE id = $1', [req.params.id]);
         if (!rows[0]) return res.status(404).json({ error: 'App not found' });
+        if (rows[0].deleting_at) return res.status(409).json(DELETING);
         if (!queue) return res.status(503).json({ error: 'Job queue unavailable' });
 
         const result = await requestControl({ db, queue }, rows[0], action);

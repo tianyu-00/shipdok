@@ -3,6 +3,7 @@ import helmet from 'helmet';
 import session from 'express-session';
 import connectPgSimple from 'connect-pg-simple';
 import { config, loadSecretsKey } from './config.js';
+import { parsePortRange } from './ports.js';
 import { pool } from './db/pool.js';
 import { originCheck } from './middleware/originCheck.js';
 import { requireAuth } from './middleware/requireAuth.js';
@@ -28,7 +29,7 @@ export function createApp({
   db = pool, queue, secretsKey = loadSecretsKey(),
   webhookSecret = config.webhookSecret, webhookRateLimit = 120,
   github = defaultGithub(),
-  logDir = logRoot(), diskUsage = defaultDiskUsage,
+  logDir = logRoot(), diskUsage = defaultDiskUsage, portRange = parsePortRange(config.portRangeText),
   trustProxy = process.env.TRUST_PROXY || 'loopback',
 } = {}) {
   const app = express();
@@ -70,7 +71,7 @@ export function createApp({
 
   app.use('/api/auth', authRouter(db));
   app.use('/api/apps/:id/env', requireAuth, envRouter({ db, secretsKey }));
-  app.use('/api/apps', requireAuth, appsRouter({ db, queue, github, logDir, diskUsage }));
+  app.use('/api/apps', requireAuth, appsRouter({ db, queue, github, logDir, diskUsage, portRange }));
   app.use('/api/apps', requireAuth, appLogsRouter({ db, logDir }));
   app.use('/api/github', requireAuth, githubRouter({ github }));
   app.use('/api/deployments', requireAuth, deploymentsRouter({ db, queue, logDir }));

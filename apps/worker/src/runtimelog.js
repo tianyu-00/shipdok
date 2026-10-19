@@ -206,6 +206,16 @@ export function createCollector({ root, db, eng, loadSecrets, maxBytes = DEFAULT
       await finish(run);
     }),
 
+    /** The app is being deleted: stop following its output and close the file, without writing anything to the database (its rows go too). */
+    release: (appId) => serial(appId, async () => {
+      const run = runs.get(appId);
+      if (!run) return;
+      run.stream?.destroy?.();
+      run.stream = null;
+      await run.sink.close().catch(() => {});
+      runs.delete(appId);
+    }),
+
     /** The worker is shutting down: close every file and record its size. */
     async stopAll() {
       for (const run of [...runs.values()]) {

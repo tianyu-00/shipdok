@@ -10,6 +10,7 @@ import * as deployments from './src/db.js';
 import { processDeployJob } from './src/process-job.js';
 import { processControlJob } from './src/control.js';
 import { processPruneJob } from './src/prune.js';
+import { processDeleteJob } from './src/deleteapp.js';
 import { jobProcessor } from './src/dispatch.js';
 import { createActivity } from './src/activity.js';
 import { createMonitor } from './src/monitor.js';
@@ -61,6 +62,7 @@ const worker = new Worker(
     deploy: (job) => processDeployJob(job, { secretsKey, github, collector }),
     control: (job) => processControlJob(job),
     prune: (job) => processPruneJob(job),
+    deleteApp: (job) => processDeleteJob(job, { collector }),
   }),
   { connection, concurrency: 1, maxStalledCount: 0, autorun: false },
 );
@@ -71,6 +73,11 @@ worker.on('failed', (job, err) => {
   console.log(`[job ${job?.id}] failed: ${err.message}`);
   // A stalled job never reached our own failure handling; record it here.
   // markFailed only touches rows that are still active, so it cannot overwrite a final status.
+  // A deletion that stalled (the worker died in the middle of it) never reached its own error handling either: tell the app,
+  // so the dashboard offers a retry instead of showing "Deleting…" for ever.
+  if (job?.name === 'deleteapp' && job.data?.appId && /stalled/i.test(err.message)) {
+    deployments.setDeleteError(job.data.appId, err.message).catch((e) => console.error(`Could not record stall: ${e.message}`));
+  }
   const id = job?.data?.deploymentId;
   if (id && /stalled/i.test(err.message)) {
     deployments.markFailed(id, err.message).catch((e) => console.error(`Could not record stall: ${e.message}`));

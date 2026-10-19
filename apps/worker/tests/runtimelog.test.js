@@ -629,3 +629,22 @@ describe('a new deployment of the same app (a new container)', () => {
     assert.notEqual(a.file(), b.file());
   });
 });
+
+describe('letting go of an app that is being deleted', () => {
+  test('stops following and closes the file, writes nothing to the database, and later output is not collected', async () => {
+    const t = await setup();
+    t.eng.say('stdout', 'before', at(1));
+    await t.sync(); await t.settle();
+    await t.collector.release(t.appId);
+    const size = readFileSync(t.file(), 'utf8').length;
+    t.eng.say('stdout', 'after', at(2));
+    await t.settle();
+    assert.equal(readFileSync(t.file(), 'utf8').length, size); // nothing new reaches the file
+    assert.equal((await t.row()).endedAt, null);                // and the record was left alone (it is deleted with the app)
+  });
+
+  test('an app that is not being followed is fine', async () => {
+    const t = await setup();
+    await t.collector.release(t.appId);
+  });
+});

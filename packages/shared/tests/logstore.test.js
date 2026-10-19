@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   MAX_LINE_BYTES, logRoot, logFilePath, runtimeLogPath, formatLine, createRedactor, secretsFromGitEnv,
-  readChunk, readTail, removeDeploymentLogs, removeRuntimeLogs, gitAuthEnv, LOG_FILE_NAMES, RUNTIME_FILE_NAMES,
+  readChunk, readTail, removeDeploymentLogs, removeRuntimeLogs, removeAppLogs, gitAuthEnv, LOG_FILE_NAMES, RUNTIME_FILE_NAMES,
 } from '../src/index.js';
 
 const APP = '11111111-1111-4111-8111-111111111111';
@@ -300,5 +300,32 @@ describe('removeRuntimeLogs', () => {
   test('refuses an id that could point elsewhere', async () => {
     await assert.rejects(removeRuntimeLogs(root, '..'), /invalid/i);
     await assert.rejects(removeRuntimeLogs(root, ''), /invalid/i);
+  });
+});
+
+describe('removeAppLogs', () => {
+  const A = '77777777-7777-4777-8777-777777777777';
+  const B = '88888888-8888-4888-8888-888888888888';
+  test('removes the runtime logs and every deployment\'s build log, reports the bytes, and leaves other apps alone', async () => {
+    mkdirSync(join(root, A, DEP), { recursive: true });
+    mkdirSync(join(root, A, '99999999-9999-4999-8999-999999999999'), { recursive: true });
+    mkdirSync(join(root, B), { recursive: true });
+    writeFileSync(join(root, A, 'runtime.log'), 'a'.repeat(10));
+    writeFileSync(join(root, A, 'runtime.previous.log'), 'b'.repeat(5));
+    writeFileSync(join(root, A, DEP, 'build.log'), 'c'.repeat(100));
+    writeFileSync(join(root, A, '99999999-9999-4999-8999-999999999999', 'build.log'), 'd'.repeat(1000));
+    writeFileSync(join(root, B, 'runtime.log'), 'keep');
+    assert.equal(await removeAppLogs(root, A), 1115);
+    assert.ok(!existsSync(join(root, A)));
+    assert.equal(readFileSync(join(root, B, 'runtime.log'), 'utf8'), 'keep');
+  });
+  test('an app with no logs is fine and frees nothing', async () => {
+    assert.equal(await removeAppLogs(root, '12121212-1212-4212-8212-121212121212'), 0);
+  });
+  test('refuses ids that could point elsewhere, and touches nothing', async () => {
+    await assert.rejects(removeAppLogs(root, '..'), /invalid/i);
+    await assert.rejects(removeAppLogs(root, ''), /invalid/i);
+    await assert.rejects(removeAppLogs(root, '../x'), /invalid/i);
+    assert.ok(existsSync(root));
   });
 });

@@ -137,6 +137,10 @@ export function webhookReceiver({ db, queue, secret, rateLimitPerMinute = 120, l
       // delivery history says why; a redelivery after freeing space, or a manual deployment, builds it.
       const disk = await diskStatus(diskUsage, logDir);
       for (const app of apps) {
+        if (app.deleting_at) {
+          details.push({ app: app.slug, result: 'skipped', reason: 'The app is being deleted' });
+          continue;
+        }
         if (app.desired_state === 'stopped') {
           details.push({ app: app.slug, result: 'skipped', reason: 'The app is stopped' });
           continue;
@@ -166,7 +170,9 @@ export function webhookReceiver({ db, queue, secret, rateLimitPerMinute = 120, l
       if (!deployments.length) {
         const reason = diskSkipped > 0
           ? 'The disk is almost full, so nothing was built. Free some space and redeliver, or deploy manually'
-          : 'Every app tracking this branch is stopped';
+          : apps.every((a) => a.deleting_at) ? 'Every app tracking this branch is being deleted'
+            : apps.some((a) => a.deleting_at) ? 'Every app tracking this branch is stopped or being deleted'
+            : 'Every app tracking this branch is stopped';
         await finish(db, delivery, 'ignored', reason, { ...meta, details });
         return res.status(200).json({ status: 'ignored', reason });
       }

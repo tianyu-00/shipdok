@@ -81,6 +81,7 @@ services:
       APP_SECRETS_KEY: ${APP_SECRETS_KEY}
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:${WEB_HOST_PORT:-8080}}
       TRUST_PROXY: loopback,uniquelocal # the dashboard's nginx (a private address) passes on the real client address
+      PORT_RANGE: ${PORT_RANGE:-} # host ports chosen automatically for new apps (default 20000-20999)
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
       SETUP_TOKEN: ${SETUP_TOKEN:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}

@@ -1,4 +1,5 @@
 import { parseMasterKey } from "@shipdok/shared";
+import { parsePortRange } from "./ports.js";
 
 // API settings from the environment. Call assertConfig() once at startup.
 export const config = {
@@ -11,6 +12,8 @@ export const config = {
   // Shared secret GitHub signs webhooks with. Unset = the webhook endpoint is disabled.
   webhookSecret: process.env.GITHUB_WEBHOOK_SECRET || null,
   secureCookies: process.env.COOKIE_SECURE === "true", // set true when served over HTTPS
+  // Where automatically chosen host ports come from (a new app that is not given one). Checked at startup.
+  portRangeText: process.env.PORT_RANGE || undefined,
   idleMs: 30 * 60 * 1000, // sliding inactivity timeout (spec: exact values open)
   maxLifetimeMs: 12 * 60 * 60 * 1000, // absolute session lifetime
 };
@@ -25,6 +28,7 @@ export function assertConfig() {
     throw new Error("SESSION_SECRET must be set to at least 32 characters (try: openssl rand -hex 32)");
   }
   loadSecretsKey();
+  parsePortRange(config.portRangeText);
   if (config.webhookSecret && config.webhookSecret.length < 16) {
     throw new Error("GITHUB_WEBHOOK_SECRET must be at least 16 characters (try: openssl rand -hex 32)");
   }

@@ -201,3 +201,26 @@ export async function removeRuntimeLogs(root, appId) {
   await rmdir(join(root, appId)).catch(() => {});
   return freed;
 }
+
+/** Deletes EVERYTHING stored for an app: its runtime logs and every deployment's build log. Returns the bytes freed. */
+export async function removeAppLogs(root, appId) {
+  const dir = join(root, assertId(appId));
+  if (!resolve(dir).startsWith(resolve(root) + sep)) throw new Error('Invalid log path');
+  const size = async (d) => {
+    let total = 0;
+    for (const entry of await readdir(d, { withFileTypes: true })) {
+      const path = join(d, entry.name);
+      total += entry.isDirectory() ? await size(path) : (await stat(path)).size;
+    }
+    return total;
+  };
+  let freed = 0;
+  try {
+    freed = await size(dir);
+  } catch (err) {
+    if (err.code === 'ENOENT') return 0;
+    throw err;
+  }
+  await rm(dir, { recursive: true, force: true });
+  return freed;
+}

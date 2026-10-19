@@ -59,3 +59,19 @@ test('image clean-up jobs go to the prune processor, and are marked busy like an
   assert.deepEqual(calls, ['prune:prune', 'prune:removeimage']);
   assert.deepEqual(marks, ['a1', 'a1']);
 });
+
+test('a deleteapp job goes to its own processor, with the app marked busy', async () => {
+  const calls = [];
+  const marks = [];
+  const activity = { run: async (id, fn) => { marks.push(id); return fn(); } };
+  const process = jobProcessor({
+    activity,
+    deploy: async () => { calls.push('deploy'); },
+    control: async () => { calls.push('control'); },
+    prune: async () => { calls.push('prune'); },
+    deleteApp: async (job) => { calls.push(['delete', job.data.appId]); return 'x'; },
+  });
+  assert.equal(await process({ name: 'deleteapp', data: { appId: 'a9' } }), 'x');
+  assert.deepEqual(calls, [['delete', 'a9']]);
+  assert.deepEqual(marks, ['a9']);
+});

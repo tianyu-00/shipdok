@@ -8,5 +8,5 @@ export {
 } from './github.js';
 export {
   MAX_LINE_BYTES, LOG_FILE_NAMES, RUNTIME_FILE_NAMES, logRoot, logDirFor, logFilePath, runtimeLogPath, formatLine, createRedactor, secretsFromGitEnv,
-  readChunk, readTail, removeDeploymentLogs, removeRuntimeLogs,
+  readChunk, readTail, removeDeploymentLogs, removeRuntimeLogs, removeAppLogs,
 } from './logstore.js';

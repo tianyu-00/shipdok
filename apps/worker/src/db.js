@@ -109,6 +109,37 @@ export async function getApp(appId) {
   return rows[0] ?? null;
 }
 
+// ---- Deleting an app ----
+// The app as the deletion needs it. Only an app the API marked as "being deleted" is ever touched.
+export async function getAppForDelete(appId) {
+  const { rows } = await pool.query('SELECT id, slug, name, deleting_at FROM apps WHERE id = $1', [appId]);
+  return rows[0] ?? null;
+}
+
+export const setDeleteError = (appId, message) =>
+  pool.query('UPDATE apps SET delete_error = $2 WHERE id = $1 AND deleting_at IS NOT NULL', [appId, String(message).slice(0, 500)]);
+
+// The last step, all or nothing: the deployments (apps -> deployments is RESTRICT, so they go first; their build-log records go with
+// them), then the app, whose variables, runtime state, crash events, log records and clean-up summary go by cascade.
+// Webhook deliveries are history and stay. Returns false if the app was not marked.
+export async function deleteAppRows(appId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT 1 FROM apps WHERE id = $1 AND deleting_at IS NOT NULL FOR UPDATE', [appId]);
+    if (!rows[0]) { await client.query('ROLLBACK'); return false; }
+    await client.query('DELETE FROM deployments WHERE app_id = $1', [appId]);
+    await client.query('DELETE FROM apps WHERE id = $1', [appId]);
+    await client.query('COMMIT');
+    return true;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export async function getDesiredState(appId) {
   const { rows } = await pool.query('SELECT desired_state FROM apps WHERE id = $1', [appId]);
   return rows[0]?.desired_state ?? null;

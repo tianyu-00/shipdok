@@ -73,6 +73,12 @@ export async function findContainers({ appId, role }) {
   return list.map((c) => docker.getContainer(c.Id));
 }
 
+// Every container Shipdok made for this app, whatever its role (live, or a candidate a dead worker left behind).
+export async function findAppContainers(appId) {
+  const list = await docker.listContainers({ all: true, filters: { label: [`${LABEL.managed}=true`, `${LABEL.app}=${appId}`] } });
+  return list.map((c) => docker.getContainer(c.Id));
+}
+
 export function containerSpec({ image, name, labels, containerPort, hostPort, memoryMb, cpus, env }) {
   const cport = `${containerPort}/tcp`;
   return {
@@ -346,6 +352,17 @@ export async function imageArch(image) {
 
 export async function hostArchitecture() {
   return (await docker.info()).Architecture;
+}
+
+// Removes a container for good, stopping it first if it runs. 'gone' when it was not there; any other failure is thrown (unlike removeQuietly).
+export async function removeContainerStrict(c) {
+  try {
+    await c.remove({ force: true });
+    return 'removed';
+  } catch (err) {
+    if (err.statusCode === 404) return 'gone';
+    throw err;
+  }
 }
 
 export async function removeQuietly(c) {
