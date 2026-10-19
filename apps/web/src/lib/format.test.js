@@ -64,6 +64,14 @@ describe('parseLogLine', () => {
   test('a line in some other format is shown as it is', () => expect(parseLogLine('plain text')).toEqual({ time: null, stream: 'stdout', message: 'plain text' }))
 })
 
+describe('displayState for an app being deleted', () => {
+  test('says so, and says when it failed; this beats every runtime state', () => {
+    expect(displayState({ deleting_at: '2026-10-19T12:00:00Z', desired_state: 'stopped', runtime: { state: 'running' } })).toBe('deleting')
+    expect(displayState({ deleting_at: '2026-10-19T12:00:00Z', delete_error: 'x', runtime: { state: 'stopped' } })).toBe('delete-failed')
+    expect(displayState({ deleting_at: null, delete_error: 'old', desired_state: 'running', runtime: { state: 'running' } })).toBe('running')
+  })
+})
+
 describe('displayState', () => {
   const app = (desired, state) => ({ desired_state: desired, runtime: state === undefined ? null : { state } })
   test('what the worker reports, when it matches what was asked', () => {

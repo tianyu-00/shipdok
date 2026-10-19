@@ -1,6 +1,11 @@
+import { useEffect } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, ExternalLink, GitBranch } from 'lucide-react'
+import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
+import { useQueryClient } from '@tanstack/react-query'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useApp } from '@/lib/queries'
@@ -17,6 +22,7 @@ import ImagesTab from '@/components/images-tab'
 import LogsTab from '@/components/logs-tab'
 import VariablesTab from '@/components/variables-tab'
 import SettingsTab from '@/components/settings-tab'
+import { useDeleteApp } from '@/components/delete-app'
 
 const TABS = ['overview', 'deployments', 'images', 'logs', 'variables', 'settings']
 
@@ -25,6 +31,17 @@ export default function AppDetailPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const app = useApp(id)
+  const client = useQueryClient()
+  // Remember that this app was being deleted (also set the moment the delete is accepted, see useDeleteApp), so that the
+  // "not found" the worker's last step causes can be told apart from a mistyped address.
+  useEffect(() => { if (app.data?.deleting_at) client.setQueryData(['deleting', id], true) }, [app.data?.deleting_at, client, id])
+  const gone = app.isError && app.error instanceof ApiError && app.error.status === 404 && client.getQueryData(['deleting', id]) === true
+  useEffect(() => {
+    if (!gone) return
+    toast.success('App deleted')
+    navigate('/', { replace: true })
+  }, [gone, navigate])
+  if (gone) return null
 
   // The tab is the last part of the address, so a refresh or a shared link lands on the same tab.
   const segment = location.pathname.split('/')[3]
@@ -42,6 +59,7 @@ export default function AppDetailPage() {
   }
 
   const a = app.data
+  if (a.deleting_at) return <DeletingPage app={a} />
   return (
     <div className="space-y-6">
       <Link to="/" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:underline"><ArrowLeft className="size-4" />All apps</Link>
@@ -81,6 +99,35 @@ export default function AppDetailPage() {
         <TabsContent value="variables"><VariablesTab app={a} /></TabsContent>
         <TabsContent value="settings"><SettingsTab app={a} /></TabsContent>
       </Tabs>
+    </div>
+  )
+}
+
+// While the worker removes an app (or after it failed) nothing else can be done with it.
+function DeletingPage({ app }) {
+  const retry = useDeleteApp(app)
+  return (
+    <div className="space-y-6">
+      <Link to="/" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:underline"><ArrowLeft className="size-4" />All apps</Link>
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="truncate text-2xl font-semibold">{app.name}</h1>
+        <RuntimeBadge state={displayState(app)} />
+      </div>
+      {app.delete_error ? (
+        <Alert variant="destructive">
+          <AlertTitle>The app could not be deleted</AlertTitle>
+          <AlertDescription>
+            <p>{app.delete_error}</p>
+            <p className="mt-1">Parts of it may already be removed. Fix the cause if you can, then try again: what is already gone is skipped and the rest is removed.</p>
+            <Button className="mt-3" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate()}>Try again</Button>
+          </AlertDescription>
+        </Alert>
+      ) : (
+        <Alert>
+          <AlertTitle>This app is being deleted</AlertTitle>
+          <AlertDescription>Its container, images, logs and records are being removed. This page closes by itself when it is done.</AlertDescription>
+        </Alert>
+      )}
     </div>
   )
 }

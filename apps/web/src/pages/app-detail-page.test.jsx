@@ -101,6 +101,74 @@ describe('settings that were edited but not deployed yet', () => {
   })
 })
 
+describe('an app that is being deleted', () => {
+  const deleting = (over = {}) => makeApp({ deleting_at: '2026-10-19T12:00:00Z', desired_state: 'stopped', ...over })
+  test('shows that it is being deleted, with nothing to do', async () => {
+    mockApi(base({ [`GET /api/apps/${APP_ID}`]: deleting() }))
+    page()
+    expect(await screen.findByText('This app is being deleted')).toBeInTheDocument()
+    expect(screen.getByText('Deleting…')).toBeInTheDocument()
+    expect(screen.queryByRole('tab')).toBeNull()
+    expect(screen.queryByRole('button', { name: /deploy/i })).toBeNull()
+  })
+
+  test('a failure says why and offers to try again, which sends the delete again', async () => {
+    const api = mockApi(base({ [`GET /api/apps/${APP_ID}`]: deleting({ delete_error: 'docker said no' }), [`DELETE /api/apps/${APP_ID}`]: answer(202, { deleting: true }) }))
+    page()
+    expect(await screen.findByText('The app could not be deleted')).toBeInTheDocument()
+    expect(screen.getByText('docker said no')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(api.called('DELETE', `/api/apps/${APP_ID}`)[0].body).toEqual({ confirm: 'My App' }))
+  })
+
+  test('when the app disappears afterwards that is a success: back to the list with a message', async () => {
+    let gone = false
+    mockApi(base({ [`GET /api/apps/${APP_ID}`]: () => { if (gone) throw { status: 404, body: { error: 'App not found' } }; return deleting() } }))
+    const view = page()
+    await screen.findByText('This app is being deleted')
+    gone = true
+    await view.client.invalidateQueries({ queryKey: ['app', APP_ID] })
+    expect(await screen.findByText('home')).toBeInTheDocument()
+    expect(toasts.success).toHaveBeenCalledWith('App deleted')
+  })
+
+  test('also when the deletion finishes before the page ever saw it marked', async () => {
+    let gone = false
+    const api = mockApi(base({
+      [`GET /api/apps/${APP_ID}`]: () => { if (gone) throw { status: 404, body: { error: 'App not found' } }; return makeApp() },
+      [`DELETE /api/apps/${APP_ID}`]: () => { gone = true; return answer(202, { deleting: true }) },
+    }))
+    page(`/apps/${APP_ID}/settings`)
+    await userEvent.click(await screen.findByRole('button', { name: /delete app…/i }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.type(within(dialog).getByLabelText(/to confirm/i), 'My App')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete app' }))
+    await waitFor(() => expect(api.called('DELETE', `/api/apps/${APP_ID}`)).toHaveLength(1))
+    expect(await screen.findByText('home', {}, { timeout: 8000 })).toBeInTheDocument()
+    expect(toasts.success).toHaveBeenCalledWith('App deleted')
+  }, 15000)
+
+  test('a server error (not a 404) while it is being deleted is shown, not mistaken for success', async () => {
+    let fail = false
+    mockApi(base({ [`GET /api/apps/${APP_ID}`]: () => { if (fail) throw { status: 500, body: { error: 'Internal server error' } }; return deleting() } }))
+    const view = page()
+    await screen.findByText('This app is being deleted')
+    fail = true
+    await view.client.invalidateQueries({ queryKey: ['app', APP_ID] })
+    expect(await screen.findByRole('button', { name: /try again/i })).toBeInTheDocument()
+    expect(screen.queryByText('home')).toBeNull()
+    expect(toasts.success).not.toHaveBeenCalledWith('App deleted')
+  })
+
+  test('a 404 for an app that was never being deleted is still "App not found"', async () => {
+    mockApi(base({ [`GET /api/apps/${APP_ID}`]: answer(404, { error: 'App not found' }) }))
+    page()
+    expect((await screen.findAllByText('App not found')).length).toBeGreaterThan(0)
+    expect(toasts.success).not.toHaveBeenCalled()
+    expect(screen.queryByText('home')).toBeNull()
+  })
+})
+
 describe('the overview', () => {
   test('describes what is running, the limits, and the status the worker reported', async () => {
     mockApi(base({ [`GET /api/apps/${APP_ID}`]: makeApp({ runtime: { state: 'unhealthy', last_action: 'start', last_error: 'Started, but it did not pass its health check', health_failures: 3, last_exit_code: null, updated_at: '2026-10-19T11:00:00Z' } }) }))

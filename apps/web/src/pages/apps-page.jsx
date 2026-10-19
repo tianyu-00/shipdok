@@ -20,7 +20,7 @@ export function AppCard({ app }) {
           <div className="flex flex-wrap items-center gap-2">
             <Link to={`/apps/${app.id}`} className="truncate text-base font-semibold hover:underline">{app.name}</Link>
             <RuntimeBadge state={displayState(app)} />
-            {stoppedOnPurpose && <Badge variant="secondary">Stopped on purpose</Badge>}
+            {stoppedOnPurpose && !app.deleting_at && <Badge variant="secondary">Stopped on purpose</Badge>}
           </div>
           <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
             <RepoLink repo={app.repo} />
@@ -35,9 +35,11 @@ export function AppCard({ app }) {
               <span className="text-muted-foreground">{timeAgo(latest.finished_at ?? latest.queued_at)}</span>
             </div>
           ) : <span className="text-muted-foreground">Never deployed</span>}
-          <a href={appAddress(app)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">
-            :{app.running_settings?.host_port ?? app.host_port}<ExternalLink className="size-3" aria-hidden="true" /><span className="sr-only">Open the app</span>
-          </a>
+          {!app.deleting_at && (
+            <a href={appAddress(app)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">
+              :{app.running_settings?.host_port ?? app.host_port}<ExternalLink className="size-3" aria-hidden="true" /><span className="sr-only">Open the app</span>
+            </a>
+          )}
         </div>
       </CardContent>
     </Card>

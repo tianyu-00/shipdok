@@ -16,8 +16,8 @@ const DEPLOYMENT_ICON = {
   queued: Clock, building: Hammer, starting: Loader2, validating: Loader2, successful: CheckCircle2,
   failed: XCircle, cancelled: Ban, superseded: SkipForward, interrupted: AlertTriangle,
 }
-const RUNTIME_ICON = { running: CheckCircle2, stopped: PauseCircle, unhealthy: AlertTriangle, restarting: RefreshCw, crashed: OctagonX, stopping: Loader2, starting: Loader2 }
-const SPINS = new Set(['starting', 'validating', 'restarting', 'stopping'])
+const RUNTIME_ICON = { running: CheckCircle2, stopped: PauseCircle, unhealthy: AlertTriangle, restarting: RefreshCw, crashed: OctagonX, stopping: Loader2, starting: Loader2, deleting: Loader2, 'delete-failed': OctagonX }
+const SPINS = new Set(['starting', 'validating', 'restarting', 'stopping', 'deleting'])
 
 function Pill({ tone, Icon, spin, children, className, ...rest }) {
   return (

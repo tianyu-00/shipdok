@@ -76,8 +76,8 @@ export default function CreateAppPage() {
               <Field id="container_port" label="Container port" hint="The port the app listens on inside its container.">
                 <Input id="container_port" inputMode="numeric" value={f.container_port} onChange={(e) => set({ container_port: e.target.value })} />
               </Field>
-              <Field id="host_port" label="Host port" hint="The port it is published on, 1024 or higher. Each app needs its own.">
-                <Input id="host_port" inputMode="numeric" value={f.host_port} onChange={(e) => set({ host_port: e.target.value })} />
+              <Field id="host_port" label="Host port" hint="The port it is published on, 1024 or higher. Each app needs its own. Leave empty to pick a free one automatically.">
+                <Input id="host_port" inputMode="numeric" placeholder="automatic" value={f.host_port} onChange={(e) => set({ host_port: e.target.value })} />
               </Field>
               <Field id="health_path" label="Health check path" hint="Optional, for example /health. Without it, any answer counts as healthy.">
                 <Input id="health_path" placeholder="/health" value={f.health_path} onChange={(e) => set({ health_path: e.target.value })} />

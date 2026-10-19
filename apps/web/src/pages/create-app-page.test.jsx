@@ -27,6 +27,24 @@ describe('creating an app', () => {
     })
   })
 
+  test('a host port left empty is not sent, so the server picks one', async () => {
+    const api = mockApi({ 'GET /api/github/repos': repos, 'POST /api/apps': answer(201, { id: 'new-id', name: 'site' }) })
+    page()
+    await userEvent.type(screen.getByLabelText('GitHub repository'), 'tianyu-00/site')
+    expect(screen.getByLabelText('Host port')).toHaveAttribute('placeholder', 'automatic')
+    await userEvent.click(screen.getByRole('button', { name: 'Create app' }))
+    expect(await screen.findByText('detail page')).toBeInTheDocument()
+    expect(api.called('POST', '/api/apps')[0].body).not.toHaveProperty('host_port')
+  })
+
+  test('a full port range is explained', async () => {
+    mockApi({ 'GET /api/github/repos': repos, 'POST /api/apps': answer(409, { error: 'Every port from 20000 to 20999 is taken. Choose a host port yourself, or widen PORT_RANGE.', code: 'no_free_port' }) })
+    page()
+    await userEvent.type(screen.getByLabelText('GitHub repository'), 'tianyu-00/site')
+    await userEvent.click(screen.getByRole('button', { name: 'Create app' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Every port from 20000 to 20999 is taken/)
+  })
+
   test('picking a repository fills in the name and the repository\'s own default branch, unless the name was typed by hand', async () => {
     mockApi({ 'GET /api/github/repos': repos })
     page()

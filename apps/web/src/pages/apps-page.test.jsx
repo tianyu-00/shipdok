@@ -106,3 +106,18 @@ describe('the storage warning', () => {
     expect(screen.queryByText(/disk/i)).toBeNull()
   })
 })
+
+describe('an app that is being deleted', () => {
+  test('shows Deleting… and no link to open it', async () => {
+    mockApi({ 'GET /api/apps': [makeApp({ deleting_at: '2026-10-19T12:00:00Z', desired_state: 'stopped' })], 'GET /api/storage': { disk: { level: 'ok' } } })
+    renderWithProviders(<AppsPage />)
+    expect(await screen.findByText('Deleting…')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /open the app/i })).toBeNull()
+    expect(screen.queryByText('Stopped on purpose')).toBeNull()
+  })
+  test('a failed deletion is marked', async () => {
+    mockApi({ 'GET /api/apps': [makeApp({ deleting_at: '2026-10-19T12:00:00Z', delete_error: 'x' })], 'GET /api/storage': { disk: { level: 'ok' } } })
+    renderWithProviders(<AppsPage />)
+    expect(await screen.findByText('Delete failed')).toBeInTheDocument()
+  })
+})

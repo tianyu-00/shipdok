@@ -62,10 +62,13 @@ export const RUNTIME_STATE = {
 export const TRANSITION_STATE = {
   stopping: { label: 'Stopping…', tone: 'info' },
   starting: { label: 'Starting…', tone: 'info' },
+  deleting: { label: 'Deleting…', tone: 'warning' },
+  'delete-failed': { label: 'Delete failed', tone: 'danger' },
 }
 
 /** The state to show for an app: its runtime state, unless what the administrator asked for has not happened yet. */
 export function displayState(app) {
+  if (app.deleting_at) return app.delete_error ? 'delete-failed' : 'deleting'
   const state = app.runtime?.state
   if (app.desired_state === 'stopped' && (state === 'running' || state === 'unhealthy' || state === 'restarting')) return 'stopping'
   if (app.desired_state === 'running' && state === 'stopped') return 'starting'
