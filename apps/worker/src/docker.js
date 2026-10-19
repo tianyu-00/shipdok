@@ -37,11 +37,18 @@ export function labelsFor({ appId, deploymentId, role }) {
 }
 
 export function run(cmd, args, opts = {}) {
+  const { sink, ...spawnOpts } = opts;
   return new Promise((resolve, reject) => {
     // opts.signal: aborting kills the child with SIGINT and rejects with an AbortError.
-    const p = spawn(cmd, args, { stdio: "inherit", killSignal: "SIGINT", ...opts });
+    // opts.sink: also receives everything the command prints (the deployment's log). It still shows on the console.
+    const p = spawn(cmd, args, { stdio: sink ? ["ignore", "pipe", "pipe"] : "inherit", killSignal: "SIGINT", ...spawnOpts });
+    if (sink) {
+      p.stdout.on("data", (d) => { process.stdout.write(d); sink.write("stdout", d); });
+      p.stderr.on("data", (d) => { process.stderr.write(d); sink.write("stderr", d); });
+    }
     p.on("error", reject);
-    p.on("exit", (c) => (c === 0 ? resolve() : reject(new Error(`${cmd} exited ${c}`))));
+    // "close" (not "exit") waits until the output pipes are drained, so the last lines are never lost.
+    p.on(sink ? "close" : "exit", (c) => (c === 0 ? resolve() : reject(new Error(`${cmd} exited ${c}`))));
   });
 }
 

@@ -2,7 +2,7 @@
 // the state you asked for, which is success for us, while every other error must still surface.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { stopContainer, startContainer, restartContainer, isRunning } from '../src/docker.js';
+import { stopContainer, startContainer, restartContainer, isRunning, run } from '../src/docker.js';
 
 const dockerError = (statusCode, message = 'boom') => Object.assign(new Error(message), { statusCode });
 
@@ -34,5 +34,55 @@ describe('restartContainer / isRunning', () => {
   test('isRunning reports Docker\'s own view', async () => {
     assert.equal(await isRunning({ inspect: async () => ({ State: { Running: true } }) }), true);
     assert.equal(await isRunning({ inspect: async () => ({ State: { Running: false } }) }), false);
+  });
+});
+
+describe('run() with a log sink', () => {
+  const collect = () => {
+    const got = [];
+    return { got, write: (stream, chunk) => got.push([stream, chunk.toString()]) };
+  };
+  const text = (got, stream) => got.filter(([s]) => s === stream).map(([, c]) => c).join('');
+
+  test('sends what the command prints to the sink, stdout and stderr apart', async () => {
+    const sink = collect();
+    await run('sh', ['-c', 'echo to-out; echo to-err >&2'], { sink });
+    assert.equal(text(sink.got, 'stdout'), 'to-out\n');
+    assert.equal(text(sink.got, 'stderr'), 'to-err\n');
+  });
+
+  test('a failing command still delivers everything it printed BEFORE the failure is reported', async () => {
+    const sink = collect();
+    await assert.rejects(run('sh', ['-c', 'echo before; echo oops >&2; exit 3'], { sink }), /exited 3/);
+    assert.equal(text(sink.got, 'stdout'), 'before\n');
+    assert.equal(text(sink.got, 'stderr'), 'oops\n');
+  });
+
+  test('a lot of output arrives complete', async () => {
+    const sink = collect();
+    await run('sh', ['-c', 'i=0; while [ $i -lt 2000 ]; do echo "line $i"; i=$((i+1)); done'], { sink });
+    assert.equal(text(sink.got, 'stdout').trimEnd().split('\n').length, 2000);
+  });
+
+  test('a command that prints a lot and exits at once loses none of its last lines', async () => {
+    const sink = collect();
+    await run('sh', ['-c', 'yes "0123456789012345678901234567890123456789012345678901234567890123456789" | head -n 60000'], { sink });
+    assert.equal(text(sink.got, 'stdout').trimEnd().split('\n').length, 60000);
+  });
+
+  test('without a sink nothing changes: output goes to the worker\'s own console', async () => {
+    await run('true', [], { stdio: 'ignore' });
+  });
+
+  test('the sink never reaches the child process (it is not passed on to spawn)', async () => {
+    const sink = collect();
+    await run('sh', ['-c', 'echo ok'], { sink, env: { PATH: process.env.PATH } });
+    assert.equal(text(sink.got, 'stdout'), 'ok\n');
+  });
+
+  test('aborting still stops the command and rejects', async () => {
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 100);
+    await assert.rejects(run('sleep', ['30'], { sink: collect(), signal: ctl.signal }), (e) => e.name === 'AbortError');
   });
 });

@@ -85,10 +85,12 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
       GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github-app.pem
+      LOG_DIR: /var/lib/shipdok/logs
     ports:
       - "127.0.0.1:${API_HOST_PORT:-4000}:4000" # loopback only; the Cloudflare tunnel (cloudflared) is what reaches the webhook
     volumes:
       - ${GITHUB_APP_PRIVATE_KEY_FILE:-/dev/null}:/run/secrets/github-app.pem:ro
+      - shipdok_logs:/var/lib/shipdok/logs # the worker writes logs; the API reads them and deletes a finished deployment's on request
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
@@ -119,6 +121,7 @@ services:
     environment:
       HEALTH_CHECK_HOST: host.docker.internal
       MONITOR_INTERVAL_MS: ${MONITOR_INTERVAL_MS:-15000} # how often crashes and health are checked
+      LOG_DIR: /var/lib/shipdok/logs
       POSTGRES_HOST: postgres
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -131,9 +134,11 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${GITHUB_APP_PRIVATE_KEY_FILE:-/dev/null}:/run/secrets/github-app.pem:ro
+      - shipdok_logs:/var/lib/shipdok/logs
 
   # web: not built yet. The dashboard (apps/web) will be added here once it exists.
 
 volumes:
   shipdok_pgdata:
   shipdok_redisdata:
+  shipdok_logs: # deployment logs: kept until the deployment is deleted. Back this up like the database if you care about them

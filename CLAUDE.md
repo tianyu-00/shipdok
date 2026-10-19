@@ -27,14 +27,14 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 008_crash_handling
-  src/           app.js, config.js, deployments.js (supersede/cancel), control.js (start/stop/restart requests), routes/ (auth, apps, env, webhooks, github)
+  migrations/    001_init ... 009_log_files
+  src/           app.js, config.js, deployments.js (supersede/cancel), control.js (start/stop/restart requests), routes/ (auth, apps, env, webhooks, github, logs)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
-  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), monitor.js, activity.js, envvars.js, db.js, reconcile.js, paths.js
+  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), monitor.js, activity.js, buildlog.js (the log sink), envvars.js, db.js, reconcile.js, paths.js
   worker.js      entry point; cli.js: manual deploy
 apps/web/        empty (dashboard not started)
-packages/shared/ @shipdok/shared: crypto (AES-256-GCM), .env parser, github.js (app JWT, installation tokens), constants
+packages/shared/ @shipdok/shared: crypto (AES-256-GCM), .env parser, github.js (app JWT, installation tokens), logstore.js (log format, masking, safe read/delete), constants
 infrastructure/  compose.yaml (Postgres 16, Redis 7 on 127.0.0.1; migrate, api, worker services), .env (never committed)
 apps/api/Dockerfile, apps/worker/Dockerfile, .dockerignore   images built from the repo root (see "Run it")
 ```
@@ -57,9 +57,9 @@ docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up 
 ```
 
 Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
-socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked).
+socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked).
 
-Tests at last commit: API 252, worker 243, shared 118. Worker tests reuse the `_test` database the API tests create and
+Tests at last commit: API 292, worker 294, shared 161. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -137,13 +137,36 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   counted as a crash, and recovery with Docker's event buffer flushed. Not tested: a real host reboot, out-of-memory kills under Pi
   limits, ARM64. Known limits: the restart delay is rounded up to the next check; if Docker is not ready right after a boot, a failed
   start marks the app `crashed` (press Start).
+- **Deployment logs (verified against real Docker in an isolated compose project):** every deployment gets a log file,
+  `<LOG_DIR>/<app-id>/<deployment-id>/build.log` (plain text, one line each: `ISO-time stream message`, stream = stdout / stderr /
+  shipdok), holding the clone and `docker build` output (`--progress=plain`), Shipdok's progress lines, a failed candidate's last
+  container output, and the outcome. **Kept until the deployment is deleted** (decided by the administrator); `log_files` (migration
+  009) records existence, size, truncated, finished. Best effort and never in the way: a log that cannot be written never fails or
+  slows a deployment. Masked with `***`: the app's variable values and the GitHub token (both forms git may print it); an app's
+  own computed secrets cannot be caught. Lines are capped at 16 KB, terminal colour codes and control characters removed, a message
+  can never forge a second line; a log stops at 20 MB (`truncated`, announced once, nothing deleted). API: `GET
+  /api/deployments/:id/logs` (`?offset=&limit=` pages by byte offset along `nextOffset`, `?tail=N`; `complete` = finished AND fully
+  read; held-back half-written line), `DELETE /api/deployments/:id/logs` (finished deployments only, 409 while running; status and
+  error summary stay; a clear 500 and the records kept if the files cannot be removed), `GET /api/storage` (log bytes per app, disk
+  total/free with level ok / low under 20% free / critical under 10%). The API takes paths only from stored ids. At worker boot
+  `reconcileLogs` closes build logs a dead worker left open (real size) and removes the logs of deployments that no longer exist (only
+  UUID-named directories holding nothing but our two log files). Docker: the `shipdok_logs` volume, writable for worker and API
+  (the API deletes on request). Back it up like the database if you care about old logs. Checked for real: private repo build log
+  (29 BuildKit steps), no `ghs_`/`x-access-token` on disk, a failing deployment whose log shows the app's own output, delete,
+  a worker killed mid-build, and the orphan tidy-up. Not tested: a volume on a slow SD card; `close` vs `exit` for the last lines
+  of a command (correct by Node's docs, but this machine cannot show a loss). There is still no API to delete a deployment itself
+  (SQL by hand; the next worker boot then removes its logs).
 - **Worker git ignores the admin's git config** (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`): a credential helper such as
   Git Credential Manager can otherwise open a window and hang a refused clone.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
 
-1. Persistent log storage (SPEC.md §13; the crash history and `last_error` say THAT something failed, the logs say why).
+1. Runtime logs (the second half of SPEC.md §13): the app's own output, collected by the monitor into `runtime.log` per deployment,
+   drained before the old container is removed at a redeploy, Docker-side rotation (10 MB x 3) on new containers. Administrator's
+   rule: **runtime logs reset on every restart and are removed with the deployment**. Open question to settle first: an automatic
+   crash restart happens within seconds, so a reset on every restart would wipe the crash output before anyone reads it; keep the
+   previous run as `runtime.previous.log` (one generation), or reset only on manual restarts and new deployments.
 2. Image retention, rollback, disk cleanup.
 3. Dashboard (`apps/web`, React + Tailwind).
 4. Live CPU/memory usage and limits display (SPEC.md §12).
@@ -156,5 +179,5 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
 8. Pi: full-stack run in compose (ARM64 builds, firewall vs the health-check path, `DOCKER_GID`), run the tunnel as a service until
    then, hardening, docs (setup options: tunnel, reverse proxy, or manual deploys only), API docs (Scalar).
 
-Known gaps: no audit/rate limit on `reveal`; old `shipdok/*` images pile up; build-time env vars; Railpack; DB backup docs.
+Known gaps: no API to delete a deployment (logs are tidied at the next worker boot); no audit/rate limit on `reveal`; old `shipdok/*` images pile up; build-time env vars; Railpack; DB backup docs.
 The portfolio backend (`tianyu-00/TianYuSiteV2`, `backend/`, port 9090) is not yet deployed through the platform.

@@ -17,6 +17,10 @@ RUN npm ci --omit=dev -w apps/api && npm cache clean --force
 COPY packages/shared packages/shared
 COPY apps/api apps/api
 
+# Where deployment logs live (a volume in compose). Owned by the non-root user so a fresh volume is writable.
+RUN mkdir -p /var/lib/shipdok/logs && chown node:node /var/lib/shipdok/logs
+ENV LOG_DIR=/var/lib/shipdok/logs
+
 USER node
 WORKDIR /app/apps/api
 EXPOSE 4000

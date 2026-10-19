@@ -28,6 +28,7 @@ import { checkoutSource, gitEnvironment } from './git.js';
  * @param {number} [opts.cpus=1]
  * @param {string[]} [opts.env=[]]      ['KEY=VALUE', ...] for the container
  * @param {Record<string,string>} [opts.gitEnv]  extra environment for GIT ONLY (a GitHub token). Never given to docker or the container.
+ * @param {{write: Function, line: Function}} [opts.logSink]  also receives the output of git and docker build (the deployment's log file)
  * @param {AbortSignal} [opts.signal]   aborts work in progress, up to the point of no return
  * @param {() => Promise<{proceed: boolean, outcome?: string, by?: string, start?: boolean}>} [opts.beforeSwap]
  *        asked right before the swap; proceed:false stops the deployment instead (e.g. cancelled, or a newer one already succeeded).
@@ -102,7 +103,7 @@ export async function deploy(opts, eng = realEngine) {
 
   try {
     const head = await checkoutSource(eng, {
-      workDir, repo: o.repo, ref: o.ref, commit: o.commit, env: gitEnvironment(o.gitEnv), signal, log,
+      workDir, repo: o.repo, ref: o.ref, commit: o.commit, env: gitEnvironment(o.gitEnv), signal, sink: o.logSink, log,
     });
     notify(o.onCommit, head);
     // Resolve symlinks AFTER cloning: the API validates the string, but only the real path is trustworthy.
@@ -110,12 +111,12 @@ export async function deploy(opts, eng = realEngine) {
 
     log(`Building ${image}`);
     await eng.run('docker', [
-      'build', '-t', image,
+      'build', '--progress=plain', '-t', image, // plain: readable in a file, no terminal redrawing
       '--label', 'shipdok.managed=true',
       '--label', `shipdok.app-id=${o.appId}`,
       '--label', `shipdok.deployment-id=${deploymentId}`,
       buildDir,
-    ], { env: { ...process.env, DOCKER_BUILDKIT: '1' }, signal });
+    ], { env: { ...process.env, DOCKER_BUILDKIT: '1' }, signal, sink: o.logSink });
 
     log(`Image arch: ${await eng.imageArch(image)}, host: ${await eng.hostArchitecture()}`);
     stopIfAborted();

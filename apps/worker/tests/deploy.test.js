@@ -332,3 +332,29 @@ describe('deploying an app that is stopped', () => {
     assert.ok(!eng.events.includes('start old'));
   });
 });
+
+describe('the deployment log', () => {
+  const sink = { write() {}, line() {} };
+
+  test('git and docker build both write to the deployment\'s log sink', async () => {
+    const eng = fakeEngine({ previous: [] });
+    await run({ logSink: sink }, eng);
+    const withSink = eng.runs.filter((r) => r.opts.sink === sink).map((r) => r.cmd);
+    assert.ok(withSink.includes('git'), 'git output is logged');
+    assert.ok(withSink.includes('docker'), 'the build output is logged');
+    assert.ok(eng.runs.every((r) => r.opts.sink === sink), 'every command that talks to the outside world is');
+  });
+
+  test('without a sink (the command line) nothing changes', async () => {
+    const eng = fakeEngine({ previous: [] });
+    await run({}, eng);
+    assert.ok(eng.runs.every((r) => r.opts.sink === undefined));
+  });
+
+  test('the build asks for plain progress, so the file is readable and not full of terminal redrawing', async () => {
+    const eng = fakeEngine({ previous: [] });
+    await run({}, eng);
+    const build = eng.runs.find((r) => r.cmd === 'docker');
+    assert.ok(build.args.includes('--progress=plain'));
+  });
+});

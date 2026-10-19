@@ -185,3 +185,30 @@ export async function applyMonitorUpdate(appId, u, at = Date.now()) {
     client.release();
   }
 }
+
+// ---- Log files (the text is on disk; these rows say it exists and how big it is) ----
+export const openLogFile = (appId, deploymentId, kind) =>
+  pool.query(
+    `INSERT INTO log_files (deployment_id, app_id, kind) VALUES ($1, $2, $3)
+     ON CONFLICT (deployment_id, kind) DO UPDATE
+       SET bytes = 0, truncated = false, started_at = now(), ended_at = NULL`,
+    [deploymentId, appId, kind]);
+
+export const closeLogFile = (deploymentId, kind, { bytes, truncated }) =>
+  pool.query(
+    `UPDATE log_files SET bytes = $3, truncated = $4, ended_at = now() WHERE deployment_id = $1 AND kind = $2`,
+    [deploymentId, kind, bytes, truncated]);
+
+// Build logs a worker that died never closed.
+export async function listOpenBuildLogs() {
+  const { rows } = await pool.query(
+    `SELECT deployment_id, app_id FROM log_files WHERE kind = 'build' AND ended_at IS NULL`);
+  return rows.map((r) => ({ deploymentId: r.deployment_id, appId: r.app_id }));
+}
+
+// Which of these deployment ids still exist.
+export async function existingDeploymentIds(ids) {
+  if (!ids.length) return new Set();
+  const { rows } = await pool.query('SELECT id FROM deployments WHERE id = ANY($1::uuid[])', [ids]);
+  return new Set(rows.map((r) => r.id));
+}

@@ -24,6 +24,10 @@ RUN npm ci --omit=dev -w apps/worker && npm cache clean --force
 COPY packages/shared packages/shared
 COPY apps/worker apps/worker
 
+# Where deployment logs live (a volume in compose). Owned by the non-root user so a fresh volume is writable.
+RUN mkdir -p /var/lib/shipdok/logs && chown node:node /var/lib/shipdok/logs
+ENV LOG_DIR=/var/lib/shipdok/logs
+
 USER node
 WORKDIR /app/apps/worker
 CMD ["node", "worker.js"]

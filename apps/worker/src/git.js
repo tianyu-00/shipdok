@@ -25,8 +25,8 @@ export function gitEnvironment(extra = {}, base = process.env) {
 /**
  * @returns {Promise<string>} the commit that was actually checked out
  */
-export async function checkoutSource(eng, { workDir, repo, ref, commit, env, signal, log = () => {} }) {
-  const opts = { signal, env };
+export async function checkoutSource(eng, { workDir, repo, ref, commit, env, signal, sink, log = () => {} }) {
+  const opts = { signal, env, sink };
   if (commit) {
     // Build EXACTLY the pushed commit, not whatever the branch points to by now (a second push may have landed).
     log(`Fetching commit ${commit.slice(0, 7)} of ${repo}`);
