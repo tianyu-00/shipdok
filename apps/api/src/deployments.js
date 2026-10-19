@@ -19,9 +19,10 @@ async function removeJobs(queue, jobIds) {
  * @param {string} [opts.commit]      exact commit to build (a webhook push); otherwise the branch head at build time
  * @param {string} [opts.deliveryId]  the GitHub delivery that caused this; at most one deployment per (delivery, app)
  * @param {boolean} [opts.startAfter] start the app after this deployment even though it is stopped (explicit request only)
+ * @param {{id: string, image: string, commit: string|null}} [opts.rollbackOf]  a rollback: run this earlier version's existing image instead of building
  * @returns {{ ok: true, deploymentId: string, duplicate?: boolean } | { ok: false, deploymentId: string }}
  */
-export async function requestDeployment({ db, queue }, app, { trigger = 'manual', commit = null, deliveryId = null, startAfter = false } = {}) {
+export async function requestDeployment({ db, queue }, app, { trigger = 'manual', commit = null, deliveryId = null, startAfter = false, rollbackOf = null } = {}) {
   // The settings THIS deployment will use. No secret values belong here.
   const snapshot = {
     repo: app.repo, branch: app.branch, root_dir: app.root_dir,
@@ -37,9 +38,10 @@ export async function requestDeployment({ db, queue }, app, { trigger = 'manual'
   let inserted;
   try {
     inserted = await db.query(
-      `INSERT INTO deployments (app_id, trigger, commit_sha, webhook_delivery_id, config_snapshot)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id, seq`,
-      [app.id, trigger, commit, deliveryId, snapshot],
+      `INSERT INTO deployments (app_id, trigger, commit_sha, webhook_delivery_id, config_snapshot, rollback_of)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, seq`,
+      // A rollback is the old version again: it shows that version's commit, and remembers which deployment it came from.
+      [app.id, rollbackOf ? 'rollback' : trigger, rollbackOf ? rollbackOf.commit : commit, deliveryId, snapshot, rollbackOf?.id ?? null],
     );
   } catch (err) {
     // A redelivery of the same webhook must never create a second deployment for the same app.
@@ -60,7 +62,8 @@ export async function requestDeployment({ db, queue }, app, { trigger = 'manual'
       repoFullName: snapshot.repo, // owner/repo, used by the worker to request a repo-scoped GitHub token
       installationId: app.github_installation_id ? Number(app.github_installation_id) : undefined,
       ref: snapshot.branch,
-      commit: commit ?? undefined, // exact commit for webhook pushes
+      commit: rollbackOf ? undefined : (commit ?? undefined), // exact commit for webhook pushes (a rollback builds nothing)
+      reuseImage: rollbackOf?.image,
       dir: snapshot.root_dir,
       containerPort: snapshot.container_port,
       hostPort: snapshot.host_port,

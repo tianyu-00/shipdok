@@ -7,6 +7,7 @@ import express, { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { requestDeployment } from '../deployments.js';
+import { diskStatus, defaultDiskUsage } from '../disk.js';
 
 const MAX_BODY = '5mb'; // GitHub allows up to 25 MB; real push payloads are far smaller
 const SIGNATURE_RE = /^sha256=[0-9a-f]{64}$/;
@@ -63,7 +64,7 @@ const finish = (db, id, outcome, reason, { repo = null, ref = null, sha = null, 
       WHERE delivery_id = $1`,
     [id, outcome, reason, repo, ref && ref.slice(0, 200), sha, details ? JSON.stringify(details) : null]);
 
-export function webhookReceiver({ db, queue, secret, rateLimitPerMinute = 120 }) {
+export function webhookReceiver({ db, queue, secret, rateLimitPerMinute = 120, logDir = '', diskUsage = defaultDiskUsage }) {
   const r = Router();
   r.use(rateLimit({
     windowMs: 60_000,
@@ -131,9 +132,18 @@ export function webhookReceiver({ db, queue, secret, rateLimitPerMinute = 120 })
       const details = [];
       const deployments = [];
       let failed = false;
+      let diskSkipped = 0;
+      // Nobody is here to ask "build anyway?", so a push that would be built on an almost full disk is NOT built. The
+      // delivery history says why; a redelivery after freeing space, or a manual deployment, builds it.
+      const disk = await diskStatus(diskUsage, logDir);
       for (const app of apps) {
         if (app.desired_state === 'stopped') {
           details.push({ app: app.slug, result: 'skipped', reason: 'The app is stopped' });
+          continue;
+        }
+        if (disk?.level === 'critical') {
+          diskSkipped += 1;
+          details.push({ app: app.slug, result: 'skipped', reason: `The disk is almost full (${disk.freePercent}% free)` });
           continue;
         }
         const out = await requestDeployment({ db, queue }, app, { trigger: 'webhook', commit: sha, deliveryId: delivery });
@@ -154,8 +164,11 @@ export function webhookReceiver({ db, queue, secret, rateLimitPerMinute = 120 })
         return res.status(503).json({ status: 'error', deployments });
       }
       if (!deployments.length) {
-        await finish(db, delivery, 'ignored', 'Every app tracking this branch is stopped', { ...meta, details });
-        return res.status(200).json({ status: 'ignored', reason: 'Every app tracking this branch is stopped' });
+        const reason = diskSkipped > 0
+          ? 'The disk is almost full, so nothing was built. Free some space and redeliver, or deploy manually'
+          : 'Every app tracking this branch is stopped';
+        await finish(db, delivery, 'ignored', reason, { ...meta, details });
+        return res.status(200).json({ status: 'ignored', reason });
       }
       await finish(db, delivery, 'deployed', null, { ...meta, details });
       return res.status(202).json({ status: 'deployed', deployments });

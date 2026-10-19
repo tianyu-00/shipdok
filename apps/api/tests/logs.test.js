@@ -5,7 +5,7 @@ import { jest } from '@jest/globals';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { formatLine, logFilePath, logDirFor } from '@shipdok/shared';
+import { formatLine, logFilePath, logDirFor, runtimeLogPath } from '@shipdok/shared';
 import { makeApp, resetDb, closeDb, testPool, PASSWORD } from './helpers.js';
 
 let root;
@@ -44,6 +44,15 @@ function writeLog(forApp, forDep, content, { kind = 'build', finished = true, tr
     `INSERT INTO log_files (deployment_id, app_id, kind, bytes, truncated, ended_at) VALUES ($1, $2, $3, $4, $5, ${finished ? 'now()' : 'NULL'})
      ON CONFLICT (deployment_id, kind) DO UPDATE SET bytes = $4, truncated = $5, ended_at = ${finished ? 'now()' : 'NULL'}`,
     [forDep, forApp, kind, finished ? (bytes ?? Buffer.byteLength(content)) : 0, truncated]);
+}
+// An app's runtime log (one pair per app): the file, and the record the worker keeps.
+function writeRuntime(forApp, content, { kind = 'runtime', finished = true, truncated = false, deployment = null } = {}) {
+  mkdirSync(join(root, forApp), { recursive: true });
+  writeFileSync(runtimeLogPath(root, forApp, kind), content);
+  return testPool.query(
+    `INSERT INTO runtime_logs (app_id, kind, deployment_id, bytes, truncated, ended_at) VALUES ($1, $2, $3, $4, $5, ${finished ? 'now()' : 'NULL'})
+     ON CONFLICT (app_id, kind) DO UPDATE SET deployment_id = $3, bytes = $4, truncated = $5, ended_at = ${finished ? 'now()' : 'NULL'}`,
+    [forApp, kind, deployment, finished ? Buffer.byteLength(content) : 0, truncated]);
 }
 const get = (id, qs = '') => agent.get(`/api/deployments/${id}/logs${qs}`);
 
@@ -134,39 +143,21 @@ describe('GET /api/deployments/:id/logs', () => {
   });
 });
 
-describe('runtime logs through the deployment endpoint (?kind=)', () => {
-  test('?kind=runtime reads runtime.log and ?kind=previous reads the run before it; the default is still the build log', async () => {
+describe('the deployment endpoint serves build logs only', () => {
+  test('the default and ?kind=build are the build log', async () => {
     await writeLog(appId, depId, lines(0, 2));
-    await writeLog(appId, depId, lines(100, 103), { kind: 'runtime' });
-    await writeLog(appId, depId, lines(200, 204), { kind: 'runtime_previous' });
     expect((await get(depId)).body.text).toBe(lines(0, 2));
     expect((await get(depId, '?kind=build')).body.text).toBe(lines(0, 2));
-    expect((await get(depId, '?kind=runtime')).body.text).toBe(lines(100, 103));
-    expect((await get(depId, '?kind=previous')).body.text).toBe(lines(200, 204));
   });
 
-  test('a kind with no file yet is a 404 (a deployment that never ran has no runtime log)', async () => {
+  test.each([['?kind=runtime'], ['?kind=previous'], ['?kind=../build'], ['?kind=runtime.previous'], ['?kind='], ['?kind=BUILD'], ['?kind=all']])('refuses kind %s', async (qs) => {
     await writeLog(appId, depId, lines(0, 2));
-    expect((await get(depId, '?kind=runtime')).status).toBe(404);
-    expect((await get(depId, '?kind=previous')).status).toBe(404);
-  });
-
-  test.each([['?kind=../build'], ['?kind=runtime.previous'], ['?kind='], ['?kind=BUILD'], ['?kind=all']])('refuses kind %s', async (qs) => {
-    await writeLog(appId, depId, lines(0, 2));
+    await writeRuntime(appId, lines(5, 6)); // an app-level log must not leak through a deployment id
     expect((await get(depId, qs)).status).toBe(400);
-  });
-
-  test('"complete" and "truncated" belong to the kind that was asked for', async () => {
-    await writeLog(appId, depId, lines(0, 2), { truncated: false });
-    await writeLog(appId, depId, lines(0, 3), { kind: 'runtime', finished: false, truncated: true });
-    const build = (await get(depId)).body;
-    const runtime = (await get(depId, '?kind=runtime')).body;
-    expect([build.complete, build.truncated]).toEqual([true, false]);
-    expect([runtime.complete, runtime.truncated]).toEqual([false, true]);
   });
 });
 
-describe('GET /api/apps/:id/logs (the current deployment\'s runtime log)', () => {
+describe('GET /api/apps/:id/logs (the app\'s runtime log: one per app)', () => {
   const getApp = (id, qs = '') => agent.get(`/api/apps/${id}/logs${qs}`);
 
   test('needs a login', async () => {
@@ -178,41 +169,124 @@ describe('GET /api/apps/:id/logs (the current deployment\'s runtime log)', () =>
     expect((await getApp('not-a-uuid')).status).toBe(404);
   });
 
-  test('an app that was never deployed successfully has no runtime log', async () => {
+  test('an app whose output was never collected has no runtime log (404), even when it has deployments', async () => {
+    const res = await getApp(appId);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/no output/i);
+  });
+
+  test('works without any successful deployment: the log belongs to the app', async () => {
     await testPool.query(`UPDATE deployments SET status = 'failed' WHERE id = $1`, [depId]);
+    await writeRuntime(appId, lines(0, 2));
+    expect((await getApp(appId)).body.text).toBe(lines(0, 2));
+  });
+
+  test('there is ONE runtime log per app, whichever deployment wrote it, and it says which', async () => {
+    const newer = await deployment(appId);
+    await writeLog(appId, depId, 'a build log that is not runtime output\n');
+    await writeRuntime(appId, lines(0, 3), { deployment: newer });
+    const res = await getApp(appId, '?tail=10');
+    expect(res.body.text).toBe(lines(0, 3));
+    expect(res.body.deploymentId).toBe(newer);
+  });
+
+  test('another app\'s log is not reachable through this id', async () => {
+    const other = (await agent.post('/api/apps').send({ name: 'App B', repo: 'o/r', container_port: 3000, host_port: 8081 })).body.id;
+    await writeRuntime(other, 'not yours\n');
     expect((await getApp(appId)).status).toBe(404);
   });
 
-  test('shows the runtime log of the NEWEST successful deployment, not an older one and not a failed one', async () => {
-    const older = depId;
-    const newer = await deployment(appId);
-    const failed = await deployment(appId, 'failed');
-    await writeLog(appId, older, 'older run\n', { kind: 'runtime' });
-    await writeLog(appId, newer, lines(0, 3), { kind: 'runtime' });
-    await writeLog(appId, failed, 'failed one\n', { kind: 'runtime' });
-    expect((await getApp(appId, '?tail=10')).body.text).toBe(lines(0, 3));
-  });
-
-  test('supports kind=previous, tail and paging like the deployment endpoint', async () => {
-    await writeLog(appId, depId, lines(0, 50), { kind: 'runtime' });
-    await writeLog(appId, depId, lines(500, 502), { kind: 'runtime_previous' });
+  test('supports kind=previous, tail and paging', async () => {
+    await writeRuntime(appId, lines(0, 50));
+    await writeRuntime(appId, lines(500, 502), { kind: 'runtime_previous' });
     expect((await getApp(appId, '?tail=2')).body.text).toBe(lines(48, 50));
     expect((await getApp(appId, '?kind=previous')).body.text).toBe(lines(500, 502));
-    const first = (await getApp(appId, '?offset=0&limit=100000')).body;
-    expect(first.text).toBe(lines(0, 50));
+    expect((await getApp(appId, '?offset=0&limit=100000')).body.text).toBe(lines(0, 50));
   });
 
   test('an app that is stopped still shows its last run (the log outlives the container)', async () => {
-    await writeLog(appId, depId, lines(0, 4), { kind: 'runtime' });
+    await writeRuntime(appId, lines(0, 4));
     await testPool.query(`UPDATE apps SET desired_state = 'stopped' WHERE id = $1`, [appId]);
     expect((await getApp(appId, '?tail=4')).body.text).toBe(lines(0, 4));
   });
 
-  test('the default kind is runtime, and a build kind can be asked for', async () => {
-    await writeLog(appId, depId, 'build text\n', { kind: 'build' });
-    await writeLog(appId, depId, lines(0, 1), { kind: 'runtime' });
-    expect((await getApp(appId)).body.text).toBe(lines(0, 1));
-    expect((await getApp(appId, '?kind=build')).body.text).toBe('build text\n');
+  test('"complete" and "truncated" belong to the kind that was asked for', async () => {
+    await writeRuntime(appId, lines(0, 3), { finished: false, truncated: true });
+    await writeRuntime(appId, lines(0, 2), { kind: 'runtime_previous', truncated: false });
+    const current = (await getApp(appId)).body;
+    const previous = (await getApp(appId, '?kind=previous')).body;
+    expect([current.complete, current.truncated]).toEqual([false, true]);
+    expect([previous.complete, previous.truncated]).toEqual([true, false]);
+  });
+
+  test.each([['?kind=build'], ['?kind=runtime_previous'], ['?kind=../runtime'], ['?kind='], ['?kind=all']])('refuses kind %s', async (qs) => {
+    await writeRuntime(appId, lines(0, 2));
+    expect((await getApp(appId, qs)).status).toBe(400);
+  });
+});
+
+describe('DELETE /api/apps/:id/logs (the app\'s runtime logs)', () => {
+  const del = (id) => agent.delete(`/api/apps/${id}/logs`);
+
+  test('needs a login', async () => {
+    await writeRuntime(appId, lines(0, 2));
+    expect((await request(app).delete(`/api/apps/${appId}/logs`)).status).toBe(401);
+    expect(existsSync(runtimeLogPath(root, appId, 'runtime'))).toBe(true);
+  });
+
+  test('removes both runtime logs and their records, says how much it freed, and leaves every build log alone', async () => {
+    await writeLog(appId, depId, lines(0, 3));
+    await writeRuntime(appId, lines(0, 10));
+    await writeRuntime(appId, lines(0, 4), { kind: 'runtime_previous' });
+    const res = await del(appId);
+    expect(res.status).toBe(200);
+    expect(res.body.freedBytes).toBe(Buffer.byteLength(lines(0, 10)) + Buffer.byteLength(lines(0, 4)));
+    expect(existsSync(runtimeLogPath(root, appId, 'runtime'))).toBe(false);
+    expect(existsSync(runtimeLogPath(root, appId, 'runtime_previous'))).toBe(false);
+    expect((await testPool.query('SELECT count(*)::int AS n FROM runtime_logs WHERE app_id = $1', [appId])).rows[0].n).toBe(0);
+    expect(existsSync(logFilePath(root, appId, depId, 'build'))).toBe(true);
+    expect((await get(depId)).status).toBe(200);
+  });
+
+  test('another app keeps its runtime logs', async () => {
+    const other = (await agent.post('/api/apps').send({ name: 'App B', repo: 'o/r', container_port: 3000, host_port: 8081 })).body.id;
+    await writeRuntime(other, 'keep\n');
+    await writeRuntime(appId, 'go\n');
+    await del(appId);
+    expect(existsSync(runtimeLogPath(root, other, 'runtime'))).toBe(true);
+  });
+
+  test('refused (409) while the app\'s output is still being collected', async () => {
+    await writeRuntime(appId, lines(0, 5), { finished: false });
+    await writeRuntime(appId, lines(0, 5), { kind: 'runtime_previous' });
+    const res = await del(appId);
+    expect(res.status).toBe(409);
+    expect(existsSync(runtimeLogPath(root, appId, 'runtime'))).toBe(true);
+    expect(existsSync(runtimeLogPath(root, appId, 'runtime_previous'))).toBe(true);
+  });
+
+  test('unknown ids are a 404, an app with nothing to delete is a 404, and deleting twice is a 404 the second time', async () => {
+    expect((await del(ZERO)).status).toBe(404);
+    expect((await del('not-a-uuid')).status).toBe(404);
+    expect((await del(appId)).status).toBe(404);
+    await writeRuntime(appId, lines(0, 2));
+    expect((await del(appId)).status).toBe(200);
+    expect((await del(appId)).status).toBe(404);
+  });
+
+  (process.getuid?.() === 0 ? test.skip : test)('files that cannot be removed give a clear error and keep the records', async () => {
+    await writeRuntime(appId, lines(0, 3));
+    const dir = join(root, appId);
+    chmodSync(dir, 0o500);
+    try {
+      const res = await del(appId);
+      expect(res.status).toBe(500);
+      expect(res.body.error).toMatch(/could not be deleted/i);
+      expect(res.body.error).not.toContain(root);
+      expect((await testPool.query('SELECT count(*)::int AS n FROM runtime_logs WHERE app_id = $1', [appId])).rows[0].n).toBe(1);
+    } finally {
+      chmodSync(dir, 0o700);
+    }
   });
 });
 
@@ -225,10 +299,9 @@ describe('DELETE /api/deployments/:id/logs', () => {
 
   test('deletes the log files and their records, and says how much space it freed', async () => {
     await writeLog(appId, depId, lines(0, 10));
-    await writeLog(appId, depId, lines(0, 4), { kind: 'runtime' });
     const res = await agent.delete(`/api/deployments/${depId}/logs`);
     expect(res.status).toBe(200);
-    expect(res.body.freedBytes).toBe(Buffer.byteLength(lines(0, 10)) + Buffer.byteLength(lines(0, 4)));
+    expect(res.body.freedBytes).toBe(Buffer.byteLength(lines(0, 10)));
     expect(existsSync(logDirFor(root, appId, depId))).toBe(false);
     expect((await testPool.query('SELECT count(*)::int AS n FROM log_files WHERE deployment_id = $1', [depId])).rows[0].n).toBe(0);
     expect((await get(depId)).status).toBe(404);
@@ -262,22 +335,16 @@ describe('DELETE /api/deployments/:id/logs', () => {
     expect((await get(other)).status).toBe(200);
   });
 
-  test('a log the worker is still collecting (the app is running) cannot be deleted: 409', async () => {
+  test('deleting a deployment\'s logs never touches the app\'s runtime logs, running or not', async () => {
     await writeLog(appId, depId, lines(0, 2));
-    await writeLog(appId, depId, lines(0, 5), { kind: 'runtime', finished: false });
-    const res = await agent.delete(`/api/deployments/${depId}/logs`);
-    expect(res.status).toBe(409);
-    expect(existsSync(logFilePath(root, appId, depId, 'runtime'))).toBe(true);
-    expect(existsSync(logFilePath(root, appId, depId, 'build'))).toBe(true);
-  });
-
-  test('once the collection has ended (the app stopped or was replaced) the runtime logs can be deleted with the rest', async () => {
-    await writeLog(appId, depId, lines(0, 2));
-    await writeLog(appId, depId, lines(0, 5), { kind: 'runtime' });
-    await writeLog(appId, depId, lines(0, 6), { kind: 'runtime_previous' });
+    await writeRuntime(appId, lines(0, 5), { finished: false });
+    await writeRuntime(appId, lines(0, 6), { kind: 'runtime_previous' });
     const res = await agent.delete(`/api/deployments/${depId}/logs`);
     expect(res.status).toBe(200);
-    expect(existsSync(logDirFor(root, appId, depId))).toBe(false);
+    expect(existsSync(logFilePath(root, appId, depId, 'build'))).toBe(false);
+    expect(existsSync(runtimeLogPath(root, appId, 'runtime'))).toBe(true);
+    expect(existsSync(runtimeLogPath(root, appId, 'runtime_previous'))).toBe(true);
+    expect((await testPool.query('SELECT count(*)::int AS n FROM runtime_logs WHERE app_id = $1', [appId])).rows[0].n).toBe(2);
   });
 
   test('a deployment that is still running keeps its log: 409', async () => {
@@ -320,8 +387,8 @@ describe('DELETE /api/deployments/:id/logs', () => {
 describe('GET /api/storage with runtime logs', () => {
   test('counts the runtime and previous-run files too, and a runtime log still being written by its size on disk', async () => {
     await writeLog(appId, depId, 'a'.repeat(100));
-    await writeLog(appId, depId, 'b'.repeat(2000), { kind: 'runtime', finished: false });
-    await writeLog(appId, depId, 'c'.repeat(300), { kind: 'runtime_previous' });
+    await writeRuntime(appId, 'b'.repeat(2000), { finished: false });
+    await writeRuntime(appId, 'c'.repeat(300), { kind: 'runtime_previous' });
     const { body } = await agent.get('/api/storage');
     expect(body.logs.totalBytes).toBe(2400);
     expect(body.logs.apps[0]).toMatchObject({ bytes: 2400, files: 3 });

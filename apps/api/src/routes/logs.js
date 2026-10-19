@@ -1,17 +1,20 @@
-// Reading and deleting a deployment's log, and the storage summary. The worker writes the files; the API reads them
-// and, on the administrator's explicit request, removes a finished deployment's. A client can never change a log's
-// content. Paths come only from the deployment's stored app id and its own id, never from the request.
+// Reading and deleting logs, and the storage summary. The worker writes the files; the API reads them and, on the
+// administrator's explicit request, removes them: a finished deployment's build log, or an app's runtime logs. A client
+// can never change a log's content. Paths come only from stored ids, never from the request.
+//   deployment  -> its build log (one per deployment, kept until the deployment is deleted)
+//   app         -> its runtime log and the run before it (one pair per app, reset on every restart or deployment)
 import { Router } from 'express';
-import { stat, statfs } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { logFilePath, readChunk, readTail, removeDeploymentLogs } from '@shipdok/shared';
+import { stat } from 'node:fs/promises';
+import { defaultDiskUsage, diskStatus } from '../disk.js';
+import { logFilePath, runtimeLogPath, readChunk, readTail, removeDeploymentLogs, removeRuntimeLogs } from '@shipdok/shared';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (s) => typeof s === 'string' && UUID_RE.test(s);
 const ACTIVE = ['queued', 'building', 'starting', 'validating'];
 
 // What ?kind= may be, and the stored kind each one means.
-const KIND_PARAM = { build: 'build', runtime: 'runtime', previous: 'runtime_previous' };
+const APP_KIND_PARAM = { runtime: 'runtime', previous: 'runtime_previous' };
+const DEPLOYMENT_KIND_PARAM = { build: 'build' };
 
 const DEFAULT_LIMIT = 64 * 1024;
 const MAX_LIMIT = 1024 * 1024;
@@ -23,29 +26,11 @@ const wholeNumber = (v) => {
   return typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : null;
 };
 
-// How full is the disk the logs live on? Free space below 20% is a warning, below 10% critical (SPEC.md section 13).
-export const LOW_FREE_PERCENT = 20;
-export const CRITICAL_FREE_PERCENT = 10;
-
-// The log directory may not exist yet (nothing has been logged), so measure the nearest directory that does.
-export async function defaultDiskUsage(path) {
-  let p = path;
-  for (;;) {
-    try {
-      const s = await statfs(p);
-      return { totalBytes: s.bsize * s.blocks, freeBytes: s.bsize * s.bavail };
-    } catch (err) {
-      const parent = dirname(p);
-      if (err.code !== 'ENOENT' || parent === p) throw err;
-      p = parent;
-    }
-  }
-}
-
-// Serves one of a deployment's logs: the query string picks the part (offset/limit or tail) and the kind.
-async function serveLog({ db, logDir }, req, res, deploymentId, defaultKind) {
+// Serves one log file: the query string picks the part (offset/limit or tail) and the kind. `lookup(kind)` finds the
+// log's record and file, or null when the deployment/app does not exist.
+async function serveLog(req, res, { defaultKind, kinds, lookup, missing }) {
   const kindParam = req.query.kind === undefined ? defaultKind : req.query.kind;
-  const kind = typeof kindParam === 'string' && Object.hasOwn(KIND_PARAM, kindParam) ? KIND_PARAM[kindParam] : null;
+  const kind = typeof kindParam === 'string' && Object.hasOwn(kinds, kindParam) ? kinds[kindParam] : null;
   const offset = wholeNumber(req.query.offset);
   const limit = wholeNumber(req.query.limit);
   const tail = wholeNumber(req.query.tail);
@@ -55,40 +40,72 @@ async function serveLog({ db, logDir }, req, res, deploymentId, defaultKind) {
     || (tail !== undefined && (offset !== undefined || limit !== undefined));
   if (bad) return res.status(400).json({ error: 'Invalid kind, offset, limit or tail' });
 
-  const { rows } = await db.query(
-    `SELECT d.app_id, l.ended_at, l.truncated
-       FROM deployments d LEFT JOIN log_files l ON l.deployment_id = d.id AND l.kind = $2
-      WHERE d.id = $1`, [deploymentId, kind]);
-  if (!rows[0]) return res.status(404).json({ error: 'Deployment not found' });
-
-  const file = logFilePath(logDir, rows[0].app_id, deploymentId, kind);
-  const result = tail !== undefined ? await readTail(file, tail) : await readChunk(file, offset ?? 0, limit ?? DEFAULT_LIMIT);
-  if (!result) return res.status(404).json({ error: 'No log for this deployment' });
+  const found = await lookup(kind);
+  if (!found) return res.status(404).json({ error: missing.owner });
+  const result = tail !== undefined ? await readTail(found.file, tail) : await readChunk(found.file, offset ?? 0, limit ?? DEFAULT_LIMIT);
+  if (!result) return res.status(404).json({ error: missing.log });
 
   res.json({
     text: result.text,
     offset: result.start,
     nextOffset: result.next,
     size: result.size,
-    complete: rows[0].ended_at !== null && result.next >= result.size, // finished AND everything read
-    truncated: rows[0].truncated === true,
+    complete: found.endedAt !== null && result.next >= result.size, // finished AND everything read
+    truncated: found.truncated === true,
+    ...(found.deploymentId !== undefined ? { deploymentId: found.deploymentId } : {}),
   });
 }
 
-// The current deployment's runtime log, by app: the app's own output (?kind=previous for the run before the last restart).
+// An app's runtime log: the app's own output since its container last started (?kind=previous for the run before that).
+// There is one per app; a new deployment or a restart resets it.
 export function appLogsRouter({ db, logDir }) {
   const r = Router();
+
   r.get('/:id/logs', async (req, res, next) => {
+    try {
+      if (!isUuid(req.params.id)) return res.status(404).json({ error: 'App not found' });
+      await serveLog(req, res, {
+        defaultKind: 'runtime', kinds: APP_KIND_PARAM,
+        missing: { owner: 'App not found', log: 'No output has been collected for this app yet' },
+        lookup: async (kind) => {
+          const { rows } = await db.query(
+            `SELECT l.ended_at, l.truncated, l.deployment_id
+               FROM apps a LEFT JOIN runtime_logs l ON l.app_id = a.id AND l.kind = $2
+              WHERE a.id = $1`, [req.params.id, kind]);
+          if (!rows[0]) return null;
+          return {
+            file: runtimeLogPath(logDir, req.params.id, kind),
+            // No record at all (never collected): the file will not exist either, so the reader answers 404.
+            endedAt: rows[0].ended_at ?? null, truncated: rows[0].truncated ?? false, deploymentId: rows[0].deployment_id ?? null,
+          };
+        },
+      });
+    } catch (err) { next(err); }
+  });
+
+  // Explicit deletion of an app's runtime logs (current and previous). Refused while the app's output is still being collected.
+  r.delete('/:id/logs', async (req, res, next) => {
     try {
       if (!isUuid(req.params.id)) return res.status(404).json({ error: 'App not found' });
       const { rows: apps } = await db.query('SELECT 1 FROM apps WHERE id = $1', [req.params.id]);
       if (!apps[0]) return res.status(404).json({ error: 'App not found' });
-      const { rows } = await db.query(
-        `SELECT id FROM deployments WHERE app_id = $1 AND status = 'successful' ORDER BY seq DESC LIMIT 1`, [req.params.id]);
-      if (!rows[0]) return res.status(404).json({ error: 'This app has no successful deployment yet' });
-      await serveLog({ db, logDir }, req, res, rows[0].id, 'runtime');
+      const { rows: collecting } = await db.query(
+        `SELECT 1 FROM runtime_logs WHERE app_id = $1 AND kind = 'runtime' AND ended_at IS NULL`, [req.params.id]);
+      if (collecting[0]) return res.status(409).json({ error: 'The app is running and its output is still being collected; stop it first' });
+
+      let freedBytes;
+      try {
+        freedBytes = await removeRuntimeLogs(logDir, req.params.id);
+      } catch (err) {
+        console.error('Could not delete log files:', err.code ?? err.message);
+        return res.status(500).json({ error: 'The log files could not be deleted (check that the log volume is writable by the API)' });
+      }
+      const removed = await db.query('DELETE FROM runtime_logs WHERE app_id = $1', [req.params.id]);
+      if (removed.rowCount === 0 && freedBytes === 0) return res.status(404).json({ error: 'No runtime logs for this app' });
+      res.json({ freedBytes });
     } catch (err) { next(err); }
   });
+
   return r;
 }
 
@@ -98,7 +115,18 @@ export function deploymentLogsRouter({ db, logDir }) {
   r.get('/:id/logs', async (req, res, next) => {
     try {
       if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Deployment not found' });
-      await serveLog({ db, logDir }, req, res, req.params.id, 'build');
+      await serveLog(req, res, {
+        defaultKind: 'build', kinds: DEPLOYMENT_KIND_PARAM,
+        missing: { owner: 'Deployment not found', log: 'No log for this deployment' },
+        lookup: async (kind) => {
+          const { rows } = await db.query(
+            `SELECT d.app_id, l.ended_at, l.truncated
+               FROM deployments d LEFT JOIN log_files l ON l.deployment_id = d.id AND l.kind = $2
+              WHERE d.id = $1`, [req.params.id, kind]);
+          if (!rows[0]) return null;
+          return { file: logFilePath(logDir, rows[0].app_id, req.params.id, kind), endedAt: rows[0].ended_at ?? null, truncated: rows[0].truncated ?? false };
+        },
+      });
     } catch (err) { next(err); }
   });
 
@@ -109,10 +137,6 @@ export function deploymentLogsRouter({ db, logDir }) {
       const { rows } = await db.query('SELECT app_id, status FROM deployments WHERE id = $1', [req.params.id]);
       if (!rows[0]) return res.status(404).json({ error: 'Deployment not found' });
       if (ACTIVE.includes(rows[0].status)) return res.status(409).json({ error: 'The deployment is still running; its log is still being written' });
-      // The worker is still collecting this deployment's runtime log (its app is running): deleting it now would only make a new one appear.
-      const { rows: collecting } = await db.query(
-        `SELECT 1 FROM log_files WHERE deployment_id = $1 AND kind = 'runtime' AND ended_at IS NULL`, [req.params.id]);
-      if (collecting[0]) return res.status(409).json({ error: 'The app is running and its output is still being collected' });
 
       let freedBytes;
       try {
@@ -138,13 +162,17 @@ export function storageRouter({ db, logDir, diskUsage = defaultDiskUsage }) {
     try {
       const { rows } = await db.query(
         `SELECT l.app_id, a.slug, l.deployment_id, l.kind, l.bytes, l.ended_at
-           FROM log_files l JOIN apps a ON a.id = l.app_id`);
+           FROM log_files l JOIN apps a ON a.id = l.app_id
+         UNION ALL
+         SELECT l.app_id, a.slug, NULL, l.kind, l.bytes, l.ended_at
+           FROM runtime_logs l JOIN apps a ON a.id = l.app_id`);
       const perApp = new Map();
       for (const row of rows) {
         // A log still being written has not recorded its size yet: the file on disk is the truth.
         let bytes = Number(row.bytes);
         if (row.ended_at === null) {
-          try { bytes = (await stat(logFilePath(logDir, row.app_id, row.deployment_id, row.kind))).size; } catch { bytes = 0; }
+          const file = row.kind === 'build' ? logFilePath(logDir, row.app_id, row.deployment_id, 'build') : runtimeLogPath(logDir, row.app_id, row.kind);
+          try { bytes = (await stat(file)).size; } catch { bytes = 0; }
         }
         const entry = perApp.get(row.app_id) ?? { appId: row.app_id, slug: row.slug, bytes: 0, files: 0 };
         entry.bytes += bytes;
@@ -153,18 +181,23 @@ export function storageRouter({ db, logDir, diskUsage = defaultDiskUsage }) {
       }
       const apps = [...perApp.values()].sort((a, b) => b.bytes - a.bytes);
 
-      let disk = null;
-      try {
-        const { totalBytes, freeBytes } = await diskUsage(logDir);
-        const freePercent = totalBytes > 0 ? (freeBytes / totalBytes) * 100 : 0;
-        disk = {
-          totalBytes, freeBytes,
-          freePercent: Math.round(freePercent * 10) / 10,
-          level: freePercent < CRITICAL_FREE_PERCENT ? 'critical' : freePercent < LOW_FREE_PERCENT ? 'low' : 'ok',
-        };
-      } catch { /* the rest of the summary is still useful */ }
+      const disk = await diskStatus(diskUsage, logDir);
 
-      res.json({ logs: { totalBytes: apps.reduce((n, a) => n + a.bytes, 0), apps }, disk });
+      // Images Shipdok has built and still holds, from the sizes recorded when each version went live. One image
+      // shared by several deployments (a rollback reuses it) counts once.
+      const { rows: imageRows } = await db.query(
+        `SELECT app_id, slug, count(*)::int AS images, COALESCE(sum(bytes), 0)::bigint AS bytes FROM (
+           SELECT DISTINCT ON (d.app_id, d.image_ref) d.app_id, a.slug, d.image_bytes AS bytes
+             FROM deployments d JOIN apps a ON a.id = d.app_id
+            WHERE d.status = 'successful' AND d.image_ref IS NOT NULL AND d.image_removed_at IS NULL
+         ) x GROUP BY app_id, slug ORDER BY bytes DESC`);
+      const imageApps = imageRows.map((r) => ({ appId: r.app_id, slug: r.slug, images: r.images, bytes: Number(r.bytes) }));
+
+      res.json({
+        logs: { totalBytes: apps.reduce((n, a) => n + a.bytes, 0), apps },
+        images: { totalBytes: imageApps.reduce((n, a) => n + a.bytes, 0), apps: imageApps },
+        disk,
+      });
     } catch (err) { next(err); }
   });
 

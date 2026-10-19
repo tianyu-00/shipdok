@@ -12,7 +12,8 @@ import { envRouter } from './routes/env.js';
 import { webhookReceiver, deliveriesRouter } from './routes/webhooks.js';
 import { githubRouter } from './routes/github.js';
 import { loadGithubAppConfig, createGithubClient, logRoot } from '@shipdok/shared';
-import { deploymentLogsRouter, appLogsRouter, storageRouter, defaultDiskUsage } from './routes/logs.js';
+import { deploymentLogsRouter, appLogsRouter, storageRouter } from './routes/logs.js';
+import { defaultDiskUsage } from './disk.js';
 
 // The GitHub App client exists only when GITHUB_APP_ID and a private key are configured.
 function defaultGithub() {
@@ -38,7 +39,7 @@ export function createApp({
 
   // The GitHub webhook is public and signature-protected. It is mounted BEFORE the JSON parser, the session
   // and the origin check: it needs the raw bytes to verify the signature, and it has no cookies or Origin.
-  app.use('/api/webhooks/github', webhookReceiver({ db, queue, secret: webhookSecret, rateLimitPerMinute: webhookRateLimit }));
+  app.use('/api/webhooks/github', webhookReceiver({ db, queue, secret: webhookSecret, rateLimitPerMinute: webhookRateLimit, logDir, diskUsage }));
 
   app.use(express.json({ limit: '100kb' }));
 
@@ -66,10 +67,10 @@ export function createApp({
 
   app.use('/api/auth', authRouter(db));
   app.use('/api/apps/:id/env', requireAuth, envRouter({ db, secretsKey }));
-  app.use('/api/apps', requireAuth, appsRouter({ db, queue, github }));
+  app.use('/api/apps', requireAuth, appsRouter({ db, queue, github, logDir, diskUsage }));
   app.use('/api/apps', requireAuth, appLogsRouter({ db, logDir }));
   app.use('/api/github', requireAuth, githubRouter({ github }));
-  app.use('/api/deployments', requireAuth, deploymentsRouter({ db, queue }));
+  app.use('/api/deployments', requireAuth, deploymentsRouter({ db, queue, logDir }));
   app.use('/api/deployments', requireAuth, deploymentLogsRouter({ db, logDir }));
   app.use('/api/storage', requireAuth, storageRouter({ db, logDir, diskUsage }));
   app.use('/api/webhooks/deliveries', requireAuth, deliveriesRouter({ db }));
