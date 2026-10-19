@@ -11,4 +11,7 @@ state
 infrastructure
 **/tests
 **/*.test.js
+**/*.test.jsx
+**/dist
+apps/web/src/test
 *.md

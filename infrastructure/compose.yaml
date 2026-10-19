@@ -6,7 +6,7 @@
 # api and worker, which would compete with the npm ones for port 4000 and for the same queue).
 # Extra settings for the containers in infrastructure/.env: DOCKER_GID (worker; see its comment, defaults to 999),
 # GITHUB_APP_PRIVATE_KEY_FILE (host path of the .pem; optional), API_HOST_PORT (default 4000).
-# The dashboard (`web`) does not exist yet.
+# The dashboard (`web`): http://localhost:8080 by default (WEB_HOST_PORT, WEB_BIND). Set WEB_ORIGIN to the exact address you open.
 
 x-api-build: &api-build
   context: ..
@@ -79,7 +79,8 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       SESSION_SECRET: ${SESSION_SECRET}
       APP_SECRETS_KEY: ${APP_SECRETS_KEY}
-      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:5173}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:${WEB_HOST_PORT:-8080}}
+      TRUST_PROXY: loopback,uniquelocal # the dashboard's nginx (a private address) passes on the real client address
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
       SETUP_TOKEN: ${SETUP_TOKEN:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
@@ -136,7 +137,19 @@ services:
       - ${GITHUB_APP_PRIVATE_KEY_FILE:-/dev/null}:/run/secrets/github-app.pem:ro
       - shipdok_logs:/var/lib/shipdok/logs
 
-  # web: not built yet. The dashboard (apps/web) will be added here once it exists.
+  # The dashboard. nginx serves the built files and forwards /api to the API, so the browser sees one origin (cookies just
+  # work, no CORS). By default it listens on this machine only; to reach it from other devices on your LAN or VPN set
+  # WEB_BIND to this machine's address (or 0.0.0.0) AND WEB_ORIGIN to the address you will open in the browser.
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    image: shipdok-web
+    restart: unless-stopped
+    depends_on:
+      api: { condition: service_healthy }
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:${WEB_HOST_PORT:-8080}:80"
 
 volumes:
   shipdok_pgdata:

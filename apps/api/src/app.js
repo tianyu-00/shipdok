@@ -29,12 +29,15 @@ export function createApp({
   webhookSecret = config.webhookSecret, webhookRateLimit = 120,
   github = defaultGithub(),
   logDir = logRoot(), diskUsage = defaultDiskUsage,
+  trustProxy = process.env.TRUST_PROXY || 'loopback',
 } = {}) {
   const app = express();
   app.disable('x-powered-by');
-  // Believe X-Forwarded-For only when the connection itself comes from this machine (the Cloudflare tunnel's
-  // cloudflared). Never `true` or a hop count: a directly connected client could then forge its own address.
-  app.set('trust proxy', 'loopback');
+  // Believe X-Forwarded-For only when the connection itself comes from a proxy we run: by default this machine (the
+  // Cloudflare tunnel's cloudflared). In Docker Compose the dashboard's nginx also sits in front, on a private address, so
+  // compose sets TRUST_PROXY=loopback,uniquelocal. Never `true` or a hop count: a directly connected client could then
+  // forge its own address.
+  app.set('trust proxy', trustProxy);
   app.use(helmet());
 
   // The GitHub webhook is public and signature-protected. It is mounted BEFORE the JSON parser, the session
