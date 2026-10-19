@@ -1,0 +1,100 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Colours are CSS variables so the whole look is changed here. Light follows VS Code's light theme; dark follows its dark
+   theme, a touch darker than the editor (#1e1e1e), never pure black. */
+:root {
+  --background: #ffffff;
+  --foreground: #2b2b2b;
+  --card: #f8f8f8;
+  --card-foreground: #2b2b2b;
+  --popover: #ffffff;
+  --popover-foreground: #2b2b2b;
+  --primary: #0060c0;
+  --primary-foreground: #ffffff;
+  --secondary: #ececec;
+  --secondary-foreground: #2b2b2b;
+  --muted: #f0f0f0;
+  --muted-foreground: #616161;
+  --accent: #e8e8e8;
+  --accent-foreground: #2b2b2b;
+  --destructive: #c4262e;
+  --border: #dedede;
+  --input: #cecece;
+  --ring: #0060c0;
+  --success: #1a7f37;
+  --warning: #9a6700;
+  --info: #0060c0;
+  --radius: 0.5rem;
+}
+
+.dark {
+  --background: #0f0f10;
+  --foreground: #cccccc;
+  --card: #151516;
+  --card-foreground: #cccccc;
+  --popover: #18181a;
+  --popover-foreground: #cccccc;
+  --primary: #0e639c;
+  --primary-foreground: #ffffff;
+  --secondary: #1f1f21;
+  --secondary-foreground: #cccccc;
+  --muted: #1b1b1d;
+  --muted-foreground: #9d9d9d;
+  --accent: #232527;
+  --accent-foreground: #ffffff;
+  --destructive: #d14343;
+  --border: #2a2a2c;
+  --input: #333335;
+  --ring: #007fd4;
+  --success: #73c991;
+  --warning: #e2c08d;
+  --info: #4fa6e8;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: system-ui, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", Consolas, "SF Mono", monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+}

@@ -3,10 +3,11 @@
   "private": true,
   "workspaces": [
     "apps/api",
+    "apps/web",
     "apps/worker",
     "packages/shared"
   ],
   "scripts": {
-    "test": "npm test -w apps/api && npm test -w apps/worker && npm test -w packages/shared"
+    "test": "npm test -w apps/api && npm test -w apps/worker && npm test -w packages/shared && npm test -w apps/web"
   }
 }

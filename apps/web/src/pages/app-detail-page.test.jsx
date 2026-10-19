@@ -1,0 +1,241 @@
+import { describe, test, expect, vi, beforeEach } from 'vitest'
+import { screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { Routes, Route } from 'react-router-dom'
+import AppDetailPage from './app-detail-page'
+import { mockApi, answer, renderWithProviders } from '@/test/utils'
+import { makeApp, makeDeployment, APP_ID } from '@/test/fixtures'
+
+const toasts = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
+vi.mock('sonner', () => ({ toast: toasts, Toaster: () => null }))
+beforeEach(() => vi.clearAllMocks())
+
+const page = (route = `/apps/${APP_ID}`) => renderWithProviders(<Routes><Route path="/apps/:id/*" element={<AppDetailPage />} /><Route path="/" element={<p>home</p>} /></Routes>, { route })
+const base = (over = {}) => ({
+  [`GET /api/apps/${APP_ID}`]: makeApp(),
+  [`GET /api/apps/${APP_ID}/deployments`]: [makeDeployment()],
+  [`GET /api/apps/${APP_ID}/crashes`]: [],
+  [`GET /api/apps/${APP_ID}/env`]: { variables: [], pending: { pending: false } },
+  [`GET /api/apps/${APP_ID}/logs`]: { text: '', offset: 0, nextOffset: 0, size: 0, complete: false, truncated: false },
+  ...over,
+})
+
+describe('the app page', () => {
+  test('shows the name, repository, branch, runtime state and the link to the running app', async () => {
+    mockApi(base())
+    page()
+    expect(await screen.findByRole('heading', { name: 'My App' })).toBeInTheDocument()
+    expect(screen.getByText('owner/my-app')).toBeInTheDocument()
+    expect(screen.getByText('Running')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /open :8080/i })).toHaveAttribute('href', `http://${window.location.hostname}:8080`)
+  })
+
+  test('while a Stop is on its way the header says "Stopping…"', async () => {
+    mockApi(base({ [`GET /api/apps/${APP_ID}`]: makeApp({ desired_state: 'stopped', runtime: { state: 'running' } }) }))
+    page()
+    expect(await screen.findByText('Stopping…')).toBeInTheDocument()
+    expect(screen.getByText('Stopped on purpose')).toBeInTheDocument()
+  })
+
+  test('an app that does not exist says so and links back', async () => {
+    mockApi({ [`GET /api/apps/${APP_ID}`]: answer(404, { error: 'App not found' }) })
+    page()
+    expect(await screen.findByText('App not found', { selector: '[data-slot="alert-title"]' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /all apps/i })).toHaveAttribute('href', '/')
+    expect(screen.queryByRole('button', { name: /try again/i })).toBeNull()
+  })
+
+  test('other failures offer to try again', async () => {
+    mockApi({ [`GET /api/apps/${APP_ID}`]: answer(500, { error: 'Internal server error' }) })
+    page()
+    expect(await screen.findByRole('button', { name: /try again/i })).toBeInTheDocument()
+  })
+
+  test('the tab follows the address, and clicking a tab changes the address', async () => {
+    mockApi(base())
+    page(`/apps/${APP_ID}/deployments`)
+    expect(await screen.findByRole('tab', { name: 'Deployments' })).toHaveAttribute('aria-selected', 'true')
+    await userEvent.click(screen.getByRole('tab', { name: 'Variables' }))
+    expect(screen.getByRole('tab', { name: 'Variables' })).toHaveAttribute('aria-selected', 'true')
+    await userEvent.click(screen.getByRole('tab', { name: 'Overview' }))
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  test('an unknown tab in the address falls back to the overview', async () => {
+    mockApi(base())
+    page(`/apps/${APP_ID}/nonsense`)
+    expect(await screen.findByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+  })
+})
+
+describe('the overview', () => {
+  test('describes what is running, the limits, and the status the worker reported', async () => {
+    mockApi(base({ [`GET /api/apps/${APP_ID}`]: makeApp({ runtime: { state: 'unhealthy', last_action: 'start', last_error: 'Started, but it did not pass its health check', health_failures: 3, last_exit_code: null, updated_at: '2026-10-19T11:00:00Z' } }) }))
+    page()
+    expect(await screen.findByText('bbbbbbb')).toBeInTheDocument()
+    expect(screen.getByText('container 3000 → host 8080')).toBeInTheDocument()
+    expect(screen.getByText('512 MB')).toBeInTheDocument()
+    expect(screen.getByText('/health')).toBeInTheDocument()
+    expect(screen.getByText('3')).toBeInTheDocument()
+    expect(screen.getByText(/did not pass its health check/)).toBeInTheDocument()
+  })
+
+  test('an app that was never deployed explains what to do', async () => {
+    mockApi(base({ [`GET /api/apps/${APP_ID}`]: makeApp({ runtime: null, latest_deployment: null }), [`GET /api/apps/${APP_ID}/deployments`]: [] }))
+    page()
+    expect(await screen.findByText(/nothing has been deployed yet/i)).toBeInTheDocument()
+  })
+
+  test('crash history lists what happened and what Shipdok did about it', async () => {
+    mockApi(base({ [`GET /api/apps/${APP_ID}/crashes`]: [
+      { occurred_at: '2026-10-19T11:30:00Z', cause: 'crash', exit_code: 137, oom_killed: true, action: 'restarted' },
+      { occurred_at: '2026-10-19T10:00:00Z', cause: 'stopped_outside', exit_code: 0, oom_killed: false, action: 'marked crashed' },
+    ] }))
+    page()
+    expect(await screen.findByText('Crashed')).toBeInTheDocument()
+    expect(screen.getByText(/exit 137, out of memory/)).toBeInTheDocument()
+    expect(screen.getByText('Stopped outside Shipdok')).toBeInTheDocument()
+    expect(screen.getByText('restarted')).toBeInTheDocument()
+  })
+
+  test('no crashes: says so', async () => {
+    mockApi(base())
+    page()
+    expect(await screen.findByText('No crashes recorded')).toBeInTheDocument()
+  })
+})
+
+describe('Deploy', () => {
+  test('queues a deployment and says so', async () => {
+    const api = mockApi(base({ [`POST /api/apps/${APP_ID}/deployments`]: answer(202, makeDeployment({ status: 'queued' })) }))
+    page()
+    await userEvent.click(await screen.findByRole('button', { name: 'Deploy' }))
+    await waitFor(() => expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)).toHaveLength(1))
+    expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)[0].body).toEqual({})
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('Deployment queued'))
+  })
+
+  test('a warning from the API (the disk is getting full) is shown as a warning', async () => {
+    mockApi(base({ [`POST /api/apps/${APP_ID}/deployments`]: answer(202, { ...makeDeployment(), warning: 'The disk is getting full (15% free).' }) }))
+    page()
+    await userEvent.click(await screen.findByRole('button', { name: 'Deploy' }))
+    await waitFor(() => expect(toasts.warning).toHaveBeenCalledWith('The disk is getting full (15% free).'))
+  })
+
+  test('a failure shows the API\'s message', async () => {
+    mockApi(base({ [`POST /api/apps/${APP_ID}/deployments`]: answer(503, { error: 'Could not enqueue the deployment job' }) }))
+    page()
+    await userEvent.click(await screen.findByRole('button', { name: 'Deploy' }))
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('Could not enqueue the deployment job'))
+  })
+
+  describe('when the disk is almost full', () => {
+    const critical = answer(409, { error: 'The disk is almost full...', code: 'disk_critical', disk: { level: 'critical', freePercent: 4 } })
+
+    test('asks first, and "Stop" sends nothing more', async () => {
+      const api = mockApi(base({ [`POST /api/apps/${APP_ID}/deployments`]: critical }))
+      page()
+      await userEvent.click(await screen.findByRole('button', { name: 'Deploy' }))
+      const dialog = await screen.findByRole('alertdialog')
+      expect(within(dialog).getByText(/only 4% is free/i)).toBeInTheDocument()
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Stop' }))
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+      expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)).toHaveLength(1)
+      expect(toasts.error).not.toHaveBeenCalled()
+    })
+
+    test('"Deploy anyway" repeats the request with the confirmation', async () => {
+      let n = 0
+      const api = mockApi(base({ [`POST /api/apps/${APP_ID}/deployments`]: () => { n += 1; return n === 1 ? critical : answer(202, { ...makeDeployment(), warning: 'Deployed although the disk is almost full.' }) } }))
+      page()
+      await userEvent.click(await screen.findByRole('button', { name: 'Deploy' }))
+      await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Deploy anyway' }))
+      await waitFor(() => expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)).toHaveLength(2))
+      expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)[1].body).toEqual({ ignoreDiskWarning: true })
+    })
+
+    test('"Deploy and start" of a stopped app keeps its choice through the question', async () => {
+      let n = 0
+      const api = mockApi(base({
+        [`GET /api/apps/${APP_ID}`]: makeApp({ desired_state: 'stopped', runtime: { state: 'stopped' } }),
+        [`POST /api/apps/${APP_ID}/deployments`]: () => { n += 1; return n === 1 ? critical : answer(202, makeDeployment()) },
+      }))
+      page()
+      await userEvent.click(await screen.findByRole('button', { name: 'Deploy and start' }))
+      await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Deploy anyway' }))
+      await waitFor(() => expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)).toHaveLength(2))
+      expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)[1].body).toEqual({ start: true, ignoreDiskWarning: true })
+    })
+
+    test('a different 409 is just an error message, not the disk question', async () => {
+      mockApi(base({ [`POST /api/apps/${APP_ID}/deployments`]: answer(409, { error: 'Something else' }) }))
+      page()
+      await userEvent.click(await screen.findByRole('button', { name: 'Deploy' }))
+      await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('Something else'))
+      expect(screen.queryByRole('alertdialog')).toBeNull()
+    })
+  })
+
+  test('a running app has no "Deploy and start"; a stopped one does, and it sends start: true', async () => {
+    mockApi(base())
+    const { unmount } = page()
+    await screen.findByRole('button', { name: 'Deploy' })
+    expect(screen.queryByRole('button', { name: 'Deploy and start' })).toBeNull()
+    unmount()
+    const api = mockApi(base({ [`GET /api/apps/${APP_ID}`]: makeApp({ desired_state: 'stopped', runtime: { state: 'stopped' } }), [`POST /api/apps/${APP_ID}/deployments`]: answer(202, makeDeployment()) }))
+    page()
+    await userEvent.click(await screen.findByRole('button', { name: 'Deploy and start' }))
+    await waitFor(() => expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)).toHaveLength(1))
+    expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)[0].body).toEqual({ start: true })
+  })
+})
+
+describe('Start, Stop and Restart', () => {
+  test('a running app offers Restart and Stop; Stop asks first, Restart does not', async () => {
+    const api = mockApi(base({ [`POST /api/apps/${APP_ID}/restart`]: answer(202, { action: 'restart' }), [`POST /api/apps/${APP_ID}/stop`]: answer(202, { action: 'stop' }) }))
+    page()
+    await screen.findByRole('heading', { name: 'My App' })
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Restart' }))
+    await waitFor(() => expect(api.called('POST', `/api/apps/${APP_ID}/restart`)).toHaveLength(1))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(api.called('POST', `/api/apps/${APP_ID}/stop`)).toHaveLength(0)
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Stop' }))
+    await waitFor(() => expect(api.called('POST', `/api/apps/${APP_ID}/stop`)).toHaveLength(1))
+  })
+
+  test('cancelling the stop question stops nothing', async () => {
+    const api = mockApi(base())
+    page()
+    await userEvent.click(await screen.findByRole('button', { name: 'Stop' }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Cancel' }))
+    expect(api.called('POST', `/api/apps/${APP_ID}/stop`)).toHaveLength(0)
+  })
+
+  test('a stopped app offers only Start', async () => {
+    const api = mockApi(base({ [`GET /api/apps/${APP_ID}`]: makeApp({ desired_state: 'stopped', runtime: { state: 'stopped' } }), [`POST /api/apps/${APP_ID}/start`]: answer(202, {}) }))
+    page()
+    await screen.findByText('Stopped on purpose')
+    expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Start' }))
+    await waitFor(() => expect(api.called('POST', `/api/apps/${APP_ID}/start`)).toHaveLength(1))
+  })
+
+  test('a crashed app offers Start and Restart (it stays down until you decide)', async () => {
+    mockApi(base({ [`GET /api/apps/${APP_ID}`]: makeApp({ runtime: { state: 'crashed' } }) }))
+    page()
+    expect(await screen.findByRole('button', { name: 'Start' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Restart' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+  })
+
+  test('an error from the API is shown', async () => {
+    mockApi(base({ [`POST /api/apps/${APP_ID}/restart`]: answer(503, { error: 'Could not queue the request' }) }))
+    page()
+    await userEvent.click(await screen.findByRole('button', { name: 'Restart' }))
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('Could not queue the request'))
+  })
+})
