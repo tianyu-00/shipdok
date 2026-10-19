@@ -47,7 +47,7 @@ jobs:
           load: true
           tags: shipdok-check:${{ matrix.image }}
           cache-from: type=gha,scope=${{ matrix.image }}
-      - run: .github/scripts/check-image.sh shipdok-check:${{ matrix.image }}
+      - run: sh .github/scripts/check-image.sh shipdok-check:${{ matrix.image }}
 
       - name: Log in to the registry
         if: env.PUBLISH == 'true'
