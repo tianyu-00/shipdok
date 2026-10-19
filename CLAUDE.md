@@ -27,11 +27,11 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 013_app_deletion
+  migrations/    001_init ... 014_app_stats
   src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), routes/ (auth, apps, env, webhooks, github, logs)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
-  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), deleteapp.js (removing an app), monitor.js, activity.js, buildlog.js (the log sink), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
+  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), deleteapp.js (removing an app), stats.js (CPU and memory samples), monitor.js, activity.js, buildlog.js (the log sink), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
   worker.js      entry point; cli.js: manual deploy
 apps/web/        Vite + React (JavaScript) dashboard, Tailwind v4 + shadcn/ui (copied into src/components/ui); Vitest + Testing Library
   src/           App.jsx, pages/ (auth, apps list, create app, app detail), components/ (tabs, log viewer, actions), lib/ (api client, queries, format)
@@ -60,9 +60,9 @@ docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up 
 ```
 
 Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
-socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked), `WEB_HOST_PORT` (default 8080) and `WEB_BIND` (default 127.0.0.1) for the dashboard container; `PORT_RANGE` (default `20000-20999`, in compose passed to the API) is where a new app's host port comes from when none is given; `WEB_ORIGIN` must be the exact address you open it at (several allowed, comma separated; default `http://localhost:<WEB_HOST_PORT>` in compose, `http://localhost:5173` for `npm run dev`).
+socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked), `STATS_INTERVAL_MS` (default 15000: how often CPU and memory are measured), `WEB_HOST_PORT` (default 8080) and `WEB_BIND` (default 127.0.0.1) for the dashboard container; `PORT_RANGE` (default `20000-20999`, in compose passed to the API) is where a new app's host port comes from when none is given; `WEB_ORIGIN` must be the exact address you open it at (several allowed, comma separated; default `http://localhost:<WEB_HOST_PORT>` in compose, `http://localhost:5173` for `npm run dev`).
 
-Tests: API 514, worker 470, shared 176, web 319. Worker tests reuse the `_test` database the API tests create and
+Tests: API 534, worker 493, shared 176, web 356. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -305,17 +305,33 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   images, runtime log and all records gone, other apps untouched), the failure with a stuck image and the retry. Not tested: deleting while
   a collector is mid-write on a very chatty app, a delete that stalls the worker, ARM64. Known limit: the collector's connection is closed
   by `release` but a fake Docker cannot show that.
+- **Live CPU and memory (verified against real Docker and a real browser in an isolated compose project):** the worker's sampler
+  (`stats.js`, its own loop, every `STATS_INTERVAL_MS`, default 15 s, all running apps at once because Docker takes about a second per
+  reading) asks Docker for each running live container's numbers and stores them in `app_stats` (migration 014); readings older than an
+  hour are deleted on every round, so the table stays small on the Pi. CPU is the share of ONE processor like `docker stats` (above
+  100% when more than one is busy; null, shown as a dash, when Docker has no earlier sample to compare with); memory leaves out the file
+  cache the kernel can take back (cgroup v2 `inactive_file`, v1 `total_inactive_file`) and comes with the container's limit.
+  `GET /api/apps/:id/stats` (`?minutes=1..60`, default 60) gives `{latest, samples:[{t,cpu,memory}]}`; `latest` is null when the newest
+  reading is older than 90 s (app stopped or worker quiet: an old number would be a lie), the samples still show what there was.
+  `GET /api/apps` and `/api/apps/:id` carry the same `stats` (latest or null). Dashboard (administrator's choices: a chart, and the
+  numbers on the app page AND on each card in the list; no memory warning): an Overview "Resource use" card with CPU and memory now,
+  the share of the memory limit, and two shadcn/Recharts area charts of the last hour (memory axis ends at the limit, dashed line;
+  the CPU axis is at least 0-100%); the apps list shows "CPU x% / Memory used of limit" on running apps. The charts library is loaded
+  only when an Overview opens (the bundle is about 900 kB with it). Checked for real: a CPU burst inside a running container showed as
+  about 100% in the card and as a curve in the chart, the memory figure against the 512 MB limit, the list card, no console errors.
+  Not tested: ARM64, hundreds of apps (readings are taken all at once), cgroup v1 hosts (only unit-tested), a window left open for
+  hours. Known limits: with no memory limit set Docker reports the host's memory as the limit (apps created through Shipdok always
+  have one); the shadcn CLI again installed the unrelated npm package `cn` (removed, `chart.jsx` imports `@/lib/utils`).
 - **Worker git ignores the admin's git config** (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`): a credential helper such as
   Git Credential Manager can otherwise open a window and hang a refused clone.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
 
-1. Live CPU/memory usage and limits display (SPEC.md §12).
-2. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so
+1. GitHub App setup in the dashboard (App Manifest flow: one click on github.com, credentials stored encrypted in the DB) so
    other people hosting Shipdok do not fill in the form by hand. Read SPEC.md Milestone 3 first.
-3. Compose follow-ups: add `cloudflared` to compose (point it at `http://api:4000`, no host networking needed).
-4. Pi: full-stack run in compose (ARM64 builds, firewall vs the health-check path, `DOCKER_GID`), run the tunnel as a service until
+2. Compose follow-ups: add `cloudflared` to compose (point it at `http://api:4000`, no host networking needed).
+3. Pi: full-stack run in compose (ARM64 builds, firewall vs the health-check path, `DOCKER_GID`), run the tunnel as a service until
    then, hardening, docs (setup options: tunnel, reverse proxy, or manual deploys only), API docs (Scalar).
 
 Known gaps: no audit/rate limit on `reveal`; old `shipdok/*` images pile up until the administrator prunes (or turns on `auto_prune`); no "clean build cache" action; build-time env vars; Railpack; DB backup docs.
