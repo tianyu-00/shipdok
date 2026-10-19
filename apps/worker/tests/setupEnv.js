@@ -1,5 +1,7 @@
 // Loaded with `node --import` before every test file. Points the worker's database module at
 // the *_test database (never the dev one) and sets a fixed test-only master key.
+import { applyPlatformDefaults } from '@shipdok/shared';
+applyPlatformDefaults(); // a trimmed .env has no POSTGRES_USER / POSTGRES_DB: the defaults are the same as Docker Compose's
 const base = process.env.POSTGRES_DB;
 if (!base) throw new Error('POSTGRES_DB is not set. Run tests with: npm test');
 if (!base.endsWith('_test')) process.env.POSTGRES_DB = `${base}_test`;

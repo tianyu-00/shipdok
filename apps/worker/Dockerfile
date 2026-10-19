@@ -28,6 +28,9 @@ COPY apps/worker apps/worker
 RUN mkdir -p /var/lib/shipdok/logs && chown node:node /var/lib/shipdok/logs
 ENV LOG_DIR=/var/lib/shipdok/logs
 
-USER node
+# Starts as root ONLY to read the Docker socket's group (it differs per machine), then drops to the unprivileged `node` user with that
+# group; see docker-entrypoint.sh. Nothing of Shipdok runs as root.
 WORKDIR /app/apps/worker
+RUN chmod +x docker-entrypoint.sh
+ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["node", "worker.js"]

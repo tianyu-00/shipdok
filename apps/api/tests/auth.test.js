@@ -26,7 +26,7 @@ describe("health", () => {
 describe("first-run setup", () => {
   test("status reports needsSetup until an admin exists", async () => {
     let res = await request(app).get("/api/auth/status");
-    expect(res.body).toEqual({ needsSetup: true, authenticated: false });
+    expect(res.body).toEqual({ needsSetup: true, authenticated: false, setupTokenRequired: false });
 
     await setup(request(app));
     res = await request(app).get("/api/auth/status");

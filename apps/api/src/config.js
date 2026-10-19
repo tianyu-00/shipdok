@@ -1,3 +1,4 @@
+import "./loadsecrets.js"; // before anything reads the environment
 import { parseMasterKey } from "@shipdok/shared";
 import { parsePortRange } from "./ports.js";
 import { PUBLIC_MODES, normalizePublicUrl } from "./publicurl.js";
@@ -7,8 +8,8 @@ export const config = {
   host: process.env.API_HOST ?? "127.0.0.1", // loopback by default; widen deliberately
   port: Number(process.env.API_PORT ?? 4000),
   sessionSecret: process.env.SESSION_SECRET,
-  // Origins allowed to make state-changing requests (the dashboard's origin(s)).
-  webOrigins: (process.env.WEB_ORIGIN ?? "http://localhost:5173").split(",").map((s) => s.trim()),
+  // Optional: the dashboard accepts requests from the address it is opened at without this (see origin.js). Extra addresses, comma separated.
+  webOrigins: (process.env.WEB_ORIGIN ?? "").split(",").map((s) => s.trim()).filter(Boolean),
   setupToken: process.env.SETUP_TOKEN || null, // optional: required on first-run setup if set
   // "true"/"false" force it; anything else (compose's default, "auto") sets the Secure flag only on requests that came in over HTTPS
   // (as reported by a trusted proxy), so the same install works on plain http locally and behind an https proxy.

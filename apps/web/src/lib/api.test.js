@@ -42,6 +42,7 @@ describe('api()', () => {
     expect(err.status).toBe(403)
     expect(err.message).toContain(window.location.origin)
     expect(err.message).toContain('WEB_ORIGIN')
+    expect(err.message).toMatch(/Host header/)
   })
 
   test('other 403 answers keep the server\'s own message', async () => {

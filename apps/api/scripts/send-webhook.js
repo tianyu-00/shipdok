@@ -13,6 +13,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
 import pg from "pg";
 import { loadGithubApp, parseMasterKey } from "@shipdok/shared";
+import "../src/loadsecrets.js";
 import { pgConfig } from "../src/db/pool.js";
 
 const { values: a, positionals } = parseArgs({

@@ -45,10 +45,10 @@ export async function api(path, { method = 'GET', body, signal } = {}) {
   if (!res.ok) {
     // /auth/* answers 401 for a wrong password; that is not "your session ran out".
     if (res.status === 401 && !path.startsWith('/auth/')) onUnauthorized()
-    // The API refuses state-changing requests from an address it was not told about (WEB_ORIGIN). From a person's point of
-    // view every button then "does nothing", so say what is wrong and how to fix it.
+    // The API accepts state-changing requests from the address the dashboard is opened at, unless a proxy in front changes the Host
+    // header (then the two differ). From a person's point of view every button then "does nothing", so say what is wrong and how to fix it.
     if (res.status === 403 && data?.error === 'Origin not allowed') {
-      throw new ApiError(403, `The server does not accept requests from this address (${window.location.origin}). Open the dashboard at the address set as WEB_ORIGIN, or add this one to WEB_ORIGIN in infrastructure/.env and restart the API.`, data)
+      throw new ApiError(403, `The server does not accept requests from this address (${window.location.origin}). This usually means a proxy in front of Shipdok changes the Host header: make it pass the Host header on unchanged, or add this address to WEB_ORIGIN in infrastructure/.env and restart the API.`, data)
     }
     throw new ApiError(res.status, data?.error ?? `The request failed (${res.status})`, data)
   }

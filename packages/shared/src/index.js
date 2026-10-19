@@ -6,6 +6,7 @@ export { parseEnvText } from './envfile.js';
 export {
   githubFieldContext, GithubStoreError, saveGithubApp, githubAppSummary, loadGithubApp, deleteGithubApp, createGithubProvider, oldGithubEnvNotice,
 } from './githubapp.js';
+export { SECRET_FILES, loadSecretFiles, ensureSecrets, applyPlatformDefaults } from './secretfiles.js';
 export { passwordProblem, PASSWORD_MIN, PASSWORD_MAX } from './password.js';
 export {
   GithubError, parsePrivateKeyPem, signAppJwt, createGithubClient, exchangeManifestCode, gitAuthEnv,

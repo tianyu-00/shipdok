@@ -5,7 +5,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join, dirname } from "node:path";
 import pg from "pg";
-import { pgConfig } from "./pool.js";
+import { pgConfig } from "./pool.js"; // (pool.js loads secret files first)
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "migrations");
 const LOCK_ID = 727274; // arbitrary constant: stops two runners applying migrations at once

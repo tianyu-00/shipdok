@@ -1,3 +1,4 @@
+import "./loadsecrets.js";
 // API-side producer for the deploy queue. The queue name comes from @shipdok/shared so it
 // can never drift from the worker's. Job options must match apps/worker/src/queue.js.
 import { Queue } from "bullmq";

@@ -1,3 +1,4 @@
+import "./loadsecrets.js";
 // Shared queue settings for the worker and for whatever enqueues jobs.
 // The queue name comes from @shipdok/shared so it can never drift from the API's.
 import IORedis from "ioredis";

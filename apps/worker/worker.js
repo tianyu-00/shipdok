@@ -1,3 +1,4 @@
+import './src/loadsecrets.js'; // first: later imports read the secrets from the environment
 // Worker entry point: pulls deploy jobs off the queue and runs them via processDeployJob().
 // One job at a time (concurrency 1) for the Pi.
 //

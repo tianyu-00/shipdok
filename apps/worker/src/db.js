@@ -1,3 +1,4 @@
+import './loadsecrets.js';
 // The worker's view of the deployments table. Every update is guarded by "still active"
 // so a late or duplicate update can never overwrite a final status.
 import pg from 'pg';

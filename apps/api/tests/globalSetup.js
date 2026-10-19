@@ -1,8 +1,10 @@
 // Runs once before all tests: create the *_test database if missing, then migrate it.
 import pg from "pg";
+import { applyPlatformDefaults } from "@shipdok/shared";
 import { runMigrations } from "../src/db/migrate.js";
 
 export default async function globalSetup() {
+  applyPlatformDefaults(); // a trimmed .env has no POSTGRES_USER / POSTGRES_DB
   const baseDb = process.env.POSTGRES_DB;
   if (!baseDb) throw new Error("POSTGRES_DB is not set. Run tests with: npm test");
   const testDb = baseDb.endsWith("_test") ? baseDb : `${baseDb}_test`;

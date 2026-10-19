@@ -35,7 +35,8 @@ export function authRouter(db) {
   r.get("/status", async (req, res, next) => {
     try {
       const { rows } = await db.query("SELECT EXISTS (SELECT 1 FROM users) AS has_admin");
-      res.json({ needsSetup: !rows[0].has_admin, authenticated: Boolean(req.session?.userId) });
+      // setupTokenRequired lets the setup screen ask for the token (the token itself is never sent).
+      res.json({ needsSetup: !rows[0].has_admin, authenticated: Boolean(req.session?.userId), setupTokenRequired: !rows[0].has_admin && Boolean(config.setupToken) });
     } catch (err) {
       next(err);
     }

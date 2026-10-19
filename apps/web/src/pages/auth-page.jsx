@@ -36,6 +36,7 @@ export default function AuthPage({ status }) {
     e.preventDefault()
     setLocalError(null)
     if (setup && password !== confirm) return setLocalError('The two passwords are not the same')
+    if (setup && status.setupTokenRequired && !token.trim()) return setLocalError('Enter the setup token (it is in the API log)')
     submit.mutate()
   }
   const error = localError ?? submit.error?.message
@@ -69,10 +70,13 @@ export default function AuthPage({ status }) {
                   <Label htmlFor="confirm">Repeat the password</Label>
                   <Input id="confirm" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="token">Setup token (only if your server asks for one)</Label>
-                  <Input id="token" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" />
-                </div>
+                {status.setupTokenRequired && (
+                  <div className="space-y-2">
+                    <Label htmlFor="token">Setup token</Label>
+                    <Input id="token" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" spellCheck={false} placeholder="XXXXX-XXXXX-XXXXX-XXXXX" />
+                    <p className="text-xs text-muted-foreground">Printed in the API log when Shipdok started. Find it with <code className="rounded bg-muted px-1 py-0.5">docker compose logs api</code>.</p>
+                  </div>
+                )}
               </>
             )}
             {error && <p role="alert" className="text-sm text-destructive">{error}</p>}

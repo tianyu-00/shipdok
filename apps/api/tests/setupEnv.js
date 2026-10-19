@@ -1,5 +1,7 @@
 // Runs before each test file. Points the app at a separate *_test database so tests
 // can wipe tables freely, and sets deterministic app settings.
+import { applyPlatformDefaults } from "@shipdok/shared";
+applyPlatformDefaults(); // a trimmed .env has no POSTGRES_USER / POSTGRES_DB: the defaults are the same as Docker Compose's
 const base = process.env.POSTGRES_DB;
 if (!base) throw new Error("POSTGRES_DB is not set. Run tests with: npm test");
 if (!base.endsWith("_test")) process.env.POSTGRES_DB = `${base}_test`;

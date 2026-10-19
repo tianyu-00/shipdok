@@ -1,3 +1,4 @@
+import "../loadsecrets.js";
 // Shared Postgres pool. Settings come from the environment (see .env.example).
 import pg from "pg";
 

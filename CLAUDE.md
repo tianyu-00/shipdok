@@ -56,17 +56,23 @@ Or run the whole platform in Docker instead (do not mix with the npm commands ab
 Develop with npm: start only the data services with `... up -d postgres redis`. A bare `up -d` starts api, worker and web too.
 
 ```bash
-docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up -d --build
+docker compose -f infrastructure/compose.yaml up -d --build          # no .env needed (see "First-run secrets" below)
+docker compose -f infrastructure/compose.yaml logs api               # the first-run setup token is printed here
 ```
 
-Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
-socket's group), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked), `STATS_INTERVAL_MS` (default 15000: how often CPU and memory are measured), `WEB_HOST_PORT` (default 8080) and `WEB_BIND` (default 127.0.0.1) for the dashboard container; `PORT_RANGE` (default `20000-20999`, in compose passed to the API) is where a new app's host port comes from when none is given; `WEB_ORIGIN` must be the exact address you open it at (several allowed, comma separated; default `http://localhost:<WEB_HOST_PORT>` in compose, `http://localhost:5173` for `npm run dev`).
+Optional compose settings (all have defaults; put them in `infrastructure/.env` and pass `--env-file infrastructure/.env`, or export them; NOTE
+compose reads a `.env` that sits next to the compose file even without `--env-file`, use `--env-file /dev/null` to ignore it, as the isolated
+test projects do): `POSTGRES_USER`/`POSTGRES_DB` (default `shipdok`), `API_HOST_PORT` (default 4000, loopback), `WEB_HOST_PORT` (default 8080) and
+`WEB_BIND` (default 127.0.0.1; `0.0.0.0` or this machine's address to reach the dashboard from other devices), `PORT_RANGE` (default
+`20000-20999`), `SHIPDOK_PUBLIC`, `PUBLIC_URL`, `COOKIE_SECURE` (default `auto`), `WEB_ORIGIN` (optional extra origins; the dashboard accepts
+requests from whatever address it is opened at), `MONITOR_INTERVAL_MS`, `STATS_INTERVAL_MS`, and the four secrets below (your value wins).
+`LOG_DIR` is set by compose to the `shipdok_logs` volume (outside Docker it defaults to `~/.shipdok/logs`). **`DOCKER_GID` is gone.**
 
-Tests: API 847, worker 504, shared 206, web 517. Worker tests reuse the `_test` database the API tests create and
+Tests: API 886, worker 515, shared 232, web 520. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
-`infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
-stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, optional
-`SETUP_TOKEN`, `COOKIE_SECURE`, `SHIPDOK_PUBLIC`, `PUBLIC_URL`. **The GitHub App is NOT configured here any more** (dashboard, GitHub page; see "Connect GitHub").
+`infrastructure/.env` is now needed only for development with npm (`POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY`: 64 hex, losing
+it makes stored secrets unrecoverable) and for the optional settings above. **The GitHub App is NOT configured here any more** (dashboard,
+GitHub page; see "Connect GitHub").
 
 ## Built and verified
 
@@ -208,6 +214,43 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, optional
   address when no public address is set; if it does not, the fix is to require a public address before Connect GitHub. Known limits: the app is
   only ever one (no multiple apps); a manifest app created while another is connected is refused at start; replacing an app requires Disconnect
   first for the button flow (the by-hand form replaces directly); the page cannot delete the app on github.com.
+- **First-run secrets, setup token, same-origin check, no DOCKER_GID (Milestone 6 step 5; verified with the real compose stack from nothing and
+  with the secrets given in the environment, and in a real browser):** **Administrator's decisions: the first admin is created on the dashboard's
+  setup screen (no `SHIPDOK_USERNAME`/`SHIPDOK_PASSWORD`); the setup token is generated and printed in the API log, never set in `.env`;
+  `WEB_ORIGIN` is not needed (same-origin check); database user and name are optional (default `shipdok`); the Docker group is read from the
+  socket.** `docker compose up -d --build` works with NO env file. A one-shot `secrets` service (the API image, run as root only to write into a
+  fresh volume; `apps/api/scripts/init-secrets.js`, `packages/shared/src/secretfiles.js`) writes, into the `shipdok_secrets` volume, every secret
+  that is not given in the environment and not already there: `app_secrets_key` and `session_secret` (64 hex), `postgres_password` and
+  `redis_password` (48 hex), `setup_token` (`XXXXX-XXXXX-XXXXX-XXXXX`, no look-alike characters since it is typed from a log). Files are mode 0444,
+  written atomically (temp file + rename), never overwritten, a blank leftover is replaced; it prints names only (Generated / Kept / Taken from
+  the environment). Services mount the volume read-only (not web) and every process loads `<NAME>_FILE` into `<NAME>` at start
+  (`loadSecretFiles`, imported FIRST via `loadsecrets.js` in api config/pool/queue and worker db/queue/worker.js); **an environment value always wins
+  and its file is not even read**; a missing, empty, relative-path or over-4-KB file stops the process with a message naming the setting and path,
+  never a value. Postgres and Redis use `entrypoint` wrappers (the password you set, else the file); their healthchecks read the same. Checked for
+  real from nothing: all five secrets generated, volume files 0444, api/worker/postgres/redis healthy, a restart (volumes kept) regenerates
+  nothing (file checksums unchanged) and the same password still logs in; with all four secrets (and a custom `POSTGRES_USER`/`POSTGRES_DB`)
+  given in the environment only the setup token is generated and Postgres really uses the custom user and database. **Setup token:** the API
+  prints it in its log at start while no administrator exists (`setupnotice.js`; "Find it again with: docker compose logs api"), `GET
+  /api/auth/status` carries `setupTokenRequired` (never the token), the setup screen shows the token field only then (with that hint) and checks
+  it is filled in; after setup it is never asked for or printed again. **Same-origin check** (`origin.js`): a state-changing request is accepted
+  when its Origin is exactly scheme://host[:port] of the request itself (Express's `protocol`/`host`, which honour X-Forwarded-Proto/-Host only from
+  a trusted proxy), or in the optional `WEB_ORIGIN` list, or the public address; the dashboard's nginx now sends `Host $http_host` (with the port).
+  Also used by Connect GitHub. Safe because a page on another site always has a different Origin than the Host it talks to; a DNS-rebinding page
+  would have the same Origin and Host but no session cookie (cookies are per host) and the setup screen needs the token. **Worker without
+  `DOCKER_GID`:** `apps/worker/docker-entrypoint.sh` starts as root only to read the group of the Docker socket, then `setpriv` drops to `node`
+  with exactly that group (checked for real: the `node worker.js` process runs as uid 1000, gid 1000, groups 1001 = the socket's group on this
+  machine, no capabilities, and can run `docker ps`; the init process (tini) stays root, and `docker compose exec worker` opens a root shell
+  because the image no longer has `USER node`). **Bug found on the administrator's real setup right after
+  rebuilding: every deployment failed with `unknown flag: --progress`, `open /root/.docker/config.json: permission denied` and git warnings about
+  `/root/.config/git`.** The entry script dropped to `node` but left `HOME=/root`, which node cannot read, so the Docker CLI could not load its
+  config and buildx plugin and git could not read its config. Fixed: the script now exports `HOME=/home/node USER=node LOGNAME=node` before dropping
+  (tests with a fake `setpriv` check the environment the command sees; mutation-proofed). Checked for real through the entry script in an isolated
+  worker: user node, groups 1000 and 1001, HOME `/home/node`, a `git clone` with no warnings and a `docker build --progress=plain` that builds.
+  Lesson: an earlier check only ran `docker ps` as the worker; check a real build and clone after changing how the worker starts. Not tested: ARM64, a socket owned by root (gid 0: the node user then joins group 0), the
+  old `shipdok_*` volumes of an existing install with an `.env` after pulling this (the four secrets in your `.env` are used, so nothing changes;
+  the new `shipdok_secrets` volume will hold only a setup token). Known limits: if an install's database was created with a password and the
+  password is later removed from `.env`, a new random one will not match the database (keep it in `.env`, or keep the volume); deleting only the
+  `shipdok_secrets` volume while keeping the database makes stored secrets unreadable (back both up together).
 - **Apps/deployments API:** create/list/get apps, request deployment (row first, then queued), history, cancel. Settings
   snapshotted per deployment. `repo` is `owner/repo`; clone URL built server-side. `host_port` required for now.
 - **Deploy engine:** clone -> build -> candidate on temp port -> health check -> swap -> retire. Failures leave the running
@@ -471,13 +514,13 @@ administrator provides a public address (own IP, or Nginx / Nginx Proxy Manager 
 the mode (`local` / `webhook` / `full`) and the public address in the DASHBOARD (Settings, Public access; stored in the DB, `SHIPDOK_PUBLIC` / `PUBLIC_URL` in `.env` override and show as locked). Goal: `docker compose up`, log in, press "Connect GitHub", install the app, deploy
 private repos. No periodic polling. Caddy is an optional, low-priority profile only.
 
-Build order (SPEC.md Milestone 6); steps 1 (password policy, lockout, recent logins, sign out everywhere), 2 (recovery codes, host reset), 3 (public access) and 4 (Connect GitHub) are built, see above:
+Build order (SPEC.md Milestone 6); steps 1 to 5 (password policy and lockout, recovery codes, public access, Connect GitHub, first-run secrets) are built, see above:
 3. Public access is BUILT (see "Public access" under Built and verified); what remains of it is the docs with Nginx / Nginx Proxy Manager / Caddy
    examples, which go with step 7.
 4. Connect GitHub is BUILT (see "Connect GitHub" under Built and verified); the administrator still has to try the real button once.
-5. First-run secrets generated into a protected volume (`.env` still overrides).
+5. First-run secrets is BUILT (see above).
 6. Ready-made multi-arch images (amd64 + ARM64) on GitHub's container registry via GitHub Actions; compose pulls instead of builds.
-7. Pi: full-stack run on the published images (ARM64, firewall vs the health-check path, `DOCKER_GID`), hardening, docs (public
+7. Pi: full-stack run on the published images (ARM64, firewall vs the health-check path), hardening, docs (public
    address options, upgrade, backup), API docs (Scalar).
 8. Optional: Caddy compose profile for people without a proxy.
 

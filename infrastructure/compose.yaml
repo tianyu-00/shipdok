@@ -1,31 +1,62 @@
 # Platform services only. User apps are created dynamically by the worker, not declared here.
-# Dev: ports are bound to 127.0.0.1 so nothing is reachable from the LAN.
 #
-# Run everything:  docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up -d --build
-# Develop with npm run dev / npm start instead:  ... up -d postgres redis   (NOT a bare `up -d`: that also starts
-# api and worker, which would compete with the npm ones for port 4000 and for the same queue).
-# Extra settings for the containers in infrastructure/.env: DOCKER_GID (worker; see its comment, defaults to 999),
-# API_HOST_PORT (default 4000). The GitHub App is connected in the dashboard (GitHub page), not here.
-# The dashboard (`web`): http://localhost:8080 by default (WEB_HOST_PORT, WEB_BIND). Set WEB_ORIGIN to the exact address you open.
+# Run everything:  docker compose -f infrastructure/compose.yaml up -d --build      (no .env needed)
+# On the first run a one-shot service (`secrets`) generates the platform secrets into the `shipdok_secrets` volume: the database and Redis
+# passwords, the session secret, the encryption key and the setup token. A value you put in infrastructure/.env (and pass with --env-file)
+# is used instead of a generated one. The setup token is printed in the API log: docker compose logs api
+# Develop with npm run dev / npm start instead:  ... --env-file infrastructure/.env up -d postgres redis   (NOT a bare `up -d`: that also
+# starts api and worker, which would compete with the npm ones for port 4000 and for the same queue).
+# Optional settings (all have defaults): POSTGRES_USER, POSTGRES_DB, API_HOST_PORT (4000), WEB_HOST_PORT (8080), WEB_BIND (127.0.0.1: set it to
+# this machine's address or 0.0.0.0 to reach the dashboard from other devices), PORT_RANGE, SHIPDOK_PUBLIC, PUBLIC_URL, WEB_ORIGIN.
+# The GitHub App is connected in the dashboard (GitHub page), not here.
 
 x-api-build: &api-build
   context: ..
   dockerfile: apps/api/Dockerfile
 
+# Where the platform secrets are read from, inside the containers: a volume that the `secrets` service fills on the first run.
+x-after-secrets: &after-secrets
+  secrets: { condition: service_completed_successfully }
+
 services:
+  # First-run step: writes every platform secret that you did not give in the environment into the volume, keeps what is already there,
+  # and exits. It runs as root only to write into a fresh volume; it prints names, never values.
+  secrets:
+    build: *api-build
+    image: shipdok-api
+    user: "0:0"
+    command: ["node", "scripts/init-secrets.js"]
+    restart: "no"
+    environment:
+      SECRETS_DIR: /run/shipdok-secrets
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      APP_SECRETS_KEY: ${APP_SECRETS_KEY:-}
+    volumes:
+      - shipdok_secrets:/run/shipdok-secrets
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    depends_on:
+      <<: *after-secrets
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:-shipdok}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DB: ${POSTGRES_DB:-shipdok}
+    # The password you set wins; otherwise the generated one is read from the volume (Postgres starts only once it has a password).
+    entrypoint:
+      - sh
+      - -c
+      - '[ -n "$$POSTGRES_PASSWORD" ] || export POSTGRES_PASSWORD="$$(cat /run/shipdok-secrets/postgres_password)"; exec docker-entrypoint.sh postgres'
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
       - shipdok_pgdata:/var/lib/postgresql/data
+      - shipdok_secrets:/run/shipdok-secrets:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-shipdok} -d ${POSTGRES_DB:-shipdok}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -33,18 +64,24 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    depends_on:
+      <<: *after-secrets
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    entrypoint:
+      - sh
+      - -c
+      - 'P="$${REDIS_PASSWORD:-$$(cat /run/shipdok-secrets/redis_password)}"; exec docker-entrypoint.sh redis-server --requirepass "$$P" --appendonly yes'
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - shipdok_redisdata:/data
+      - shipdok_secrets:/run/shipdok-secrets:ro
     healthcheck:
-      test: ["CMD-SHELL", 'redis-cli -a "$$REDIS_PASSWORD" ping | grep PONG']
+      test: ["CMD-SHELL", 'P="$${REDIS_PASSWORD:-$$(cat /run/shipdok-secrets/redis_password)}"; redis-cli -a "$$P" ping 2>/dev/null | grep PONG']
       interval: 5s
       timeout: 3s
       retries: 10
-    environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
 
   # Applies database migrations, then exits. api and worker wait for it.
   migrate:
@@ -53,12 +90,16 @@ services:
     command: ["node", "src/db/migrate.js"]
     restart: "no"
     depends_on:
+      <<: *after-secrets
       postgres: { condition: service_healthy }
     environment:
       POSTGRES_HOST: postgres
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:-shipdok}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_PASSWORD_FILE: /run/shipdok-secrets/postgres_password # used when you did not set the password yourself
+      POSTGRES_DB: ${POSTGRES_DB:-shipdok}
+    volumes:
+      - shipdok_secrets:/run/shipdok-secrets:ro
 
   api:
     build: *api-build
@@ -66,32 +107,38 @@ services:
     restart: unless-stopped
     init: true
     depends_on:
+      <<: *after-secrets
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
     environment:
       API_HOST: 0.0.0.0 # inside the container; the published port below is what stays on loopback
       API_PORT: 4000
       POSTGRES_HOST: postgres
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:-shipdok}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_PASSWORD_FILE: /run/shipdok-secrets/postgres_password # each secret: your value if you set one, else the generated file
+      POSTGRES_DB: ${POSTGRES_DB:-shipdok}
       REDIS_HOST: redis
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      SESSION_SECRET: ${SESSION_SECRET}
-      APP_SECRETS_KEY: ${APP_SECRETS_KEY}
-      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:${WEB_HOST_PORT:-8080}}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_PASSWORD_FILE: /run/shipdok-secrets/redis_password
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      SESSION_SECRET_FILE: /run/shipdok-secrets/session_secret
+      APP_SECRETS_KEY: ${APP_SECRETS_KEY:-}
+      APP_SECRETS_KEY_FILE: /run/shipdok-secrets/app_secrets_key
+      SETUP_TOKEN_FILE: /run/shipdok-secrets/setup_token # asked for on the first-run screen; printed in this service's log
+      WEB_ORIGIN: ${WEB_ORIGIN:-} # optional: the dashboard accepts requests from the address it is opened at without this
       TRUST_PROXY: loopback,uniquelocal # the dashboard's nginx (a private address) passes on the real client address
       SHIPDOK_PUBLIC: ${SHIPDOK_PUBLIC:-} # optional: local | webhook | full. Normally set in the dashboard (Security > Public access); a value here overrides it
       PUBLIC_URL: ${PUBLIC_URL:-} # optional: the public address, e.g. https://shipdok.example.com. Same: the dashboard sets it, this overrides
       GITHUB_APP_ID: ${GITHUB_APP_ID:-} # no longer read: passed only so Shipdok can tell you that an old setting is being ignored
       PORT_RANGE: ${PORT_RANGE:-} # host ports chosen automatically for new apps (default 20000-20999)
-      SETUP_TOKEN: ${SETUP_TOKEN:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-auto} # auto: Secure only for requests that came in over https (through your proxy)
       LOG_DIR: /var/lib/shipdok/logs
     ports:
       - "127.0.0.1:${API_HOST_PORT:-4000}:4000" # loopback only; the Cloudflare tunnel (cloudflared) is what reaches the webhook
     volumes:
       - shipdok_logs:/var/lib/shipdok/logs # the worker writes logs; the API reads them and deletes a finished deployment's on request
+      - shipdok_secrets:/run/shipdok-secrets:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
@@ -109,12 +156,11 @@ services:
     restart: unless-stopped
     init: true # reaps the git/docker child processes
     depends_on:
+      <<: *after-secrets
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
-    # The container user is not root, so it needs the group that owns the socket. The number differs per machine:
-    #   stat -c %g /var/run/docker.sock       (put the result in infrastructure/.env as DOCKER_GID)
-    group_add:
-      - ${DOCKER_GID:-999}
+    # No group to configure: the container's entry script reads the group that owns the Docker socket (it differs per machine), drops to
+    # the unprivileged `node` user and gives it that one group. See apps/worker/docker-entrypoint.sh.
     # Health checks reach a new container through its published host port. Inside this container 127.0.0.1 is
     # the worker itself, so go through the host instead.
     extra_hosts:
@@ -126,19 +172,23 @@ services:
       STATS_INTERVAL_MS: ${STATS_INTERVAL_MS:-15000} # how often CPU and memory of running apps are measured
       LOG_DIR: /var/lib/shipdok/logs
       POSTGRES_HOST: postgres
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:-shipdok}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_PASSWORD_FILE: /run/shipdok-secrets/postgres_password
+      POSTGRES_DB: ${POSTGRES_DB:-shipdok}
       REDIS_HOST: redis
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      APP_SECRETS_KEY: ${APP_SECRETS_KEY}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_PASSWORD_FILE: /run/shipdok-secrets/redis_password
+      APP_SECRETS_KEY: ${APP_SECRETS_KEY:-}
+      APP_SECRETS_KEY_FILE: /run/shipdok-secrets/app_secrets_key
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - shipdok_logs:/var/lib/shipdok/logs
+      - shipdok_secrets:/run/shipdok-secrets:ro
 
   # The dashboard. nginx serves the built files and forwards /api to the API, so the browser sees one origin (cookies just
   # work, no CORS). By default it listens on this machine only; to reach it from other devices on your LAN or VPN set
-  # WEB_BIND to this machine's address (or 0.0.0.0) AND WEB_ORIGIN to the address you will open in the browser.
+  # WEB_BIND to this machine's address (or 0.0.0.0). No other setting is needed: it works at whatever address you open it at.
   web:
     build:
       context: ..
@@ -151,6 +201,7 @@ services:
       - "${WEB_BIND:-127.0.0.1}:${WEB_HOST_PORT:-8080}:80"
 
 volumes:
+  shipdok_secrets: # the generated platform secrets (see the `secrets` service). Back this up together with shipdok_pgdata: losing the encryption key makes stored secrets unreadable
   shipdok_pgdata:
   shipdok_redisdata:
   shipdok_logs: # deployment logs: kept until the deployment is deleted. Back this up like the database if you care about them

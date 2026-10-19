@@ -77,7 +77,7 @@ describe('first-run setup', () => {
     expect(api.calls).toHaveLength(0)
   })
 
-  test('creates the account; the setup token is sent only when filled in', async () => {
+  test('creates the account; no setup token is sent when none is asked for', async () => {
     const api = mockApi({ 'POST /api/auth/setup': answer(201, { username: 'admin' }), 'GET /api/auth/status': { needsSetup: false, authenticated: true }, 'GET /api/auth/me': { username: 'admin' } })
     renderWithProviders(<AuthPage status={{ needsSetup: true, authenticated: false }} />)
     await fill('a-long-test-password', 'a-long-test-password')
@@ -85,12 +85,33 @@ describe('first-run setup', () => {
     expect(api.called('POST', '/api/auth/setup')[0].body).toEqual({ username: 'admin', password: 'a-long-test-password' })
   })
 
-  test('with a setup token it is included', async () => {
+  test('when the server asks for a setup token the field is there, says where to find it, and the token is sent', async () => {
     const api = mockApi({ 'POST /api/auth/setup': answer(201, {}), 'GET /api/auth/status': { needsSetup: false, authenticated: true }, 'GET /api/auth/me': { username: 'admin' } })
-    renderWithProviders(<AuthPage status={{ needsSetup: true, authenticated: false }} />)
+    renderWithProviders(<AuthPage status={{ needsSetup: true, authenticated: false, setupTokenRequired: true }} />)
+    expect(screen.getByText(/docker compose logs api/i)).toBeInTheDocument()
     await fill('a-long-test-password', 'a-long-test-password', 'tok-123')
     await waitFor(() => expect(api.called('POST', '/api/auth/setup')).toHaveLength(1))
     expect(api.called('POST', '/api/auth/setup')[0].body.setupToken).toBe('tok-123')
+  })
+
+  test('a required setup token that is left empty is caught before anything is sent', async () => {
+    const api = mockApi({})
+    renderWithProviders(<AuthPage status={{ needsSetup: true, authenticated: false, setupTokenRequired: true }} />)
+    await fill('a-long-test-password', 'a-long-test-password')
+    expect(await screen.findByRole('alert')).toHaveTextContent(/setup token/i)
+    expect(api.calls).toHaveLength(0)
+  })
+
+  test('the server refusing the token is explained', async () => {
+    mockApi({ 'POST /api/auth/setup': answer(403, { error: 'Invalid setup token' }) })
+    renderWithProviders(<AuthPage status={{ needsSetup: true, authenticated: false, setupTokenRequired: true }} />)
+    await fill('a-long-test-password', 'a-long-test-password', 'wrong')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Invalid setup token')
+  })
+
+  test('when no token is asked for there is no field at all', () => {
+    renderWithProviders(<AuthPage status={{ needsSetup: true, authenticated: false, setupTokenRequired: false }} />)
+    expect(screen.queryByLabelText(/setup token/i)).toBeNull()
   })
 
   test('the server\'s complaint (a short password) is shown', async () => {

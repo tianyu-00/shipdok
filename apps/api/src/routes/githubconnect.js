@@ -13,6 +13,7 @@ import { config } from '../config.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { limiter } from '../authutil.js';
 import { forgetInstallations } from './github.js';
+import { sameOrigin } from '../origin.js';
 import { addressOf, recordAttempt } from '../lockout.js';
 
 const STATE_TTL_MS = 10 * 60 * 1000;
@@ -46,8 +47,8 @@ export function githubConnectRouter({ db, provider, secretsKey, settings, fetch 
       // GitHub sends the browser back to the address the dashboard is open at, so take it from the request, and only if it is one we accept.
       const origin = req.get('origin');
       const { publicUrl } = await settings.public();
-      if (!origin || !(config.webOrigins.includes(origin) || origin === publicUrl)) {
-        return res.status(400).json({ error: 'Open the dashboard at one of its configured addresses (WEB_ORIGIN) to connect GitHub' });
+      if (!origin || !(sameOrigin(req, origin) || config.webOrigins.includes(origin) || origin === publicUrl)) {
+        return res.status(400).json({ error: 'Open the dashboard in a browser at its own address to connect GitHub' });
       }
 
       const state = randomBytes(32).toString('base64url');
