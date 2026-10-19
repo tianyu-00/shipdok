@@ -7,6 +7,6 @@ export {
   GithubError, loadGithubAppConfig, signAppJwt, createGithubClient, gitAuthEnv,
 } from './github.js';
 export {
-  MAX_LINE_BYTES, logRoot, logDirFor, logFilePath, formatLine, createRedactor, secretsFromGitEnv,
+  MAX_LINE_BYTES, LOG_FILE_NAMES, logRoot, logDirFor, logFilePath, formatLine, createRedactor, secretsFromGitEnv,
   readChunk, readTail, removeDeploymentLogs,
 } from './logstore.js';

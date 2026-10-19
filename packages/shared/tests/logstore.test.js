@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   MAX_LINE_BYTES, logRoot, logFilePath, formatLine, createRedactor, secretsFromGitEnv,
-  readChunk, readTail, removeDeploymentLogs, gitAuthEnv,
+  readChunk, readTail, removeDeploymentLogs, gitAuthEnv, LOG_FILE_NAMES,
 } from '../src/index.js';
 
 const APP = '11111111-1111-4111-8111-111111111111';
@@ -28,6 +28,11 @@ describe('where logs live', () => {
   test('the path is built only from the two ids and the kind', () => {
     assert.equal(logFilePath('/r', APP, DEP, 'build'), `/r/${APP}/${DEP}/build.log`);
     assert.equal(logFilePath('/r', APP, DEP, 'runtime'), `/r/${APP}/${DEP}/runtime.log`);
+    assert.equal(logFilePath('/r', APP, DEP, 'runtime_previous'), `/r/${APP}/${DEP}/runtime.previous.log`);
+  });
+
+  test('every kind has its own file name, and LOG_FILE_NAMES lists exactly those files', () => {
+    assert.deepEqual([...LOG_FILE_NAMES].sort(), ['build.log', 'runtime.log', 'runtime.previous.log']);
   });
 
   for (const [label, app, dep, kind] of [
@@ -37,6 +42,7 @@ describe('where logs live', () => {
     ['an empty id', '', DEP, 'build'],
     ['an id that is not a UUID', 'my-app', DEP, 'build'],
     ['an unknown kind', APP, DEP, '../passwd'],
+    ['a kind that is a file name', APP, DEP, 'runtime.previous'],
     ['a non-string id', null, DEP, 'build'],
   ]) {
     test(`refuses ${label}`, () => assert.throws(() => logFilePath('/r', app, dep, kind), /invalid/i));

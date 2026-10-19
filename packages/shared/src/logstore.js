@@ -2,7 +2,9 @@
 // The worker writes these files and the API reads them, so the rules live here, once.
 //
 //   <LOG_DIR>/<app-id>/<deployment-id>/build.log      clone + docker build + deployment progress (kept until the deployment is deleted)
-//   <LOG_DIR>/<app-id>/<deployment-id>/runtime.log    the app's own output
+//   <LOG_DIR>/<app-id>/<deployment-id>/runtime.log    the app's own output, for the CURRENT run of its container
+//   <LOG_DIR>/<app-id>/<deployment-id>/runtime.previous.log   the run before that (one generation), so the output of the
+//                                                             run that crashed is still readable after it is restarted
 //
 // Paths are built only from validated UUIDs and a fixed list of kinds, never from anything a client sends.
 import { open, readdir, rm, rmdir, stat } from 'node:fs/promises';
@@ -11,7 +13,9 @@ import { join, resolve, sep } from 'node:path';
 
 export const MAX_LINE_BYTES = 16 * 1024;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const KINDS = ['build', 'runtime'];
+const KIND_FILES = { build: 'build.log', runtime: 'runtime.log', runtime_previous: 'runtime.previous.log' };
+/** Every file name a deployment's log directory may hold. Anything else in there is not ours. */
+export const LOG_FILE_NAMES = Object.values(KIND_FILES);
 const STREAMS = ['stdout', 'stderr', 'shipdok'];
 
 export const logRoot = (env = process.env) => (env.LOG_DIR ? env.LOG_DIR : join(homedir(), '.shipdok', 'logs'));
@@ -26,8 +30,8 @@ export function logDirFor(root, appId, deploymentId) {
 }
 
 export function logFilePath(root, appId, deploymentId, kind) {
-  if (!KINDS.includes(kind)) throw new Error('Invalid log kind');
-  return join(logDirFor(root, appId, deploymentId), `${kind}.log`);
+  if (!Object.hasOwn(KIND_FILES, kind)) throw new Error('Invalid log kind');
+  return join(logDirFor(root, appId, deploymentId), KIND_FILES[kind]);
 }
 
 // ---- Writing: one line per message ----
