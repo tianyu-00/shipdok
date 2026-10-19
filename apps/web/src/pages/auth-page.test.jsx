@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'vitest'
+import { describe, test, expect, vi } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import AuthPage from './auth-page'
@@ -98,5 +98,96 @@ describe('first-run setup', () => {
     renderWithProviders(<AuthPage status={{ needsSetup: true, authenticated: false }} />)
     await fill('abababababababab', 'abababababababab')
     expect(await screen.findByRole('alert')).toHaveTextContent('short pattern')
+  })
+})
+
+describe('setup hands out the recovery codes', () => {
+  const CODES = Array.from({ length: 10 }, (_, i) => `AAAA-BBBB-CCCC-DDD${i}`)
+  const routes = () => ({
+    'POST /api/auth/setup': answer(201, { username: 'admin', recoveryCodes: CODES }),
+    'GET /api/auth/status': { needsSetup: false, authenticated: true },
+    'GET /api/auth/me': { username: 'admin' },
+  })
+  const create = async () => {
+    await userEvent.type(screen.getByLabelText('Username'), 'admin')
+    await userEvent.type(screen.getByLabelText('Password'), 'a-long-test-password')
+    await userEvent.type(screen.getByLabelText(/repeat the password/i), 'a-long-test-password')
+    await userEvent.click(screen.getByRole('button', { name: 'Create account' }))
+  }
+
+  test('the codes are shown before the dashboard, and the dashboard waits for "I have saved these"', async () => {
+    const api = mockApi(routes())
+    const { client } = renderWithProviders(<AuthPage status={{ needsSetup: true, authenticated: false }} />)
+    const recheck = vi.spyOn(client, 'invalidateQueries')
+    await create()
+    for (const c of CODES) expect(await screen.findByText(c)).toBeInTheDocument()
+    expect(screen.queryByLabelText('Username')).toBeNull()
+    expect(recheck).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByLabelText(/i have saved these/i))
+    await userEvent.click(screen.getByRole('button', { name: /done/i }))
+    expect(recheck).toHaveBeenCalledWith({ queryKey: ['auth'] })
+  })
+})
+
+describe('recovering with a code', () => {
+  const open = async () => {
+    renderWithProviders(<AuthPage status={{ needsSetup: false, authenticated: false }} />)
+    await userEvent.click(screen.getByRole('button', { name: /recovery code/i }))
+  }
+  const fill = async ({ code = 'abcd-efgh-jkmn-pqrs', next = 'a-brand-new-long-password', repeat = next } = {}) => {
+    await userEvent.type(screen.getByLabelText('Username'), 'admin')
+    await userEvent.type(screen.getByLabelText('Recovery code'), code)
+    await userEvent.type(screen.getByLabelText('New password'), next)
+    await userEvent.type(screen.getByLabelText('Repeat the new password'), repeat)
+    await userEvent.click(screen.getByRole('button', { name: 'Set new password and log in' }))
+  }
+
+  test('the login form offers it, and the way back', async () => {
+    await open()
+    expect(screen.getByLabelText('Recovery code')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Password')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: /back to log in/i }))
+    expect(screen.getByRole('button', { name: 'Log in' })).toBeInTheDocument()
+  })
+
+  test('sends the name, the code and the new password, then re-checks the session', async () => {
+    const api = mockApi({ 'POST /api/auth/recover': { username: 'admin' }, 'GET /api/auth/status': { needsSetup: false, authenticated: true }, 'GET /api/auth/me': { username: 'admin' } })
+    const { client } = renderWithProviders(<AuthPage status={{ needsSetup: false, authenticated: false }} />)
+    const recheck = vi.spyOn(client, 'invalidateQueries')
+    await userEvent.click(screen.getByRole('button', { name: /recovery code/i }))
+    await fill()
+    await waitFor(() => expect(api.called('POST', '/api/auth/recover')).toHaveLength(1))
+    expect(api.called('POST', '/api/auth/recover')[0].body).toEqual({ username: 'admin', code: 'abcd-efgh-jkmn-pqrs', newPassword: 'a-brand-new-long-password' })
+    await waitFor(() => expect(recheck).toHaveBeenCalledWith({ queryKey: ['auth'] }))
+  })
+
+  test('two different new passwords are caught before anything is sent', async () => {
+    const api = mockApi({})
+    await open()
+    await fill({ repeat: 'something-else-entirely' })
+    expect(await screen.findByRole('alert')).toHaveTextContent(/not the same/i)
+    expect(api.calls).toHaveLength(0)
+  })
+
+  test('a short new password is caught before anything is sent', async () => {
+    const api = mockApi({})
+    await open()
+    await fill({ next: 'short', repeat: 'short' })
+    expect(await screen.findByRole('alert')).toHaveTextContent(/at least 12/i)
+    expect(api.calls).toHaveLength(0)
+  })
+
+  test("the server's answer is shown: a wrong code, a wait, a weak password", async () => {
+    mockApi({ 'POST /api/auth/recover': () => { throw { status: 401, body: { error: 'Invalid username or recovery code' } } } })
+    await open()
+    await fill()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Invalid username or recovery code')
+  })
+
+  test('shows the strength of the new password', async () => {
+    mockApi({})
+    await open()
+    await userEvent.type(screen.getByLabelText('New password'), 'x'.repeat(30))
+    expect(screen.getByRole('img', { name: 'Strength: Strong' })).toBeInTheDocument()
   })
 })

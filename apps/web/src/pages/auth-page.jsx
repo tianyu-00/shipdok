@@ -9,6 +9,8 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { api } from '@/lib/api'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { PasswordHelp } from '@/components/password-help'
+import { RecoverForm } from '@/components/recover-form'
+import { RecoveryCodes } from '@/components/recovery-codes'
 
 // First run: create the one administrator. Afterwards: log in.
 export default function AuthPage({ status }) {
@@ -19,12 +21,15 @@ export default function AuthPage({ status }) {
   const [confirm, setConfirm] = useState('')
   const [token, setToken] = useState('')
   const [localError, setLocalError] = useState(null)
+  const [recovering, setRecovering] = useState(false)
+  const [codes, setCodes] = useState(null) // shown once after setup, before the dashboard
 
+  const finish = () => client.invalidateQueries({ queryKey: ['auth'] })
   const submit = useMutation({
     mutationFn: () => (setup
       ? api('/auth/setup', { method: 'POST', body: { username, password, ...(token ? { setupToken: token } : {}) } })
       : api('/auth/login', { method: 'POST', body: { username, password } })),
-    onSuccess: () => client.invalidateQueries({ queryKey: ['auth'] }),
+    onSuccess: (data) => (data?.recoveryCodes ? setCodes(data.recoveryCodes) : finish()),
   })
 
   const onSubmit = (e) => {
@@ -41,9 +46,10 @@ export default function AuthPage({ status }) {
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="flex items-center gap-2"><Ship className="size-5 text-primary" aria-hidden="true" />Shipdok</CardTitle>
-          <CardDescription>{setup ? 'Create the administrator account to get started.' : 'Log in to manage your apps.'}</CardDescription>
+          <CardDescription>{codes ? 'Save your recovery codes.' : recovering ? 'Recover your account.' : setup ? 'Create the administrator account to get started.' : 'Log in to manage your apps.'}</CardDescription>
         </CardHeader>
         <CardContent>
+          {codes ? <RecoveryCodes codes={codes} onDone={finish} /> : recovering ? <RecoverForm onBack={() => setRecovering(false)} /> : (
           <form onSubmit={onSubmit} className="space-y-4" noValidate>
             {status.expired && !setup && (
               <Alert><AlertDescription>Your session ended. Please log in again.</AlertDescription></Alert>
@@ -73,7 +79,9 @@ export default function AuthPage({ status }) {
             <Button type="submit" className="w-full" disabled={submit.isPending}>
               {submit.isPending ? 'Please wait…' : setup ? 'Create account' : 'Log in'}
             </Button>
+            {!setup && <Button type="button" variant="link" className="w-full" onClick={() => setRecovering(true)}>Lost your password? Use a recovery code</Button>}
           </form>
+          )}
         </CardContent>
       </Card>
     </div>

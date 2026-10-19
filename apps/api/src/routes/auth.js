@@ -1,9 +1,10 @@
 import { Router } from "express";
-import rateLimit from "express-rate-limit";
 import { hash, verify } from "@node-rs/argon2"; // argon2id by default; prebuilt binaries (no compiling on the Pi)
 import { timingSafeEqual } from "node:crypto";
 import { config } from "../config.js";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { limiter, startSession } from "../authutil.js";
+import { replaceCodes } from "../recovery.js";
 import { passwordProblem } from "@shipdok/shared";
 import { addressOf, cleanName, lockedFor, lockMessage, recordAttempt, withAttemptLock } from "../lockout.js";
 
@@ -12,26 +13,6 @@ const USERNAME_RE = /^[A-Za-z0-9_.-]{3,64}$/;
 // Verify against a dummy hash for unknown users so response time doesn't reveal who exists.
 let dummyHash;
 const getDummyHash = async () => (dummyHash ??= await hash("not-a-real-password"));
-
-const limiter = (max) =>
-  rateLimit({
-    windowMs: 15 * 60 * 1000,
-    limit: max,
-    standardHeaders: "draft-7",
-    legacyHeaders: false,
-    message: { error: "Too many attempts, try again later" },
-  });
-
-const regenerate = (req) =>
-  new Promise((resolve, reject) => req.session.regenerate((e) => (e ? reject(e) : resolve())));
-const save = (req) => new Promise((resolve, reject) => req.session.save((e) => (e ? reject(e) : resolve())));
-
-async function startSession(req, userId) {
-  await regenerate(req); // new session ID on privilege change (prevents fixation)
-  req.session.userId = userId;
-  req.session.createdAt = Date.now();
-  await save(req);
-}
 
 function validCredentials({ username, password }) {
   if (typeof username !== "string" || !USERNAME_RE.test(username)) {
@@ -71,19 +52,27 @@ export function authRouter(db) {
 
       const passwordHash = await hash(password);
       let userId;
+      let recoveryCodes;
+      const client = await db.connect();
       try {
-        const { rows } = await db.query("INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id", [
+        await client.query("BEGIN");
+        const { rows } = await client.query("INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id", [
           username,
           passwordHash,
         ]);
         userId = rows[0].id;
+        recoveryCodes = await replaceCodes(client, userId);
+        await client.query("COMMIT");
       } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
         if (err.code === "23505") return res.status(409).json({ error: "Setup has already been completed" });
         throw err;
+      } finally {
+        client.release();
       }
       await startSession(req, userId);
       await recordAttempt(db, { kind: "setup", username: cleanName(username), address: addressOf(req), success: true });
-      res.status(201).json({ username });
+      res.status(201).json({ username, recoveryCodes }); // the only time the codes are shown
     } catch (err) {
       next(err);
     }

@@ -22,7 +22,7 @@ export function waitSeconds(failures, cap) {
 const FAILURES = (column) => `
   SELECT count(*)::int AS failures, extract(epoch FROM now() - max(at))::float AS age
     FROM login_attempts
-   WHERE ${column} = $1 AND NOT success AND at > now() - interval '${WINDOW}'
+   WHERE ${column} = $1 AND NOT success AND NOT forgiven AND at > now() - interval '${WINDOW}'
      AND at > coalesce((SELECT max(at) FROM login_attempts WHERE ${column} = $1 AND success), '-infinity')`;
 
 async function remaining(client, column, value, cap) {

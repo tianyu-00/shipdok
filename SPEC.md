@@ -114,8 +114,8 @@ The exact monorepo tooling and package-manager choice can be decided during impl
 
 Because the dashboard may be exposed to the internet by the administrator's choice, the password is the main protection and is treated that way:
 
-- Enforce a minimum length of 12 characters, and reject the most common passwords using a bundled list (checked offline; nothing is sent to a third party).
-- Show a strength indicator and a plain message that a dashboard reachable from the internet needs a long, unique password. Offer a "generate a passphrase" action that produces a random multi-word passphrase.
+- Enforce a minimum length of 12 characters, and refuse passwords that are a short pattern repeated, a plain run of characters, or that contain the username. No word lists are bundled, so common passwords are not detected.
+- Show a length-based strength indicator and a plain message that a dashboard reachable from the internet needs a long, unique password, and that several random words beat clever symbols.
 - Rate-limit and slow down login attempts progressively, counted per account and per client address. Do not reveal whether a username exists, and keep response times uniform.
 - Show a list of recent logins (time, address, success or failure), including any use of a recovery code.
 - Two-factor authentication is not part of the MVP. The security documentation must say so honestly and explain that anyone who signs in can deploy and run arbitrary containers through the worker.
@@ -475,7 +475,7 @@ The MVP should not be considered ready until automated tests cover at least:
 
 - First-run administrator setup is atomic and cannot create multiple admins.
 - Authentication, session expiry, logout, rate limits, and CSRF-sensitive routes.
-- Password policy (minimum length, common-password rejection), progressive lockout per account and per address, and the recent-logins list.
+- Password policy (minimum length, repeated patterns, plain runs, username in password), progressive lockout per account and per address, and the recent-logins list.
 - Recovery codes: generated once, stored hashed, single use, invalidated by regeneration, rate-limited, and ending other sessions when used.
 - Public modes: `off` exposes nothing; `webhook` answers 404 for every path except the webhook; `full` applies the origin check, secure cookies, and the real client address behind a trusted proxy, and ignores forwarded headers from untrusted sources.
 - The GitHub App Manifest flow: `state` binding, one-time code use, encrypted storage of credentials, no private key in any response or log, and Disconnect.

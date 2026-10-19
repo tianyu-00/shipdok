@@ -27,9 +27,9 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 015_login_attempts
-  src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), routes/ (auth, apps, env, webhooks, github, logs)
-  scripts/       send-webhook.js (signed fake webhook; `npm run webhook`)
+  migrations/    001_init ... 016_recovery_codes
+  src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), recovery.js (recovery codes), resetpassword.js (host-side reset), authutil.js, routes/ (auth, recovery, apps, env, webhooks, github, logs)
+  scripts/       send-webhook.js (signed fake webhook; `npm run webhook`), reset-password.js (host-side password reset; `npm run reset-password`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
   src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), deleteapp.js (removing an app), stats.js (CPU and memory samples), monitor.js, activity.js, buildlog.js (the log sink), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
   worker.js      entry point; cli.js: manual deploy
@@ -62,7 +62,7 @@ docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up 
 Compose extras in `infrastructure/.env`: `DOCKER_GID` (`stat -c %g /var/run/docker.sock`, default 999: the non-root worker needs the
 socket's group), `GITHUB_APP_PRIVATE_KEY_FILE` (host path, mounted read-only into api and worker), `API_HOST_PORT` (default 4000, loopback), `LOG_DIR` (set by compose to the `shipdok_logs` volume; outside Docker it defaults to `~/.shipdok/logs`), `MONITOR_INTERVAL_MS` (default 15000: how often crashes and health are checked), `STATS_INTERVAL_MS` (default 15000: how often CPU and memory are measured), `WEB_HOST_PORT` (default 8080) and `WEB_BIND` (default 127.0.0.1) for the dashboard container; `PORT_RANGE` (default `20000-20999`, in compose passed to the API) is where a new app's host port comes from when none is given; `WEB_ORIGIN` must be the exact address you open it at (several allowed, comma separated; default `http://localhost:<WEB_HOST_PORT>` in compose, `http://localhost:5173` for `npm run dev`).
 
-Tests: API 557, worker 493, shared 183, web 388. Worker tests reuse the `_test` database the API tests create and
+Tests: API 588, worker 493, shared 183, web 415. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` keys: `POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY` (64 hex; losing it makes
 stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SECRET` (16+ chars), optional
@@ -74,14 +74,14 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   `POST /api/auth/password` ({currentPassword, newPassword}, 12-256 chars, must differ) needs a session AND the current password (a wrong
   one is a 403, not a 401, so the dashboard does not mistake it for an ended session), ends every OTHER session and gives this one a new
   id; limited like login (10 per 15 min). There is still no "forgot password": delete the `users` row in Postgres to get the setup screen
-  again (recovery codes and a host reset command are step 2 of "Next").
+  again, or use a recovery code or the host reset (next bullet but one).
 - **Password policy, lockout, recent logins (Milestone 6 step 1; verified in a real browser against an isolated compose project):**
   `passwordProblem` (`packages/shared/src/password.js`, used by setup and change-password; the answer is `weak_password` on change)
   refuses under 12 or over 256 characters, a whole password made of one 1-4 character unit repeated, a plain run of characters
   (`123456789012`, `abcdefghijkl`, digits wrapping round), and one that contains the username (3+ characters). **Administrator's
   decision: no bundled word lists** (neither a common-passwords list nor a passphrase word list), so common passwords such as
   `password123456`, keyboard walks and short common words are NOT caught, and there is no passphrase generator; the strength bar and the
-  hint to use several random words are the only guidance. SPEC.md section 4 still describes both and has not been updated. **Lockout** (`lockout.js`,
+  hint to use several random words are the only guidance. SPEC.md section 4 was updated to match. **Lockout** (`lockout.js`,
   table `login_attempts`, migration 015, one row per login/setup attempt, kept 30 days): failures in a row since the last success, per typed
   name (any name, real or not, so nothing reveals who exists) AND per client address, in the last 24 h. Five failures are answered normally;
   after the fifth the next tries are refused with 429 `{code:'locked', retryAfterSeconds}` + `Retry-After`: 30 s, doubling per further
@@ -100,6 +100,31 @@ stored secrets unrecoverable), `WEB_ORIGIN`, `API_HOST/PORT`, `GITHUB_WEBHOOK_SE
   accepted after it, failed attempts in the list, Sign out everywhere, no console errors beyond the expected failed requests. Not tested:
   a hundred simultaneous addresses, behind a real reverse proxy. Known limit: through the dashboard's nginx the address recorded is the
   Docker gateway (`172.19.0.1`), not the real client, until step 3 (trusted proxies and real client address).
+- **Recovery codes and host-side reset (Milestone 6 step 2; verified in a real browser against an isolated compose project, and the reset
+  command run for real with `docker compose exec`):** account setup now returns `recoveryCodes` (10, once; the account and the codes are one
+  transaction) and the dashboard shows them BEFORE the dashboard opens, with Copy, Download (`shipdok-recovery-codes.txt`), Print and an
+  "I have saved these codes" box that must be ticked before Done. A code is 16 characters (80 bits) of a 32-letter alphabet without I, L, O, U,
+  written `XXXX-XXXX-XXXX-XXXX`; typing is forgiving (case, spaces, dashes, O/I/L read as 0/1/1). Table `recovery_codes` (migration 016) holds
+  only `SHA-256("shipdok-recovery:" + code)`: the codes are random and long, so a slow hash adds nothing and the database can find one by
+  equality; guessing is held back by the lockout. `GET /api/auth/recovery` ({remaining, createdAt}, never the codes), `POST /api/auth/recovery`
+  ({password}: the current password again, 403 `wrong_password`; replaces the whole set, so the old codes stop working; limited 10 per 15 min),
+  `POST /api/auth/recover` ({username, code, newPassword}, no session needed): the new password must pass the password rules (400
+  `weak_password`, checked BEFORE the code is looked at so it neither reveals nor spends the code), then, under the same per-name and per-address
+  lock and counters as login (kind `recovery`; failures and successes share the login wait), the code is spent with one UPDATE ... WHERE used_at
+  IS NULL (two parallel uses: exactly one wins), the password is set, EVERY session of the user ends and this browser is signed in. A wrong code, a
+  used code and an unknown name all give the same 401. Dashboard: "Lost your password? Use a recovery code" on the login form (name, code, new
+  password with strength bar); Security page card "Recovery codes" (how many of 10 are left, a warning at 3 or fewer, "none left", "Make new
+  codes" asking the current password; once the codes are on screen the dialog cannot be closed by Escape or a click outside, only by "I have
+  saved these codes" + Done). **Host reset:** `docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env exec api node
+  scripts/reset-password.js` (or `npm run reset-password -w apps/api` from a checkout) sets a new random 24-character password (alphabet without
+  look-alikes), prints it ONCE, ends every session, marks all failed tries `forgiven` (they stay in the recent-sign-ins list but stop counting,
+  so a locked-out administrator can log in at once) and records a `reset` entry ("Password reset on the host", address `host`); unused recovery
+  codes are untouched; with no administrator it says so and exits 1. Checked for real: setup showing ten codes and holding the dashboard back,
+  recovery with a lower-case code, the used code refused, a new set replacing the old, Escape not closing the codes, the reset command's
+  password logging in after the reset signed the browser out, phone width without sideways scroll. Not tested: the print window in a real
+  browser (the popup is unit-tested with a fake window), the download in a real browser (unit-tested with a fake link), a Pi. Known limits:
+  recovery is by username + code, so anyone who steals the saved codes can take the account (the dashboard says so); no way yet to see which
+  codes were used, only how many are left; the old SPEC wording "set a new password" is met in one step on the login screen.
 - **Apps/deployments API:** create/list/get apps, request deployment (row first, then queued), history, cancel. Settings
   snapshotted per deployment. `repo` is `owner/repo`; clone URL built server-side. `host_port` required for now.
 - **Deploy engine:** clone -> build -> candidate on temp port -> health check -> swap -> retire. Failures leave the running
@@ -361,8 +386,7 @@ administrator provides a public address (own IP, or Nginx / Nginx Proxy Manager 
 `SHIPDOK_PUBLIC=off|webhook|full` with `PUBLIC_URL`. Goal: `docker compose up`, log in, press "Connect GitHub", install the app, deploy
 private repos. No periodic polling. Caddy is an optional, low-priority profile only.
 
-Build order (SPEC.md Milestone 6); step 1 (password policy, lockout, recent logins, sign out everywhere) is built, see above:
-2. Recovery codes (10, hashed, single use, shown once) and a host-side password reset command.
+Build order (SPEC.md Milestone 6); steps 1 (password policy, lockout, recent logins, sign out everywhere) and 2 (recovery codes, host reset) are built, see above:
 3. Public address support: `SHIPDOK_PUBLIC`, `PUBLIC_URL`, trusted proxies and the real client address (the dashboard's nginx must keep an
    address a trusted proxy supplies), `webhook` mode answering 404 except the webhook, docs with Nginx / Nginx Proxy Manager / Caddy.
 4. Connect GitHub (App Manifest flow, credentials encrypted in the DB, `.env` still overrides, Disconnect), using the public address.

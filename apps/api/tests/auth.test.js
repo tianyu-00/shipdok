@@ -36,7 +36,8 @@ describe("first-run setup", () => {
   test("creates the admin, signs them in, and sets a hardened cookie", async () => {
     const res = await setup(request(app));
     expect(res.status).toBe(201);
-    expect(res.body).toEqual({ username: "admin" });
+    expect(res.body.username).toBe("admin");
+    expect(res.body.recoveryCodes).toHaveLength(10); // shown once, here
 
     const cookie = res.headers["set-cookie"].join(";");
     expect(cookie).toMatch(/shipdok\.sid=/);

@@ -7,6 +7,7 @@
     "test": "node --env-file=../../infrastructure/.env --experimental-vm-modules ../../node_modules/jest/bin/jest.js --runInBand",
     "migrate": "node --env-file=../../infrastructure/.env src/db/migrate.js",
     "dev": "node --env-file=../../infrastructure/.env src/server.js",
+    "reset-password": "node --env-file=../../infrastructure/.env scripts/reset-password.js",
     "webhook": "node --env-file=../../infrastructure/.env scripts/send-webhook.js"
   },
   "jest": {

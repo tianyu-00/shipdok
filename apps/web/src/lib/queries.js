@@ -52,3 +52,6 @@ export const useStats = (id) => useQuery({ queryKey: ['stats', id], queryFn: () 
 
 // The latest sign-in attempts, good and bad.
 export const useLogins = () => useQuery({ queryKey: ['logins'], queryFn: () => api('/auth/logins?limit=50'), refetchInterval: 30_000 })
+
+// How many recovery codes are left (never the codes themselves).
+export const useRecovery = () => useQuery({ queryKey: ['recovery'], queryFn: () => api('/auth/recovery') })

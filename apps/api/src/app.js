@@ -8,6 +8,7 @@ import { pool } from './db/pool.js';
 import { originCheck } from './middleware/originCheck.js';
 import { requireAuth } from './middleware/requireAuth.js';
 import { authRouter } from './routes/auth.js';
+import { recoveryRouter } from './routes/recovery.js';
 import { appsRouter, deploymentsRouter } from './routes/apps.js';
 import { envRouter } from './routes/env.js';
 import { webhookReceiver, deliveriesRouter } from './routes/webhooks.js';
@@ -70,6 +71,7 @@ export function createApp({
   });
 
   app.use('/api/auth', authRouter(db));
+  app.use('/api/auth', recoveryRouter(db));
   app.use('/api/apps/:id/env', requireAuth, envRouter({ db, secretsKey }));
   app.use('/api/apps', requireAuth, appsRouter({ db, queue, github, logDir, diskUsage, portRange }));
   app.use('/api/apps', requireAuth, appLogsRouter({ db, logDir }));
