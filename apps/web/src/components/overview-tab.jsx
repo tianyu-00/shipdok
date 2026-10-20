@@ -11,7 +11,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 // The charts library is large; it is only fetched when an Overview is opened.
 const ResourceCard = lazy(() => import('@/components/resource-card'))
 
-const CAUSE = { crash: 'Crashed', stopped_outside: 'Stopped outside Shipdok', recovered: 'Recovered after a restart of the host or Docker' }
+const CAUSE = { crash: 'Crashed', stopped_outside: 'Stopped outside Shipdok', recovered: 'Recovered after a restart of the host or Docker', removed_outside: 'Removed outside Shipdok' }
 
 function Fact({ label, children }) {
   return (

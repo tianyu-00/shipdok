@@ -29,7 +29,7 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 018_github_app
+  migrations/    001_init ... 019_missing_container
   src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), recovery.js (recovery codes), resetpassword.js (host-side reset), authutil.js, settings.js + publicurl.js (public-access settings), visitor.js (local or outside), middleware/ (originCheck, publicAccess, requireAuth), routes/ (auth, recovery, settings, apps, env, webhooks, github, logs)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`), reset-password.js (host-side password reset; `npm run reset-password`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
@@ -71,7 +71,7 @@ test projects do): `POSTGRES_USER`/`POSTGRES_DB` (default `shipdok`), `API_HOST_
 requests from whatever address it is opened at), `MONITOR_INTERVAL_MS`, `STATS_INTERVAL_MS`, and the four secrets below (your value wins).
 `LOG_DIR` is set by compose to the `shipdok_logs` volume (outside Docker it defaults to `~/.shipdok/logs`). **`DOCKER_GID` is gone.**
 
-Tests: API 886, worker 515, shared 232, web 520. Worker tests reuse the `_test` database the API tests create and
+Tests: API 887, worker 530, shared 232, web 521. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` is now needed only for development with npm (`POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY`: 64 hex, losing
 it makes stored secrets unrecoverable) and for the optional settings above. **The GitHub App is NOT configured here any more** (dashboard,
@@ -325,6 +325,22 @@ GitHub page; see "Connect GitHub").
   counted as a crash, and recovery with Docker's event buffer flushed. Not tested: a real host reboot, out-of-memory kills under Pi
   limits, ARM64. Known limits: the restart delay is rounded up to the next check; if Docker is not ready right after a boot, a failed
   start marks the app `crashed` (press Start).
+- **A container removed outside Shipdok is noticed (found on the Pi: `docker rm` of an app's container showed nothing; verified against real Docker
+  and a real browser in an isolated compose project):** the monitor used to treat "no live container" as "never deployed" and return silently, so the
+  dashboard kept saying Running. Now an app with a successful deployment and no live container becomes runtime state **`missing`** (migration 019:
+  also the crash-history cause `removed_outside`), recorded ONCE (a second check changes nothing), with the message "The container was removed outside
+  Shipdok (for example with docker rm). Nothing is running. Deploy the app again to bring it back." **Administrator's decision: show it, do not
+  recreate it** (same spirit as a stop from outside; a new Deploy, or a roll back, is the way back). Rules in `supervisor.js` (`decideGone`): never
+  deployed = ignored; a job in progress = ignored (the monitor checks `activity` AGAIN after Docker answers empty, because a swap removes the old
+  container before the new one exists); an app being deleted = ignored; a stopped app whose container vanished is `missing` too; a container that
+  appears again makes it `running` and a second removal is a second history entry. Start/Stop/Restart on a missing app answer "The container was
+  removed outside Shipdok, so there is nothing to start, stop or restart. Deploy the app again to bring it back." (an app never deployed still
+  gets "Nothing is deployed for this app yet"). Dashboard: red **Missing** badge (list and app page), the message in the Status card, "Removed
+  outside Shipdok" in the crash history, no Start/Stop/Restart buttons (Deploy stays). Checked for real: `docker rm -f` of a running labelled
+  container turned the app to missing within one monitor round (3 s interval), one history entry after 20 more seconds, Start refused with the
+  message, a container appearing again turned it back to running; browser at 1100 and 390 px, no console errors. Not tested: a real deployed app
+  (the container and the successful deployment row were made by hand, because the isolated stack has no GitHub App), a removed IMAGE (a Deploy
+  rebuilds from git as usual). Known limit: the Overview card is still called "Running now" while the app is missing.
 - **Deployment logs (verified against real Docker in an isolated compose project):** every deployment gets a log file,
   `<LOG_DIR>/<app-id>/<deployment-id>/build.log` (plain text, one line each: `ISO-time stream message`, stream = stdout / stderr /
   shipdok), holding the clone and `docker build` output (`--progress=plain`), Shipdok's progress lines, a failed candidate's last

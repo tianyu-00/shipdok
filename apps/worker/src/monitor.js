@@ -8,10 +8,22 @@ import { decide, CRASH_WINDOW_MS } from './supervisor.js';
 const message = (err) => String(err?.message ?? err);
 
 export function createMonitor({ db = store, eng = realEngine, activity, collector = null, now = Date.now, intervalMs = 15_000, log = console.log }) {
+  async function recordGone(app) {
+    const d = decide({ now: now(), desired: app.desired, busy: false, container: null, runtime: app.runtime, deployed: app.deployed });
+    if (d.type === 'skip') return;
+    await db.applyMonitorUpdate(app.id, d, now());
+    log(`monitor: ${app.slug}: the container was removed outside Shipdok; now ${d.state}`);
+  }
+
   async function checkApp(app) {
     if (activity.isBusy(app.id)) return;
     const [container] = await eng.findContainers({ appId: app.id, role: 'live' });
-    if (!container) return; // nothing deployed yet
+    if (!container) {
+      // Nothing deployed yet, or the container was removed outside Shipdok. A deployment may have begun while we asked Docker (it removes
+      // the old container before the new one exists), so look again before calling it missing.
+      if (activity.isBusy(app.id)) return;
+      return recordGone(app);
+    }
 
     const facts = await eng.containerFacts(container);
     // Containers from before the monitor still carry Docker's own restart policy; Docker and the monitor must not both restart.

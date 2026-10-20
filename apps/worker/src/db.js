@@ -105,7 +105,7 @@ const RUNNING_SNAP = `LEFT JOIN LATERAL (SELECT config_snapshot AS snap FROM dep
 export async function getApp(appId) {
   const { rows } = await pool.query(
     `SELECT a.id, a.slug, ${RUNNING_PORT} AS container_port, ${RUNNING_HEALTH} AS health_path,
-            a.desired_state, a.keep_previous_images, a.auto_prune
+            a.desired_state, a.keep_previous_images, a.auto_prune, (s.snap IS NOT NULL) AS deployed
        FROM apps a ${RUNNING_SNAP} WHERE a.id = $1`, [appId]);
   return rows[0] ?? null;
 }
@@ -186,11 +186,12 @@ const ms = (d) => (d == null ? null : new Date(d).getTime());
 export async function listSupervised() {
   const { rows } = await pool.query(
     `SELECT a.id, a.slug, ${RUNNING_PORT} AS container_port, ${RUNNING_HEALTH} AS health_path, a.desired_state, a.max_restarts,
-            r.state AS rt_state, r.next_restart_at, r.health_failures, r.last_death_at, r.last_error
+            r.state AS rt_state, r.next_restart_at, r.health_failures, r.last_death_at, r.last_error,
+            (s.snap IS NOT NULL AND a.deleting_at IS NULL) AS deployed
        FROM apps a ${RUNNING_SNAP} LEFT JOIN app_runtime r ON r.app_id = a.id ORDER BY a.created_at`);
   return rows.map((r) => ({
     id: r.id, slug: r.slug, containerPort: r.container_port, healthPath: r.health_path,
-    desired: r.desired_state, maxRestarts: r.max_restarts,
+    desired: r.desired_state, maxRestarts: r.max_restarts, deployed: r.deployed,
     runtime: r.rt_state === null ? null : {
       state: r.rt_state, nextRestartAt: ms(r.next_restart_at), healthFailures: r.health_failures,
       lastDeathAt: ms(r.last_death_at), error: r.last_error,

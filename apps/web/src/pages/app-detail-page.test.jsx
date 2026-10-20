@@ -333,6 +333,22 @@ describe('Start, Stop and Restart', () => {
     await waitFor(() => expect(api.called('POST', `/api/apps/${APP_ID}/start`)).toHaveLength(1))
   })
 
+  test('an app whose container was removed outside Shipdok says so, offers no Start/Stop/Restart, and Deploy is the way back', async () => {
+    const msg = 'The container was removed outside Shipdok (for example with docker rm). Nothing is running. Deploy the app again to bring it back.'
+    mockApi(base({
+      [`GET /api/apps/${APP_ID}`]: makeApp({ runtime: { state: 'missing', last_error: msg } }),
+      [`GET /api/apps/${APP_ID}/crashes`]: [{ occurred_at: '2026-10-19T11:30:00Z', cause: 'removed_outside', exit_code: null, oom_killed: false, action: 'none' }],
+    }))
+    page()
+    expect(await screen.findByText('Missing')).toBeInTheDocument()
+    expect(await screen.findByText(msg)).toBeInTheDocument()
+    expect(screen.getByText('Removed outside Shipdok')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+    expect(screen.getByRole('button', { name: /deploy/i })).toBeInTheDocument()
+  })
+
   test('a crashed app offers Start and Restart (it stays down until you decide)', async () => {
     mockApi(base({ [`GET /api/apps/${APP_ID}`]: makeApp({ runtime: { state: 'crashed' } }) }))
     page()

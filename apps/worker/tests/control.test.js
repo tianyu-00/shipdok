@@ -3,7 +3,7 @@ import { test, describe, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as store from '../src/db.js';
 import { controlApp, processControlJob } from '../src/control.js';
-import { pool, ready, reset, makeApp } from './helpers.js';
+import { pool, ready, reset, makeApp, makeDeployment } from './helpers.js';
 import { fakeEngine } from './fake-engine.js';
 
 before(ready);
@@ -181,5 +181,30 @@ describe('the job wrapper', () => {
     const eng = fakeEngine({ previous: ['live-1'] });
     const out = await processControlJob(job({ appId, action: 'stop' }), { eng, db: store });
     assert.deepEqual(out, { appId, action: 'stop' });
+  });
+});
+
+describe('an app whose container was removed outside Shipdok', () => {
+  const deployedApp = async () => {
+    const appId = await makeApp();
+    const id = await makeDeployment(appId, { container_port: 3000 });
+    await pool.query("UPDATE deployments SET status = 'successful', finished_at = now() WHERE id = $1", [id]);
+    return appId;
+  };
+
+  for (const action of ['start', 'stop', 'restart']) {
+    test(`${action} says the container was removed and to deploy again, not that nothing was ever deployed`, async () => {
+      const appId = await deployedApp();
+      const r = await go(appId, action, fakeEngine({ previous: [] }));
+      assert.equal(r.ok, false);
+      assert.match(r.error, /removed outside Shipdok/);
+      assert.match(r.error, /Deploy/);
+    });
+  }
+
+  test('an app that was never deployed still gets the "deploy it first" answer', async () => {
+    const appId = await makeApp();
+    const r = await go(appId, 'start', fakeEngine({ previous: [] }));
+    assert.match(r.error, /Nothing is deployed for this app yet/);
   });
 });

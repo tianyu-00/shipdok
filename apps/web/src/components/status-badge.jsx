@@ -1,4 +1,4 @@
-import { AlertTriangle, Ban, CheckCircle2, Clock, Hammer, Loader2, OctagonX, PauseCircle, RefreshCw, SkipForward, XCircle } from 'lucide-react'
+import { AlertTriangle, Ban, CheckCircle2, Clock, Hammer, Loader2, OctagonX, PackageX, PauseCircle, RefreshCw, SkipForward, XCircle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { DEPLOYMENT_STATUS, RUNTIME_STATE, TRANSITION_STATE } from '@/lib/format'
@@ -16,7 +16,7 @@ const DEPLOYMENT_ICON = {
   queued: Clock, building: Hammer, starting: Loader2, validating: Loader2, successful: CheckCircle2,
   failed: XCircle, cancelled: Ban, superseded: SkipForward, interrupted: AlertTriangle,
 }
-const RUNTIME_ICON = { running: CheckCircle2, stopped: PauseCircle, unhealthy: AlertTriangle, restarting: RefreshCw, crashed: OctagonX, stopping: Loader2, starting: Loader2, deleting: Loader2, 'delete-failed': OctagonX }
+const RUNTIME_ICON = { running: CheckCircle2, stopped: PauseCircle, unhealthy: AlertTriangle, restarting: RefreshCw, crashed: OctagonX, missing: PackageX, stopping: Loader2, starting: Loader2, deleting: Loader2, 'delete-failed': OctagonX }
 const SPINS = new Set(['starting', 'validating', 'restarting', 'stopping', 'deleting'])
 
 function Pill({ tone, Icon, spin, children, className, ...rest }) {

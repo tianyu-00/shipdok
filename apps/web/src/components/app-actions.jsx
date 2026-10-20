@@ -95,7 +95,8 @@ export function ControlButtons({ app }) {
   })
   const stopped = app.desired_state === 'stopped'
   const state = app.runtime?.state
-  const buttons = stopped ? ['start'] : state === 'crashed' ? ['start', 'restart'] : ['restart', 'stop']
+  // A missing container has nothing to start, stop or restart: Deploy is the way back.
+  const buttons = state === 'missing' ? [] : stopped ? ['start'] : state === 'crashed' ? ['start', 'restart'] : ['restart', 'stop']
   return (
     <>
       {buttons.map((action) => {

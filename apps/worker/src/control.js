@@ -27,7 +27,11 @@ export async function controlApp({ appId, action }, { eng = realEngine, db = sto
   };
 
   const containers = await eng.findContainers({ appId, role: 'live' });
-  if (!containers.length) return fail('Nothing is deployed for this app yet. Deploy it first.');
+  if (!containers.length) {
+    return fail(app.deployed
+      ? 'The container was removed outside Shipdok, so there is nothing to start, stop or restart. Deploy the app again to bring it back.'
+      : 'Nothing is deployed for this app yet. Deploy it first.');
+  }
 
   try {
     if (action === 'stop') {

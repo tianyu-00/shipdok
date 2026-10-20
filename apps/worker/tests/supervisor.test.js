@@ -176,3 +176,31 @@ describe('a container that cannot be started', () => {
     assert.equal(decide(input({ container: created, runtime: rt({ state: 'stopped' }) })).startNow, true);
   });
 });
+
+describe('a container that is gone (removed outside Shipdok)', () => {
+  const gone = (over = {}) => input({ container: null, deployed: true, ...over });
+
+  test('deployed before, container gone: shown as missing, with ONE history entry, and nothing is started', () => {
+    const d = decide(gone());
+    assert.equal(d.type, 'update');
+    assert.equal(d.state, 'missing');
+    assert.match(d.error, /removed outside Shipdok/);
+    assert.equal(d.startNow, false);
+    assert.deepEqual(d.event, { cause: 'removed_outside', exitCode: null, oomKilled: false, action: 'none' });
+  });
+  test('already recorded as missing: nothing more is written, so it is counted once', () => {
+    assert.equal(decide(gone({ runtime: rt({ state: 'missing' }) })).type, 'skip');
+  });
+  test('an app that was never deployed has no container and that is fine', () => {
+    assert.equal(decide(gone({ deployed: false })).type, 'skip');
+  });
+  test('a job in progress (a deployment is swapping containers) is not mistaken for a removal', () => {
+    assert.equal(decide(gone({ busy: true })).type, 'skip');
+  });
+  test('a stopped app whose container disappeared is missing too: Start would have nothing to start', () => {
+    assert.equal(decide(gone({ desired: 'stopped' })).state, 'missing');
+  });
+  test('when a container is back the app is running again', () => {
+    assert.equal(decide(input({ runtime: rt({ state: 'missing' }) })).state, 'running');
+  });
+});

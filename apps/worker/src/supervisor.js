@@ -26,6 +26,17 @@ const update = (u) => ({
 
 const exitText = (c) => `Exited with code ${c.exitCode}${c.oomKilled ? ' (out of memory)' : ''}`;
 
+// There is no live container. For an app that never went live that is normal. For one that did, somebody removed the container outside
+// Shipdok (docker rm): show it, once, and do not recreate it, in the same spirit as a stop from outside. A new deployment brings it back.
+function decideGone(i) {
+  if (!i.deployed || i.runtime?.state === 'missing') return SKIP;
+  return update({
+    state: 'missing',
+    error: 'The container was removed outside Shipdok (for example with docker rm). Nothing is running. Deploy the app again to bring it back.',
+    event: { cause: 'removed_outside', exitCode: null, oomKilled: false, action: 'none' },
+  });
+}
+
 /**
  * @param {object} i
  * @param {number} i.now                                   ms since the epoch
@@ -37,9 +48,11 @@ const exitText = (c) => `Exited with code ${c.exitCode}${c.oomKilled ? ' (out of
  * @param {number} i.crashesInWindow                       crashes already recorded within the window (not counting this exit)
  * @param {number} i.maxRestarts
  * @param {boolean|null} i.healthOk                        null = no health check configured
+ * @param {boolean} [i.deployed]                           a version of this app has been deployed successfully before
  */
 export function decide(i) {
-  if (i.busy || !i.container) return SKIP;
+  if (i.busy) return SKIP;
+  if (!i.container) return decideGone(i);
   const c = i.container;
   const rt = i.runtime ?? { state: null, nextRestartAt: null, healthFailures: 0, lastDeathAt: null };
 

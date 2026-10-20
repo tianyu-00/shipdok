@@ -6,7 +6,7 @@ import * as store from '../src/db.js';
 import { createMonitor } from '../src/monitor.js';
 import { createActivity } from '../src/activity.js';
 import { CRASH_WINDOW_MS } from '../src/supervisor.js';
-import { pool, ready, reset, makeApp } from './helpers.js';
+import { pool, ready, reset, makeApp, makeDeployment } from './helpers.js';
 import { fakeEngine } from './fake-engine.js';
 
 before(ready);
@@ -356,5 +356,66 @@ describe('the loop', () => {
     await new Promise((r) => setTimeout(r, 100));
     assert.equal(eng.events.filter((e) => e.startsWith('probe')).length, probes, 'nothing runs after stop()');
     assert.equal((await rt(appId)).state, 'running');
+  });
+});
+
+describe('a container removed outside Shipdok', () => {
+  const deployed = async (appId) => {
+    const id = await makeDeployment(appId, { container_port: 3000 });
+    await pool.query("UPDATE deployments SET status = 'successful', finished_at = now() WHERE id = $1", [id]);
+  };
+
+  test('a deployed app whose container is gone is recorded as missing, once, however many checks follow', async () => {
+    const { appId, monitor, eng } = await setup({ previous: [] });
+    await deployed(appId);
+    await monitor.tick(); await monitor.tick(); await monitor.tick();
+    const r = await rt(appId);
+    assert.equal(r.state, 'missing');
+    assert.match(r.last_error, /removed outside Shipdok/);
+    const ev = await events(appId);
+    assert.equal(ev.length, 1);
+    assert.deepEqual([ev[0].cause, ev[0].action], ['removed_outside', 'none']);
+    assert.ok(!eng.events.some((e) => e.startsWith('start')), 'it is not recreated or started');
+  });
+
+  test('an app that was never deployed stays unreported', async () => {
+    const { appId, monitor } = await setup({ previous: [] });
+    await monitor.tick();
+    assert.equal(await rt(appId), undefined);
+    assert.equal((await events(appId)).length, 0);
+  });
+
+  test('while a job works on the app nothing is recorded, even if the container list came back empty', async () => {
+    const { appId, monitor, activity, eng } = await setup({ previous: [] });
+    await deployed(appId);
+    // A deployment starts while the monitor is asking Docker, and has just removed the old container.
+    let release; let job;
+    eng.findContainers = async () => { job = activity.run(appId, () => new Promise((r) => { release = r; })); return []; };
+    await monitor.tick();
+    release(); await job;
+    assert.equal(await rt(appId), undefined);
+  });
+
+  test('an app being deleted is not reported as missing', async () => {
+    const { appId, monitor } = await setup({ previous: [] });
+    await deployed(appId);
+    await pool.query('UPDATE apps SET deleting_at = now() WHERE id = $1', [appId]);
+    await monitor.tick();
+    assert.equal(await rt(appId), undefined);
+  });
+
+  test('when the container comes back it is running again, and a second removal is a second entry', async () => {
+    const { appId, monitor, eng } = await setup({ previous: [] });
+    await deployed(appId);
+    await monitor.tick();
+    assert.equal((await rt(appId)).state, 'missing');
+    const live = eng.findContainers; // a container appears (a redeploy)
+    eng.findContainers = async () => ['live-1'].map((name) => ({ name }));
+    await monitor.tick();
+    assert.equal((await rt(appId)).state, 'running');
+    eng.findContainers = live;
+    await monitor.tick();
+    assert.equal((await rt(appId)).state, 'missing');
+    assert.equal((await events(appId)).length, 2);
   });
 });

@@ -55,6 +55,7 @@ export const RUNTIME_STATE = {
   unhealthy: { label: 'Unhealthy', tone: 'warning' },
   restarting: { label: 'Restarting', tone: 'info' },
   crashed: { label: 'Crashed', tone: 'danger' },
+  missing: { label: 'Missing', tone: 'danger' }, // the container was removed outside Shipdok
 }
 
 // The administrator's wish and the worker's report can differ for a moment (a Stop was pressed, the container is still going down).

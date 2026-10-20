@@ -55,6 +55,14 @@ describe('runtime details', () => {
     }
   });
 
+  test('a container removed outside Shipdok is shown as missing, and the history says so', async () => {
+    await testPool.query(
+      `INSERT INTO app_runtime (app_id, state, last_error) VALUES ($1, 'missing', 'The container was removed outside Shipdok')`, [appId]);
+    await testPool.query(`INSERT INTO app_crash_events (app_id, cause, action) VALUES ($1, 'removed_outside', 'none')`, [appId]);
+    expect((await agent.get(`/api/apps/${appId}`)).body.runtime).toMatchObject({ state: 'missing' });
+    expect((await agent.get(`/api/apps/${appId}/crashes`)).body[0]).toMatchObject({ cause: 'removed_outside', exit_code: null, action: 'none' });
+  });
+
   test('internal bookkeeping columns are not exposed', async () => {
     await testPool.query(`INSERT INTO app_runtime (app_id, state, last_death_at, crash_reset_at) VALUES ($1, 'running', now(), now())`, [appId]);
     const { runtime } = (await agent.get(`/api/apps/${appId}`)).body;
