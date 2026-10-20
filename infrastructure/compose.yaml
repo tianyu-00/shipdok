@@ -4,8 +4,10 @@
 # On the first run a one-shot service (`secrets`) generates the platform secrets into the `shipdok_secrets` volume: the database and Redis
 # passwords, the session secret, the encryption key and the setup token. A value you put in infrastructure/.env (and pass with --env-file)
 # is used instead of a generated one. The setup token is printed in the API log: docker compose logs api
-# Develop with npm run dev / npm start instead:  ... --env-file infrastructure/.env up -d postgres redis   (NOT a bare `up -d`: that also
-# starts api and worker, which would compete with the npm ones for port 4000 and for the same queue).
+# Develop with npm run dev / npm start instead (needs Postgres and Redis on this machine's loopback, which compose.dev.yaml publishes):
+#   docker compose -f infrastructure/compose.yaml -f infrastructure/compose.dev.yaml --env-file infrastructure/.env up -d postgres redis
+# (NOT a bare `up -d`: that also starts api and worker, which would compete with the npm ones for port 4000 and for the same queue).
+# Run it from the same folder every time: Compose names the volumes after the folder, and another folder means a fresh empty database.
 # Optional settings (all have defaults): POSTGRES_USER, POSTGRES_DB, API_HOST_PORT (4000), WEB_HOST_PORT (8080), WEB_BIND (127.0.0.1: set it to
 # this machine's address or 0.0.0.0 to reach the dashboard from other devices), PORT_RANGE, SHIPDOK_PUBLIC, PUBLIC_URL, WEB_ORIGIN.
 # The GitHub App is connected in the dashboard (GitHub page), not here.
@@ -50,8 +52,6 @@ services:
       - sh
       - -c
       - '[ -n "$$POSTGRES_PASSWORD" ] || export POSTGRES_PASSWORD="$$(cat /run/shipdok-secrets/postgres_password)"; exec docker-entrypoint.sh postgres'
-    ports:
-      - "127.0.0.1:5432:5432"
     volumes:
       - shipdok_pgdata:/var/lib/postgresql/data
       - shipdok_secrets:/run/shipdok-secrets:ro
@@ -72,8 +72,6 @@ services:
       - sh
       - -c
       - 'P="$${REDIS_PASSWORD:-$$(cat /run/shipdok-secrets/redis_password)}"; exec docker-entrypoint.sh redis-server --requirepass "$$P" --appendonly yes'
-    ports:
-      - "127.0.0.1:6379:6379"
     volumes:
       - shipdok_redisdata:/data
       - shipdok_secrets:/run/shipdok-secrets:ro

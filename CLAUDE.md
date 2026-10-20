@@ -39,14 +39,14 @@ apps/web/        Vite + React (JavaScript) dashboard, Tailwind v4 + shadcn/ui (c
   src/           App.jsx, pages/ (auth, apps list, create app, app detail), components/ (tabs, log viewer, actions), lib/ (api client, queries, format)
   nginx.conf, Dockerfile   production image: nginx serves the build and forwards /api to the API
 packages/shared/ @shipdok/shared: crypto (AES-256-GCM), .env parser, github.js (app JWT, installation tokens), logstore.js (log format, masking, safe read/delete), constants
-infrastructure/  compose.yaml (Postgres 16, Redis 7; secrets (one-shot), api, worker, web services), .env (never committed)
+infrastructure/  compose.yaml (Postgres 16, Redis 7; secrets (one-shot), api, worker, web services), compose.build.yaml (build from source), compose.dev.yaml (publishes Postgres/Redis for npm development), .env (never committed)
 apps/api/Dockerfile, apps/worker/Dockerfile, apps/web/Dockerfile, .dockerignore   images built from the repo root (see "Run it")
 ```
 
 ## Run it
 
 ```bash
-docker compose -f infrastructure/compose.yaml --env-file infrastructure/.env up -d
+docker compose -f infrastructure/compose.yaml -f infrastructure/compose.dev.yaml --env-file infrastructure/.env up -d postgres redis
 npm run migrate -w apps/api
 npm run dev -w apps/api          # API on 127.0.0.1:4000
 npm start -w apps/worker         # reconciles on boot, then waits for jobs
@@ -55,7 +55,7 @@ npm test                         # API (Jest), worker (node:test), shared (node:
 ```
 
 Or run the whole platform in Docker instead (do not mix with the npm commands above; both would use port 4000 and one queue).
-Develop with npm: start only the data services with `... up -d postgres redis`. A bare `up -d` starts api, worker and web too.
+Develop with npm: start only the data services, with the dev override that publishes them on loopback (`compose.dev.yaml`; a normal install publishes no database port). A bare `up -d` starts api, worker and web too. Run compose from the same folder every time (volumes are named after the folder).
 
 ```bash
 docker compose -f infrastructure/compose.yaml up -d                  # no .env needed (see "First-run secrets" below); pulls the published images

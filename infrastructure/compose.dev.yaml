@@ -1,0 +1,10 @@
+# Development only: publishes Postgres and Redis on this machine's loopback so that `npm run dev`, `npm start` and `npm test` can reach them.
+# A normal install does not use this file (nothing outside Docker needs the database, and a Postgres of your own on 5432 would clash).
+#   docker compose -f infrastructure/compose.yaml -f infrastructure/compose.dev.yaml --env-file infrastructure/.env up -d postgres redis
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+  redis:
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
