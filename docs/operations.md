@@ -1,0 +1,177 @@
+# Operations
+
+Everyday care of a Shipdok installation: upgrading, backing up and restoring, getting back in when you are locked out, and fixing common
+problems. All commands are run **in the folder that holds `compose.yaml`**, the same folder every time (Docker Compose names its storage after
+the folder, so a different folder means an empty installation).
+
+- [Upgrade](#upgrade)
+- [Backup](#backup)
+- [Restore](#restore)
+- [Forgot the password](#forgot-the-password)
+- [Troubleshooting](#troubleshooting)
+- [Uninstall](#uninstall)
+
+## Upgrade
+
+Releases are published as versioned images. Upgrading is a pull and a restart, and it keeps all your data.
+
+1. **Back up first** ([Backup](#backup)). Database changes only go forward: Shipdok cannot undo them, so the safe way back from a bad
+   upgrade is a restore.
+2. Get the newest Compose file if the release notes say it changed (see the [releases page](https://github.com/tianyu-00/shipdok/releases)).
+3. Pull and restart:
+
+```bash
+docker compose pull
+```
+
+```bash
+docker compose up -d
+```
+
+The API updates the database itself when it starts (you will see `Applied N migration(s)` in `docker compose logs api`). Your running apps keep
+running; they are separate containers.
+
+**Pinning a version.** By default Compose uses `latest`. To stay on a release until you choose to move, put it in a `.env` file next to
+`compose.yaml`:
+
+```bash
+echo 'SHIPDOK_VERSION=0.1.2' >> .env
+```
+
+Then `docker compose pull` and `docker compose up -d` install exactly that version. Remove the line (or change it) to move.
+
+**If an upgrade fails to start.** `docker compose logs api` shows `The database could not be prepared: Migration NNN failed: ...`. The API keeps
+restarting and changes nothing else. Go back by restoring the backup you took in step 1 together with the previous version
+(`SHIPDOK_VERSION=<old>`), and report the message.
+
+## Backup
+
+Two things hold everything that matters, and **they must be backed up together**:
+
+- **The database** (`shipdok_pgdata`): your apps, settings, history, and your secrets, encrypted.
+- **The secrets volume** (`shipdok_secrets`): the encryption key and the other generated secrets. **Without this key the encrypted data in the
+  database (app variables, GitHub credentials) can never be read again.**
+
+Not included, and not needed: the job queue (Redis), Docker images and the containers of your apps, and your apps' own data volumes. After
+a restore your apps are redeployed from GitHub. Back up the logs volume (`shipdok_logs`) too only if you care about old logs.
+
+The backup files contain secrets. Make them readable by you only, and keep them somewhere safe and **off this machine**.
+
+Make files private as they are created, then take both backups:
+
+```bash
+umask 077
+```
+
+```bash
+docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' > shipdok-db.dump
+```
+
+```bash
+docker compose run --rm --no-deps --user "$(id -u):$(id -g)" -v "$PWD":/backup --entrypoint tar secrets czf /backup/shipdok-secrets.tgz -C /run/shipdok-secrets .
+```
+
+```bash
+chmod 600 shipdok-db.dump shipdok-secrets.tgz
+```
+
+You now have `shipdok-db.dump` and `shipdok-secrets.tgz`. Copy both away. A copy of only one of them is not a backup.
+
+## Restore
+
+Restoring into a **new, empty** installation (a new machine, or after you removed the old one) is the tested path. Use the same folder name as
+before or any new folder; the commands do not depend on it.
+
+1. Put `compose.yaml`, `shipdok-db.dump` and `shipdok-secrets.tgz` in the folder. If you pinned a version, set `SHIPDOK_VERSION` in `.env` to the
+   one the backup came from (or newer; older is not supported).
+
+2. Restore the secrets first, into the new secrets volume. This must happen before the first `docker compose up`, which would otherwise
+   generate new ones:
+
+```bash
+docker compose run --rm --no-deps -v "$PWD":/backup --entrypoint tar secrets xzf /backup/shipdok-secrets.tgz -C /run/shipdok-secrets
+```
+
+3. Start only the database. It takes its password from the restored secrets:
+
+```bash
+docker compose up -d postgres
+```
+
+4. Wait until `docker compose ps postgres` says `healthy`, then load the dump:
+
+```bash
+docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner' < shipdok-db.dump
+```
+
+5. Start everything:
+
+```bash
+docker compose up -d
+```
+
+Log in with your old password. Your apps are listed with their settings and history; their containers are gone, so each shows **Container missing**: press **Deploy**
+on it (or push to GitHub). Stored variables work because the key came back with the secrets.
+
+**Replacing a broken installation on the same machine.** Remove its storage first, then follow the steps above. This deletes all Shipdok data on this
+machine, so be sure the backup is good:
+
+```bash
+docker compose down -v
+```
+
+## Forgot the password
+
+Use a **recovery code** on the login screen: *Lost your password? Use a recovery code.* Each code works once.
+
+If you have no codes left, reset the password on the machine. This prints a new random password once, signs every browser out and lifts any
+sign-in lockout:
+
+```bash
+docker compose exec api node scripts/reset-password.js
+```
+
+Then log in with the printed password and change it on the **Security** page. While you are there, make a new set of recovery codes.
+
+A locked-out account (too many wrong passwords) opens by itself after the wait the login screen shows (30 seconds, growing to 15 minutes).
+
+## Troubleshooting
+
+**Where are the logs?** `docker compose logs api`, `docker compose logs worker`, and `docker compose ps -a` for what is running.
+The `secrets` container shows as *Exited (0)*; that is normal.
+
+**I lost the setup token.** It is printed while no account exists: `docker compose logs api`.
+
+**The dashboard shows "Not found" or a message about the address.** Shipdok is refusing the request:
+- From another device on your network: set `WEB_BIND=0.0.0.0` (see the README).
+- Through a proxy: the proxy must pass the original `Host` header and add `X-Forwarded-For` and `X-Forwarded-Proto`
+  ([Public access](public-access.md#what-your-proxy-must-do)).
+
+**Port 8080 (or 4000) is already in use.** Set another one in `.env`: `WEB_HOST_PORT=8081` (or `API_HOST_PORT`). The API's port is not
+the dashboard's.
+
+**GitHub says the webhook delivery failed.** In **Security → Public access** the mode must be *Webhook only* or *Full access* and the public address
+must be right. Check the GitHub page's *Webhook address* card, and `docker compose logs api`. A delivery that arrived appears in the app's history.
+A `503` means no GitHub App is connected yet.
+
+**An app shows "Container missing".** Its container was removed outside Shipdok (for example `docker rm`). Nothing is running. Press **Deploy** to
+bring it back.
+
+**A deployment fails.** Open the deployment's build log in the dashboard; the reason is almost always in the last lines. For problems before the
+build (cloning, GitHub access) also check `docker compose logs worker`.
+
+**The disk is filling up.** The **Storage** page shows where. Old images are cleaned up from each app's **Images** tab (or turn on
+automatic clean-up), and old logs from the Storage page.
+
+**My data seems empty after restarting.** Compose was probably run from a different folder, which starts a new installation. List the storage
+with `docker volume ls` (names end in `_shipdok_pgdata`) and go back to the original folder.
+
+## Uninstall
+
+This removes Shipdok and all its data (not your apps' containers, which Shipdok created; remove those separately if you want them gone):
+
+```bash
+docker compose down -v
+```
+
+To keep the data, leave out `-v`.

@@ -565,8 +565,13 @@ Build order (SPEC.md Milestone 6); steps 1 to 5 (password policy and lockout, re
 4. Connect GitHub is BUILT (see "Connect GitHub" under Built and verified); the administrator still has to try the real button once.
 5. First-run secrets is BUILT (see above).
 6. Ready-made multi-arch images: BUILT and published (see "Published images"); the Pi pull is part of step 7.
-7. Pi: full-stack run on the published images (ARM64, firewall vs the health-check path), hardening, docs (public
-   address options, upgrade, backup), API docs (Scalar).
+7. Pi: the administrator ran the full stack from the published images on a Pi and it works. DOCS WRITTEN: `README.md` (install, first login,
+   Connect GitHub, first deploy), `docs/public-access.md` (modes, what a proxy must do, Nginx / Caddy / Nginx Proxy Manager / Cloudflare Tunnel
+   examples), `docs/operations.md` (upgrade, backup, restore, password reset, troubleshooting, uninstall). Checked for real: backup and restore
+   into a fresh project (old password logs in, app listed, a stored secret decrypts; backup files need `chmod 600`), the Nginx and Caddy examples in
+   all three modes against a live stack (webhook-only and full proxies, Secure cookie, wrong Origin 403, real client address in the sign-ins list;
+   Caddy needs `handle` blocks, a bare `respond 404` swallows everything). NOT tested: Nginx Proxy Manager itself, restoring over a non-empty
+   install. Still to do: API docs (Scalar), a LICENSE, hardening (rate limit/audit on `reveal`).
 8. Optional: Caddy compose profile for people without a proxy.
 
 Later (idea from the administrator, not started, decided to come back to it): deploying from several GitHub accounts or organisations. Option A (small):
