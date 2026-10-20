@@ -2352,6 +2352,83 @@
         ]
       }
     },
+    "/api/github/branches": {
+      "get": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "The branches of a repository",
+        "description": "For the branch pickers in the dashboard. When the GitHub App is installed on the repository the branches are read with a token for that one repository (read-only); otherwise anonymously, which works for **public** repositories, and also when no GitHub App is connected at all. The default branch comes first, the rest alphabetical; at most the first 500 branches are read (`truncated`). Good answers are kept for a minute. A repository that is private and not covered by the app is a 404 `repo_not_found`; a GitHub rate limit is a 502 `rate_limited`.",
+        "parameters": [
+          {
+            "name": "repo",
+            "in": "query",
+            "required": true,
+            "description": "The repository, as `owner/name`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The branches.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BranchList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a repository name (`code: bad_repo`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such public repository, and the app is not installed on it (`code: repo_not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "GitHub could not be reached (`github_unreachable`) or is limiting requests (`rate_limited`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/github/connect/callback": {
       "get": {
         "tags": [
@@ -5449,6 +5526,32 @@
         },
         "required": [
           "volumes"
+        ]
+      },
+      "BranchList": {
+        "type": "object",
+        "description": "The default branch first, the rest in alphabetical order.",
+        "properties": {
+          "defaultBranch": {
+            "type": "string",
+            "nullable": true,
+            "description": "The repository's default branch (`null` if GitHub did not say)."
+          },
+          "branches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "There were more branches than the first 500 that were read."
+          }
+        },
+        "required": [
+          "defaultBranch",
+          "branches",
+          "truncated"
         ]
       },
       "BuildCache": {

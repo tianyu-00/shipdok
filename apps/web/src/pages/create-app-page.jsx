@@ -10,6 +10,8 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { api } from '@/lib/api'
 import { useRepos } from '@/lib/queries'
+import { BranchPicker } from '@/components/branch-picker'
+import { RepoPicker } from '@/components/repo-picker'
 import { Field } from '@/components/field'
 
 const num = (v) => (v === '' ? undefined : Number(v))
@@ -23,11 +25,13 @@ export default function CreateAppPage() {
     memory_mb: '512', cpus: '1', max_restarts: '5', build_timeout_minutes: '', keep_previous_images: '1', auto_prune: false,
   })
   const [nameTouched, setNameTouched] = useState(false)
+  const [branchTouched, setBranchTouched] = useState(false) // once the branch is chosen by hand, the repository's default no longer replaces it
   const set = (patch) => setF((old) => ({ ...old, ...patch }))
 
   // Picking (or typing) a repository from the GitHub App's list fills in a name and the repository's own default branch.
   const onRepo = (repo) => {
     const known = repos.data?.repos.find((r) => r.fullName === repo)
+    setBranchTouched(false) // a different repository starts again from its own default branch
     set({
       repo,
       ...(nameTouched ? {} : { name: repo.split('/')[1] ?? '' }),
@@ -65,15 +69,16 @@ export default function CreateAppPage() {
         </CardHeader>
         <CardContent>
           <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); create.mutate() }} noValidate>
-            <Field id="repo" label="GitHub repository" hint={repos.data?.available ? 'Repositories the Shipdok GitHub App can see. You can also type owner/repo.' : 'owner/repo. Private repositories need the Shipdok GitHub App.'}>
-              <Input id="repo" list="repo-list" placeholder="owner/repo" autoComplete="off" value={f.repo} onChange={(e) => onRepo(e.target.value)} />
-              <datalist id="repo-list">
-                {repos.data?.repos.map((r) => <option key={r.fullName} value={r.fullName}>{r.private ? 'private' : 'public'}</option>)}
-              </datalist>
+            <Field id="repo" label="GitHub repository" hint={repos.data?.available ? 'The repositories the Shipdok GitHub App can see. For any other public repository, type owner/repo or paste its GitHub link.' : 'owner/repo, or paste the repository\'s GitHub link. Private repositories need the Shipdok GitHub App.'}>
+              <RepoPicker id="repo" value={f.repo} onChange={onRepo} repos={repos} />
             </Field>
             <div className="grid gap-4 sm:grid-cols-2">
               <Field id="name" label="Name"><Input id="name" value={f.name} onChange={(e) => { setNameTouched(true); set({ name: e.target.value }) }} /></Field>
-              <Field id="branch" label="Branch"><Input id="branch" value={f.branch} onChange={(e) => set({ branch: e.target.value })} /></Field>
+              <Field id="branch" label="Branch" hint="Pushes to this branch deploy the app.">
+                <BranchPicker id="branch" repo={f.repo} value={f.branch}
+                  onChange={(branch) => { setBranchTouched(true); set({ branch }) }}
+                  onDefaultKnown={(branch) => { if (!branchTouched) set({ branch }) }} />
+              </Field>
               <Field id="container_port" label="Container port" hint="The port the app listens on inside its container.">
                 <Input id="container_port" inputMode="numeric" value={f.container_port} onChange={(e) => set({ container_port: e.target.value })} />
               </Field>

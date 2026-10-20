@@ -70,6 +70,64 @@ function nextPath(linkHeader, apiBase) {
   }
 }
 
+/**
+ * One call to GitHub's API. A `bearer` token is optional: without one the call is anonymous, which works for public repositories only.
+ * Deliberately no response body and no request details in an error: only the status.
+ */
+async function githubApi({ fetch, apiBase }, path, { method = 'GET', bearer, body, okStatuses = [] } = {}) {
+  let res;
+  try {
+    res = await fetch(`${apiBase}${path}`, {
+      method,
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'shipdok',
+        ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    throw new GithubError('Could not reach GitHub', undefined);
+  }
+  if (!res.ok && !okStatuses.includes(res.status)) {
+    throw new GithubError(`GitHub API request failed (HTTP ${res.status})`, res.status);
+  }
+  let json = null;
+  if (res.ok) {
+    try { json = await res.json(); } catch { throw new GithubError('GitHub sent an unreadable response', res.status); }
+  }
+  return { status: res.status, json, link: res.headers?.get?.('link') ?? null };
+}
+
+const BRANCH_PAGES = 5; // 100 per page: the first 500 branches
+
+/**
+ * The branches of a repository and its default branch. With a `bearer` (an installation token) private repositories work too; without one only
+ * public repositories do. The default branch comes first, the rest in alphabetical order. `truncated` is true when there were more than we read.
+ * @returns {Promise<{ defaultBranch: string|null, branches: string[], truncated: boolean }>}
+ * Throws GithubError (status 404: no such repository, or a private one the token cannot see; 403/429: rate limited).
+ */
+export async function listRepoBranches(fullName, { bearer, fetch = globalThis.fetch, apiBase = 'https://api.github.com' } = {}) {
+  const parsed = parseRepo(fullName);
+  if (!parsed) throw new TypeError('Invalid repository name');
+  const env = { fetch, apiBase };
+  const repoPath = `/repos/${parsed.owner}/${parsed.name}`;
+  const { json: repo } = await githubApi(env, repoPath, { bearer });
+  const names = [];
+  let path = `${repoPath}/branches?per_page=100`;
+  for (let page = 0; path && page < BRANCH_PAGES; page++) {
+    const { json, link } = await githubApi(env, path, { bearer });
+    for (const b of Array.isArray(json) ? json : []) if (typeof b?.name === 'string' && b.name) names.push(b.name);
+    path = nextPath(link, apiBase);
+  }
+  const defaultBranch = typeof repo?.default_branch === 'string' && repo.default_branch ? repo.default_branch : null;
+  const rest = [...new Set(names)].filter((n) => n !== defaultBranch).sort((a, b) => a.localeCompare(b));
+  return { defaultBranch, branches: defaultBranch && names.includes(defaultBranch) ? [defaultBranch, ...rest] : rest, truncated: path !== null };
+}
+
 export function createGithubClient({
   appId,
   privateKey,
@@ -81,34 +139,7 @@ export function createGithubClient({
   const tokenCache = new Map(); // key -> { token, expiresAt }
   const inFlight = new Map(); // key -> Promise<string>
 
-  async function api(path, { method = 'GET', bearer, body, okStatuses = [] } = {}) {
-    let res;
-    try {
-      res = await fetch(`${apiBase}${path}`, {
-        method,
-        headers: {
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-          'User-Agent': 'shipdok',
-          Authorization: `Bearer ${bearer}`,
-          ...(body ? { 'Content-Type': 'application/json' } : {}),
-        },
-        body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(15_000),
-      });
-    } catch {
-      throw new GithubError('Could not reach GitHub', undefined);
-    }
-    if (!res.ok && !okStatuses.includes(res.status)) {
-      // Deliberately no response body and no request details: only the status.
-      throw new GithubError(`GitHub API request failed (HTTP ${res.status})`, res.status);
-    }
-    let json = null;
-    if (res.ok) {
-      try { json = await res.json(); } catch { throw new GithubError('GitHub sent an unreadable response', res.status); }
-    }
-    return { status: res.status, json, link: res.headers?.get?.('link') ?? null };
-  }
+  const api = (path, opts) => githubApi({ fetch, apiBase }, path, opts);
 
   const appJwt = () => signAppJwt({ appId, privateKey, now: now() });
 
@@ -185,6 +216,17 @@ export function createGithubClient({
       if (!parsed) throw new TypeError('Invalid repository name');
       const { status, json } = await api(`/repos/${parsed.owner}/${parsed.name}/installation`, { bearer: appJwt(), okStatuses: [404] });
       return status === 404 ? null : Number(json.id);
+    },
+
+    /**
+     * The branches of a repository: through the app's installation when it is installed there (a token for this one repository, read-only),
+     * otherwise anonymously, which works for public repositories.
+     */
+    async listBranches(fullName) {
+      const id = await client.findInstallationForRepo(fullName);
+      if (id === null) return listRepoBranches(fullName, { fetch, apiBase });
+      const token = await client.getInstallationToken(id, { repo: fullName, permissions: { contents: 'read' } });
+      return listRepoBranches(fullName, { bearer: token, fetch, apiBase });
     },
 
     async listInstallations() {

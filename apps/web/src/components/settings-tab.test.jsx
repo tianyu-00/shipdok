@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import SettingsTab from './settings-tab'
 import { mockApi, answer, renderWithProviders } from '@/test/utils'
@@ -10,6 +10,7 @@ vi.mock('sonner', () => ({ toast: toasts, Toaster: () => null }))
 beforeEach(() => vi.clearAllMocks())
 
 const PUT = `PUT /api/apps/${APP_ID}`
+const BRANCHES = 'GET /api/github/branches?repo=owner%2Fmy-app'
 const tab = (app = makeApp()) => renderWithProviders(<SettingsTab app={app} />)
 const box = (label) => screen.getByLabelText(label)
 const save = () => screen.getByRole('button', { name: 'Save' })
@@ -164,8 +165,9 @@ describe('the settings form', () => {
   })
 
   test('other refusals from the server are shown (a list of problems, or a toast)', async () => {
-    mockApi({ [PUT]: answer(400, { error: 'Invalid app settings', details: ['branch: Invalid branch name'] }) })
+    mockApi({ [PUT]: answer(400, { error: 'Invalid app settings', details: ['branch: Invalid branch name'] }), [BRANCHES]: answer(404, { error: 'No such repository', code: 'repo_not_found' }) })
     tab()
+    await screen.findByRole('textbox', { name: 'Branch' }) // the branches cannot be listed, so the branch is a text box
     await type('Branch', 'dev')
     await userEvent.click(save())
     expect(await screen.findByText('branch: Invalid branch name')).toBeInTheDocument()
@@ -207,5 +209,47 @@ describe('edits that are waiting for a deployment', () => {
   test('a single one is called "it"', () => {
     tab(makeApp({ settings_pending: ['cpus'] }))
     expect(screen.getByText(/CPU limit\. Press Deploy to apply it\./)).toBeInTheDocument()
+  })
+})
+
+describe('the branch on the settings tab', () => {
+  const LIST = { 'GET /api/github/branches?repo=owner%2Fmy-app': { defaultBranch: 'main', branches: ['main', 'develop', 'release'], truncated: false } }
+
+  test('is chosen from the repository\'s own branches, with the default marked', async () => {
+    mockApi({ ...LIST })
+    tab()
+    const box = await screen.findByRole('combobox', { name: 'Branch' })
+    expect(box).toHaveTextContent('main')
+    await userEvent.click(box)
+    const list = await screen.findByRole('listbox')
+    expect(within(list).getAllByRole('option').map((o) => o.textContent)).toEqual(['maindefault', 'develop', 'release'])
+  })
+
+  test('choosing another branch makes the form changed, and saving sends just the branch', async () => {
+    const api = mockApi({ ...LIST, [PUT]: { id: APP_ID, branch: 'develop', settings_pending: ['branch'] } })
+    tab()
+    expect(save()).toBeDisabled()
+    await userEvent.click(await screen.findByRole('combobox', { name: 'Branch' }))
+    await userEvent.click(within(await screen.findByRole('listbox')).getByText('develop'))
+    expect(save()).toBeEnabled()
+    await userEvent.click(save())
+    await waitFor(() => expect(api.called('PUT', `/api/apps/${APP_ID}`)).toHaveLength(1))
+    expect(api.called('PUT', `/api/apps/${APP_ID}`)[0].body).toEqual({ branch: 'develop' })
+  })
+
+  test('choosing the branch it already has changes nothing', async () => {
+    mockApi({ ...LIST })
+    tab()
+    await userEvent.click(await screen.findByRole('combobox', { name: 'Branch' }))
+    await userEvent.click(within(await screen.findByRole('listbox')).getByText('main'))
+    expect(save()).toBeDisabled()
+  })
+
+  test('a saved branch that no longer exists on GitHub is shown with a warning, and can still be kept', async () => {
+    mockApi({ ...LIST })
+    tab(makeApp({ branch: 'old-release' }))
+    expect(await screen.findByText(/“old-release” is not among this repository's branches/)).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Branch' })).toHaveTextContent('old-release')
+    expect(save()).toBeDisabled()
   })
 })

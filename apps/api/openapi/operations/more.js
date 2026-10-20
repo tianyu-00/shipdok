@@ -121,6 +121,13 @@ export default Object.fromEntries([
     responses: { 200: ok('The installations.', { type: 'object', properties: { installations: { type: 'array', items: ref('GithubInstallation') } } }) },
     errors: { ...github501, 502: 'GitHub could not be asked.' },
   })),
+  route('GET', '/api/github/branches', op({
+    tag: GH, summary: 'The branches of a repository',
+    parameters: [{ ...query('repo', 'The repository, as `owner/name`.'), required: true }],
+    description: 'For the branch pickers in the dashboard. When the GitHub App is installed on the repository the branches are read with a token for that one repository (read-only); otherwise anonymously, which works for **public** repositories, and also when no GitHub App is connected at all. The default branch comes first, the rest alphabetical; at most the first 500 branches are read (`truncated`). Good answers are kept for a minute. A repository that is private and not covered by the app is a 404 `repo_not_found`; a GitHub rate limit is a 502 `rate_limited`.',
+    responses: { 200: ok('The branches.', ref('BranchList')) },
+    errors: { 400: 'Not a repository name (`code: bad_repo`).', 404: 'No such public repository, and the app is not installed on it (`code: repo_not_found`).', 502: 'GitHub could not be reached (`github_unreachable`) or is limiting requests (`rate_limited`).' },
+  })),
   route('GET', '/api/github/webhook', op({
     tag: GH, summary: 'Does GitHub send webhooks to the right address?',
     description: 'Compares the address GitHub has (read from the app) with the one Shipdok expects (the public address + `/api/webhooks/github`).',

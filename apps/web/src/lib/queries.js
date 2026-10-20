@@ -2,6 +2,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { isActiveDeployment } from '@/lib/format'
+import { isRepoName } from '@/lib/branches'
 
 export const authQuery = { queryKey: ['auth'], queryFn: async () => {
   const status = await api('/auth/status')
@@ -45,6 +46,17 @@ export const useRepos = () => useQuery({
   },
   staleTime: 60_000,
   retry: false,
+})
+
+// The branches of a repository (the app's own installation, or anonymously for a public one). A repository that is not usable, or a failed
+// answer, is an error the branch picker turns into a plain text box: typing the name always works.
+export const useBranches = (repo) => useQuery({
+  queryKey: ['branches', repo],
+  queryFn: () => api(`/github/branches?repo=${encodeURIComponent(repo)}`),
+  enabled: isRepoName(repo),
+  staleTime: 60_000,
+  retry: false,
+  refetchOnWindowFocus: false,
 })
 
 export const useEnv = (id) => useQuery({ queryKey: ['env', id], queryFn: () => api(`/apps/${id}/env`) })

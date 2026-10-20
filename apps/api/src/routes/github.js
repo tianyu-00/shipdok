@@ -1,12 +1,15 @@
 import { Router } from 'express';
 import { verify } from '@node-rs/argon2';
-import { GithubError, createGithubClient, parsePrivateKeyPem, saveGithubApp, deleteGithubApp } from '@shipdok/shared';
+import { GithubError, createGithubClient, parsePrivateKeyPem, saveGithubApp, deleteGithubApp, listRepoBranches, REPO_FULL_NAME_RE } from '@shipdok/shared';
 import { limiter } from '../authutil.js';
 import { addressOf, recordAttempt } from '../lockout.js';
 
 // Installation ids belong to one GitHub App. Whenever the app changes (a different one entered, connected or disconnected) the ids remembered
 // for each Shipdok app are stale: forget them, and the next deployment looks the installation up again with the app that is connected now.
 export const forgetInstallations = (db) => db.query('UPDATE apps SET github_installation_id = NULL WHERE github_installation_id IS NOT NULL');
+
+const BRANCH_CACHE_MS = 60_000;
+const BRANCH_CACHE_MAX = 100;
 
 const NOT_CONNECTED = { error: 'GitHub is not connected. Connect it on the GitHub page first.' };
 
@@ -154,6 +157,37 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings }) {
       } catch (err) {
         console.error('Listing GitHub repositories failed:', err.message);
         res.status(502).json({ error: 'Could not list repositories from GitHub' });
+      }
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // The branches of a repository, for the branch pickers: through the app's installation when it is installed there, otherwise anonymously
+  // (public repositories). It works with no GitHub App connected too, for public repositories. Good answers are kept for a minute so a form
+  // that is being typed into does not ask GitHub on every keystroke; failures are never kept.
+  const branchCache = new Map(); // "app|owner/name" -> { at, value }
+  r.get('/branches', async (req, res, next) => {
+    try {
+      const repo = req.query.repo;
+      if (typeof repo !== 'string' || !REPO_FULL_NAME_RE.test(repo)) return res.status(400).json({ error: 'repo must be a repository like owner/name', code: 'bad_repo' });
+      const github = await provider.client();
+      const key = `${github ? 'app' : 'anon'}|${repo.toLowerCase()}`;
+      const hit = branchCache.get(key);
+      if (hit && Date.now() - hit.at < BRANCH_CACHE_MS) return res.json(hit.value);
+      try {
+        const value = github ? await github.listBranches(repo) : await listRepoBranches(repo, { fetch });
+        if (branchCache.size >= BRANCH_CACHE_MAX) branchCache.delete(branchCache.keys().next().value);
+        branchCache.set(key, { at: Date.now(), value });
+        res.json(value);
+      } catch (err) {
+        const status = err instanceof GithubError ? err.status : undefined;
+        if (status === 404) {
+          return res.status(404).json({ error: 'GitHub has no such public repository, and the Shipdok GitHub App is not installed on it (a private repository needs the app).', code: 'repo_not_found' });
+        }
+        console.error('Listing GitHub branches failed:', err.message);
+        if (status === 403 || status === 429) return res.status(502).json({ error: 'GitHub is limiting requests right now. Type the branch name, or try again in a few minutes.', code: 'rate_limited' });
+        res.status(502).json({ error: 'Could not list the branches from GitHub', code: 'github_unreachable' });
       }
     } catch (err) {
       next(err);

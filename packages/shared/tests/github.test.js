@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createVerify, createPublicKey } from 'node:crypto';
 import {
-  GithubError, parsePrivateKeyPem, signAppJwt, createGithubClient, exchangeManifestCode, gitAuthEnv, REPO_FULL_NAME_RE,
+  GithubError, parsePrivateKeyPem, signAppJwt, createGithubClient, exchangeManifestCode, gitAuthEnv, listRepoBranches, REPO_FULL_NAME_RE,
 } from '../src/index.js';
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -428,5 +428,138 @@ describe('REPO_FULL_NAME_RE', () => {
     for (const bad of ['../x', './x', 'o/..', 'o/.', '../..', '/x', 'x/', 'a/b/c', 'a b/c', 'o/r?x=1', 'o/r#f', 'o/r;rm -rf /', 'o/r\n', '', 'o', 'o/r/..']) {
       assert.ok(!REPO_FULL_NAME_RE.test(bad), JSON.stringify(bad));
     }
+  });
+});
+
+// ---------------------------------------------------------------- branches
+
+const branchApi = ({ defaultBranch = 'main', names = ['main'], pagesOf = null, repoStatus = 200, branchesStatus = 200 } = {}) => fakeFetch((call) => {
+  const url = new URL(call.url);
+  if (/^\/repos\/[^/]+\/[^/]+$/.test(url.pathname)) return { status: repoStatus, json: { default_branch: defaultBranch } };
+  if (url.pathname.endsWith('/branches')) {
+    if (branchesStatus !== 200) return { status: branchesStatus };
+    const page = Number(url.searchParams.get('page') ?? 1);
+    if (pagesOf) {
+      const chunk = pagesOf[page - 1] ?? [];
+      const next = page < pagesOf.length ? { link: `<https://api.github.com${url.pathname}?per_page=100&page=${page + 1}>; rel="next"` } : {};
+      return { json: chunk.map((name) => ({ name })), headers: next };
+    }
+    return { json: names.map((name) => ({ name })) };
+  }
+  return { status: 404 };
+});
+
+describe('listRepoBranches', () => {
+  test('the default branch first, the rest in alphabetical order', async () => {
+    const fetch = branchApi({ defaultBranch: 'main', names: ['feature/z', 'develop', 'main', 'Feature/a', 'release'] });
+    const out = await listRepoBranches('o/r', { fetch });
+    assert.deepEqual(out, { defaultBranch: 'main', branches: ['main', 'develop', 'Feature/a', 'feature/z', 'release'], truncated: false });
+  });
+
+  test('a default branch that is not in the list (unusual) is not invented', async () => {
+    const out = await listRepoBranches('o/r', { fetch: branchApi({ defaultBranch: 'trunk', names: ['b', 'a'] }) });
+    assert.deepEqual(out.branches, ['a', 'b']);
+    assert.equal(out.defaultBranch, 'trunk');
+  });
+
+  test('no token: the call is anonymous (no Authorization header at all)', async () => {
+    const fetch = branchApi();
+    await listRepoBranches('o/r', { fetch });
+    for (const c of fetch.calls) assert.ok(!('Authorization' in c.headers), c.url);
+  });
+
+  test('with a token it is sent as a Bearer header, on every call', async () => {
+    const fetch = branchApi();
+    await listRepoBranches('o/r', { fetch, bearer: 'ghs_tok' });
+    assert.equal(fetch.calls.length, 2);
+    for (const c of fetch.calls) assert.equal(c.headers.Authorization, 'Bearer ghs_tok');
+  });
+
+  test('follows the pages and says so when there were more than it reads', async () => {
+    const page = (n) => Array.from({ length: 100 }, (_, i) => `b${n}-${String(i).padStart(3, '0')}`);
+    const fetch = branchApi({ defaultBranch: 'main', pagesOf: [page(1), page(2), page(3), page(4), page(5), page(6)] });
+    const out = await listRepoBranches('o/r', { fetch });
+    assert.equal(out.branches.length, 500);
+    assert.equal(out.truncated, true);
+    assert.equal(fetch.calls.filter((c) => c.url.includes('/branches')).length, 5);
+  });
+
+  test('a repository with exactly the pages it reads is not marked truncated', async () => {
+    const out = await listRepoBranches('o/r', { fetch: branchApi({ pagesOf: [['a'], ['b']] }) });
+    assert.deepEqual([out.branches, out.truncated], [['a', 'b'], false]);
+  });
+
+  test('never follows a next link to another host (a token must not be sent elsewhere)', async () => {
+    const fetch = fakeFetch((call) => {
+      const url = new URL(call.url);
+      if (url.pathname.endsWith('/branches')) return { json: [{ name: 'main' }], headers: { link: '<https://evil.example/steal?page=2>; rel="next"' } };
+      return { json: { default_branch: 'main' } };
+    });
+    const out = await listRepoBranches('o/r', { fetch, bearer: 'ghs_tok' });
+    assert.deepEqual(out.branches, ['main']);
+    assert.ok(fetch.calls.every((c) => c.url.startsWith('https://api.github.com/')));
+  });
+
+  test('a repository that does not exist, or is private to an anonymous caller, is a 404 GithubError', async () => {
+    await assert.rejects(listRepoBranches('o/r', { fetch: branchApi({ repoStatus: 404 }) }), (e) => e instanceof GithubError && e.status === 404);
+    await assert.rejects(listRepoBranches('o/r', { fetch: branchApi({ branchesStatus: 404 }) }), (e) => e instanceof GithubError && e.status === 404);
+  });
+
+  test('a rate limit is a GithubError with its status, and nothing else from GitHub leaks', async () => {
+    await assert.rejects(listRepoBranches('o/r', { fetch: branchApi({ repoStatus: 403 }) }), (e) => e.status === 403 && !/secret|token/i.test(e.message));
+  });
+
+  test('an unusable repository name is refused before any request', async () => {
+    const fetch = branchApi();
+    for (const bad of ['', 'x', 'a/b/c', '../x', 'o/..', 'o/r?x=1', 'o/r#', 5, null]) {
+      await assert.rejects(listRepoBranches(bad, { fetch }), TypeError, String(bad));
+    }
+    assert.equal(fetch.calls.length, 0);
+  });
+
+  test('duplicates and nameless entries are dropped', async () => {
+    const fetch = fakeFetch((call) => (new URL(call.url).pathname.endsWith('/branches')
+      ? { json: [{ name: 'a' }, { name: 'a' }, { name: '' }, {}, { name: 5 }, { name: 'b' }, { name: 'b' }, { name: 'main' }] } : { json: { default_branch: 'main' } }));
+    assert.deepEqual((await listRepoBranches('o/r', { fetch })).branches, ['main', 'a', 'b']);
+  });
+});
+
+describe('client.listBranches', () => {
+  const route = ({ installation = 99, branches = { defaultBranch: 'main', names: ['main', 'dev'] } } = {}) => fakeFetch((call) => {
+    const url = new URL(call.url);
+    if (url.pathname.endsWith('/installation')) return installation === null ? { status: 404 } : { json: { id: installation } };
+    if (url.pathname.includes('/access_tokens')) return tokenReply('ghs_scoped');
+    if (url.pathname.endsWith('/branches')) return { json: branches.names.map((name) => ({ name })) };
+    return { json: { default_branch: branches.defaultBranch } };
+  });
+
+  test('installed: uses a token for THIS repository with read-only contents access', async () => {
+    const fetch = route();
+    const out = await makeClient(fetch).listBranches('o/r');
+    assert.deepEqual(out.branches, ['main', 'dev']);
+    const tokenCall = fetch.calls.find((c) => c.url.includes('/access_tokens'));
+    assert.deepEqual(tokenCall.body, { repositories: ['r'], permissions: { contents: 'read' } });
+    for (const c of fetch.calls.filter((c) => c.url.includes('/branches') || /\/repos\/o\/r$/.test(c.url))) assert.equal(c.headers.Authorization, 'Bearer ghs_scoped');
+  });
+
+  test('not installed: falls back to an anonymous call, and the app JWT is only ever sent to the installation lookup', async () => {
+    const fetch = route({ installation: null });
+    const out = await makeClient(fetch).listBranches('o/r');
+    assert.deepEqual(out.branches, ['main', 'dev']);
+    assert.ok(!fetch.calls.some((c) => c.url.includes('/access_tokens')));
+    const branchCalls = fetch.calls.filter((c) => !c.url.endsWith('/installation'));
+    assert.equal(branchCalls.length, 2);
+    for (const c of branchCalls) assert.ok(!('Authorization' in c.headers));
+  });
+
+  test('a repository nobody can see is a 404', async () => {
+    const fetch = fakeFetch((call) => (call.url.endsWith('/installation') ? { status: 404 } : { status: 404 }));
+    await assert.rejects(makeClient(fetch).listBranches('o/r'), (e) => e instanceof GithubError && e.status === 404);
+  });
+
+  test('a failed installation lookup is an error, not a silent anonymous call', async () => {
+    const fetch = fakeFetch((call) => (call.url.endsWith('/installation') ? { status: 500 } : { json: {} }));
+    await assert.rejects(makeClient(fetch).listBranches('o/r'), (e) => e instanceof GithubError && e.status === 500);
+    assert.equal(fetch.calls.length, 1);
   });
 });

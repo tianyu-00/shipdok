@@ -9,7 +9,7 @@ export {
 export { SECRET_FILES, loadSecretFiles, ensureSecrets, applyPlatformDefaults } from './secretfiles.js';
 export { passwordProblem, PASSWORD_MIN, PASSWORD_MAX } from './password.js';
 export {
-  GithubError, parsePrivateKeyPem, signAppJwt, createGithubClient, exchangeManifestCode, gitAuthEnv,
+  GithubError, parsePrivateKeyPem, signAppJwt, createGithubClient, exchangeManifestCode, gitAuthEnv, listRepoBranches,
 } from './github.js';
 export {
   MAX_LINE_BYTES, LOG_FILE_NAMES, RUNTIME_FILE_NAMES, logRoot, logDirFor, logFilePath, runtimeLogPath, formatLine, createRedactor, secretsFromGitEnv,

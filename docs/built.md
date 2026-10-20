@@ -630,6 +630,44 @@ Newest work is at the bottom of the Milestone 6 entries. SPEC.md is the target d
   sensitive filter, copy and download using the wrong lines, "Latest" not turning following on, the console following the theme, "Finished" shown wrongly, one log at a time, missing
   `aria-expanded`, deleting not closing the console, delete offered while running). Not tested: a very long live build in the page (the 5000-line cap is old behaviour), the Logs tab in
   a real browser, other browsers.
+- **Branch picker (verified in tests with a fake GitHub, against the real api.github.com for the anonymous and error paths, and in unit tests of the dashboard; not looked at in a browser, by the administrator's choice; NOT tried with an installed private repository):**
+  **Administrator's decisions: a searchable list (not a plain dropdown), public repositories the app is not installed on are listed too (anonymously), branch names only with the default marked.**
+  `packages/shared/src/github.js`: the request helper moved out of the client (`githubApi`, a `bearer` is now optional: no token, no Authorization header at all) and `listRepoBranches(fullName,
+  {bearer})` (the repository's default branch first, the rest alphabetical, duplicates and nameless entries dropped, at most 5 pages = 500 branches with `truncated`, a Link header is only followed
+  back to the same API host, the name validated before any request); `client.listBranches` looks the installation up and, when installed, uses a token for THIS repository with `contents: read` (the
+  same scoped token a deployment uses), otherwise goes anonymously; a failed installation lookup is an error, not a silent anonymous call. API: `GET /api/github/branches?repo=` (400 `bad_repo` for
+  anything that is not owner/name, an array included; the router lists anonymously when NO GitHub App is connected, which works for public repositories; 404 `repo_not_found` (private and not installed, or
+  no such repository), 502 `rate_limited` for 403/429, otherwise a generic 502 `github_unreachable`; good answers are kept for 60 s per repository (case-insensitive, at most 100 entries), failures
+  never). Dashboard: `ui/popover.jsx` (written by hand in the other ui files' style: the shadcn CLI installs an unrelated package here), `components/branch-picker.jsx`, `lib/branches.js`
+  (`branchOptions`, `stepActive`, `startActive`, `isRepoName`), `lib/use-debounced.js`, `useBranches`. The trigger shows the current branch; the list has a search box (case-insensitive), the default
+  branch with a "default" badge, a check on the current one, arrows (wrapping) and Enter, Escape closes, up to 100 matches drawn with "N more matches: keep typing", a note when GitHub's list was cut
+  short, and, for text that is not exactly a branch, a last option "Use “text”". While loading it is a disabled "Loading branches…" button; if the branches cannot be listed it is the plain text box with
+  the reason and "Type the branch name."; a branch that is not among the listed ones gets a quiet warning (not when the list was truncated). The repository is only asked of GitHub once it has settled
+  for 400 ms (not on every key). Create form: the branch starts as the repository's default as soon as its branches are known (also for a typed repository the app list does not know), unless the
+  person already chose or typed a branch (a branch typed while the list was still loading is kept; a different repository starts again from its own default). Settings tab: the same picker for the
+  app's repository. **Checked for real (anonymous, api.github.com):** `octocat/Hello-World` lists `master` first (its default) then the others, a repository that does not exist and a private one
+  (`tianyu-00/shipdok-test-app`) are 404, a large public repository (`torvalds/linux`) works. Mutation-proofed (about 55 mutants over the client, the route and the dashboard; the survivors showed that
+  duplicates were hidden by the default branch in a test, that failures-not-cached had been mutated in the wrong place, and that the "typed while loading" race and the highlight reset needed their own
+  tests; all are now caught). **Not tested:** an installed private repository (needs the administrator's GitHub App; the scoped-token path is the one deployments use and is covered with a fake),
+  a repository with hundreds of branches in the list, the picker in a real browser or on a phone, GitHub's real anonymous rate limit (about 60 calls an hour per address, one call pair per repository per
+  minute at most).
+- **Pasting a GitHub link as the repository (dashboard only, unit-tested; not looked at in a browser):** the create form's repository field accepts a GitHub link and turns it into `owner/name`
+  (`apps/web/src/lib/repo.js`): `https://github.com/o/r`, `http://`, `www.`, no scheme, a trailing `/`, `.git`, `/tree/<branch>/...`, `/blob/...`, `/pull/12`, `?query`, `#fragment`, a user@ part,
+  `git@github.com:o/r.git`, `ssh://git@github.com/o/r.git`. Only github.com counts (not `github.com.evil.example`, not another host that merely mentions it, not `javascript:` tricks); the result must
+  still have the API's owner/name shape; plain `owner/name` and other hosts are left alone (the server says what is wrong). A paste (more than one character arriving at once) converts at once and then
+  fills in the name and default branch like a picked repository; a link typed key by key is left alone until the field is left (blur), so it is not rewritten under the person's fingers; a link pasted into
+  text already there is not guessed at. **The API stays strict (owner/name only)**; the link is never stored or sent. Mutation-proofed (19 mutants; one survivor showed the `git@github.com:` special case was
+  redundant, so it was removed). Not tested: other browsers' paste handling, a link with a port or an unusual host form (`github.com:443`).
+- **Repository picker (dashboard; unit-tested; not looked at in a browser, by the administrator's choice):** the repository field of the create form was the browser's native `<input list>` dropdown, which
+  the administrator found ugly next to the branch picker. It is now `components/repo-picker.jsx` on a shared `components/combobox.jsx` (the branch picker was moved onto it, with its tests unchanged: the search
+  box, the highlight that starts on the current choice and moves with the arrows (wrapping), Enter, Escape, "Use “...”", the footer; the shared version also fixed the "scroll the highlighted option into view"
+  selector, which used to require the option to be both selected and highlighted). `lib/repos.js` `repoOptions`: the repositories the GitHub App can see, alphabetical, each marked `private` (with a lock) or `public`;
+  the search ignores case and understands a pasted GitHub link (it finds the repository the link points at); a usable owner/name nobody listed is offered last as "Use ..." (a public repository the app is not
+  installed on, listed by the branch picker anonymously); a listed repository is not offered twice, whatever its case; 100 are drawn with "N more matches: keep typing". The trigger shows the chosen
+  repository with its badge; "Loading repositories…" while the list loads; with no GitHub App (501) or a failed list it is the plain text box again (with the paste-a-link behaviour), so typing always works.
+  Create-form tests were moved to the picker flow (open, search, Enter); the link-paste tests now cover both modes. Mutation-proofed (19 mutants over the rules, the picker and the combobox; two survivors were
+  an equivalent mutant (the fallback condition, simplified) and a collation option that only matters for names that differ solely by case, which GitHub does not allow, so it was removed). Not tested: the
+  picker in a real browser or on a phone, a user with hundreds of repositories.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Earlier "Next" notes (Milestone 6 build order, as written before the split)

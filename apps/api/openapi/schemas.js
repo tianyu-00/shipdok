@@ -134,6 +134,13 @@ export const schemas = {
   VolumePaths: { type: 'object', required: ['paths'], properties: { paths: { type: 'array', maxItems: 10, items: { type: 'string', maxLength: 200 }, description: 'The container paths to keep (absolute; letters, digits, dot, dash, underscore, slash; not `/`, not under `/proc`, `/sys` or `/dev`; no duplicates and none inside another). The whole list: a path that is left out is detached, never deleted.' } } },
   VolumeList: obj({ volumes: arr(ref('Volume')) }),
 
+  // ---- branches
+  BranchList: obj({
+    defaultBranch: nstr('The repository\'s default branch (`null` if GitHub did not say).'),
+    branches: arr({ type: 'string' }),
+    truncated: bool('There were more branches than the first 500 that were read.'),
+  }, ['defaultBranch', 'branches', 'truncated'], 'The default branch first, the rest in alphabetical order.'),
+
   // ---- build cache
   BuildCache: obj({
     totalBytes: nint('Size of Docker\'s build cache when the worker last measured it (`null` until it has, or if this Docker cannot say).'),
