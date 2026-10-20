@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { runningSetting, settingsChanges, settingsProblems, settingsToForm } from './settings'
+import { runningSetting, settingsChanges, settingsProblems, settingsToForm, SETTING_LABELS } from './settings'
 import { makeApp } from '@/test/fixtures'
 
 const app = makeApp()
@@ -9,6 +9,22 @@ describe('settingsToForm', () => {
   test('turns an app into text values (a missing health path is an empty box, cpus lose their trailing zeros)', () => {
     expect(settingsToForm(makeApp({ health_path: null, cpus: '1.50' }))).toMatchObject({ health_path: '', cpus: '1.5', host_port: '8080', max_restarts: '5' })
   })
+})
+
+describe('the build time limit', () => {
+  test('is an empty box for no limit, and the number otherwise', () => {
+    expect(settingsToForm(makeApp({ build_timeout_minutes: null })).build_timeout_minutes).toBe('')
+    expect(settingsToForm(makeApp({ build_timeout_minutes: 45 })).build_timeout_minutes).toBe('45')
+  })
+  test.each(['', '5', '45', '10080'])('%j is allowed', (v) => expect(settingsProblems(form({ build_timeout_minutes: v })).build_timeout_minutes).toBeUndefined())
+  test.each(['4', '0', '10081', '2.5', 'abc', '-5'])('%j is flagged', (v) => expect(settingsProblems(form({ build_timeout_minutes: v })).build_timeout_minutes).toEqual(expect.any(String)))
+  test('changes: nothing when the same, a number when set, null when cleared', () => {
+    expect(settingsChanges(form({ build_timeout_minutes: '' }), makeApp({ build_timeout_minutes: null }))).toEqual({})
+    expect(settingsChanges(form({ build_timeout_minutes: '60' }), makeApp({ build_timeout_minutes: null }))).toEqual({ build_timeout_minutes: 60 })
+    expect(settingsChanges(form({ build_timeout_minutes: '45' }), makeApp({ build_timeout_minutes: 45 }))).toEqual({})
+    expect(settingsChanges(form({ build_timeout_minutes: '' }), makeApp({ build_timeout_minutes: 45 }))).toEqual({ build_timeout_minutes: null })
+  })
+  test('has a name for the "waiting for the next deployment" list', () => expect(SETTING_LABELS.build_timeout_minutes).toBe('Build time limit'))
 })
 
 describe('settingsProblems', () => {

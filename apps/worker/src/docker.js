@@ -97,6 +97,10 @@ export function containerSpec({ image, name, labels, containerPort, hostPort, me
       // Docker keeps only a bounded copy of the output; the persistent copy is Shipdok's own (runtime.log).
       LogConfig: { Type: "json-file", Config: { "max-size": "10m", "max-file": "3" } },
       // No privileged mode, no docker.sock, no host binds.
+      // The container cannot start more than 512 processes, so a fork bomb in one app cannot take the whole machine down.
+      // Deliberately NOT set (administrator's decision): `no-new-privileges` and a capability drop. A repository may legitimately need to
+      // elevate (sudo or setuid programs, low ports, chown in an entrypoint), and Shipdok cannot know that in advance.
+      PidsLimit: 512,
     },
   };
 }

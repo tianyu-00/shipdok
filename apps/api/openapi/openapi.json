@@ -224,7 +224,7 @@
           "Apps"
         ],
         "summary": "Edit an app's settings",
-        "description": "Changes the settings you send. **Nothing running is touched:** the next deployment uses the new values (see `settings_pending`); the name and the restart limit apply at once. The repository and the slug cannot be changed (delete the app and create a new one).",
+        "description": "Changes the settings you send. **Nothing running is touched:** the next deployment uses the new values (see `settings_pending`, which includes the build time limit); the name and the restart limit apply at once. The repository and the slug cannot be changed (delete the app and create a new one).",
         "parameters": [
           {
             "name": "id",
@@ -4189,6 +4189,12 @@
           "auto_prune": {
             "default": false,
             "type": "boolean"
+          },
+          "build_timeout_minutes": {
+            "nullable": true,
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 10080
           }
         },
         "required": [
@@ -4247,6 +4253,12 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 50
+          },
+          "build_timeout_minutes": {
+            "nullable": true,
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 10080
           }
         },
         "additionalProperties": false,
@@ -4520,6 +4532,11 @@
           "max_restarts": {
             "type": "integer",
             "description": "Automatic restarts allowed within 10 minutes before the app is marked crashed."
+          },
+          "build_timeout_minutes": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Minutes the clone and the build may take before they are stopped (5 to 10080); `null` = no limit (the default). A build that hangs and has no limit blocks the queue until it is cancelled."
           },
           "desired_state": {
             "type": "string",

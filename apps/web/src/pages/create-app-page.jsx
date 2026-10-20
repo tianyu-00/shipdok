@@ -20,7 +20,7 @@ export default function CreateAppPage() {
   const repos = useRepos()
   const [f, setF] = useState({
     repo: '', name: '', branch: 'main', root_dir: '.', container_port: '3000', host_port: '', health_path: '',
-    memory_mb: '512', cpus: '1', max_restarts: '5', keep_previous_images: '1', auto_prune: false,
+    memory_mb: '512', cpus: '1', max_restarts: '5', build_timeout_minutes: '', keep_previous_images: '1', auto_prune: false,
   })
   const [nameTouched, setNameTouched] = useState(false)
   const set = (patch) => setF((old) => ({ ...old, ...patch }))
@@ -44,6 +44,7 @@ export default function CreateAppPage() {
         ...(f.health_path.trim() ? { health_path: f.health_path.trim() } : {}),
         memory_mb: num(f.memory_mb), cpus: num(f.cpus), max_restarts: num(f.max_restarts),
         keep_previous_images: num(f.keep_previous_images), auto_prune: f.auto_prune,
+        ...(f.build_timeout_minutes.trim() ? { build_timeout_minutes: num(f.build_timeout_minutes.trim()) } : {}),
       },
     }),
     onSuccess: (app) => {
@@ -94,6 +95,9 @@ export default function CreateAppPage() {
                 <Field id="cpus" label="CPU limit"><Input id="cpus" inputMode="decimal" value={f.cpus} onChange={(e) => set({ cpus: e.target.value })} /></Field>
                 <Field id="max_restarts" label="Automatic restarts" hint="Crashes allowed within 10 minutes before the app is marked crashed. 0 = never restart by itself.">
                   <Input id="max_restarts" inputMode="numeric" value={f.max_restarts} onChange={(e) => set({ max_restarts: e.target.value })} />
+                </Field>
+                <Field id="build_timeout_minutes" label="Build time limit (minutes)" hint="Leave empty for no limit. Otherwise a clone and build that take longer than this (5 to 10080) are stopped and the deployment fails. With no limit, a build that hangs blocks other deployments until you cancel it.">
+                  <Input id="build_timeout_minutes" inputMode="numeric" placeholder="no limit" value={f.build_timeout_minutes} onChange={(e) => set({ build_timeout_minutes: e.target.value })} />
                 </Field>
                 <Field id="keep_previous_images" label="Earlier versions kept" hint="Images of earlier versions kept besides the running one, so you can roll back.">
                   <Input id="keep_previous_images" inputMode="numeric" value={f.keep_previous_images} onChange={(e) => set({ keep_previous_images: e.target.value })} />

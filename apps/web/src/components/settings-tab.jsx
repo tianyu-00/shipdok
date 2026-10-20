@@ -66,6 +66,10 @@ function SettingsForm({ app }) {
         </Field>
         <Field id="s-memory_mb" label="Memory limit (MB)" error={err('memory_mb')}><Input id="s-memory_mb" inputMode="numeric" aria-invalid={bad('memory_mb')} value={f.memory_mb} onChange={set('memory_mb')} /></Field>
         <Field id="s-cpus" label="CPU limit" error={err('cpus')}><Input id="s-cpus" inputMode="decimal" aria-invalid={bad('cpus')} value={f.cpus} onChange={set('cpus')} /></Field>
+        <Field id="s-build_timeout_minutes" label="Build time limit (minutes)" error={err('build_timeout_minutes')}
+          hint="Leave empty for no limit. Otherwise a clone and build that take longer than this are stopped and the deployment fails; the running version is untouched. With no limit, a build that hangs blocks other deployments until you cancel it. It applies from the next deployment.">
+          <Input id="s-build_timeout_minutes" inputMode="numeric" placeholder="no limit" aria-invalid={bad('build_timeout_minutes')} value={f.build_timeout_minutes} onChange={set('build_timeout_minutes')} />
+        </Field>
         <Field id="s-max_restarts" label="Automatic restarts" error={err('max_restarts')} hint="Crashes allowed within 10 minutes before the app is marked crashed. 0 = never restart by itself. Applies at once.">
           <Input id="s-max_restarts" inputMode="numeric" aria-invalid={bad('max_restarts')} value={f.max_restarts} onChange={set('max_restarts')} />
         </Field>

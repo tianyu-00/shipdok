@@ -527,3 +527,83 @@ describe('a rollback: running an image that already exists', () => {
     });
   }
 });
+
+describe('the build time limit', () => {
+  // A command that never finishes by itself: it ends only when the signal it was given fires, like a killed child process.
+  const hangs = (which) => (cmd, args, opts) => {
+    if (cmd !== which) return undefined;
+    return new Promise((_, reject) => {
+      if (opts.signal?.aborted) return reject(abortError());
+      opts.signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+    });
+  };
+  const MINUTE = 1 / 60_000 * 50; // 50 ms, as minutes
+
+  test('a build that runs past the limit is stopped and fails with a clear message; the running version is untouched', async () => {
+    const eng = fakeEngine({ previous: ['old'], onRun: hangs('docker') });
+    const logged = [];
+    const r = await run({ buildTimeoutMinutes: MINUTE, log: (m) => logged.push(m) }, eng);
+    assert.equal(r.ok, false);
+    assert.ok(!r.stopped, 'a timeout is a failure, not a cancellation');
+    assert.match(r.error, /took longer than .* minutes? and was stopped/i);
+    assert.ok(logged.some((m) => /took longer than/.test(m)), 'the build log says so too');
+    assert.ok(!eng.events.includes('stop old') && !eng.events.includes('remove old'), 'the running version was never touched');
+    assert.ok(!eng.events.some((e) => e.startsWith('create')), 'no container was made for it');
+    assert.ok(!existsSync(eng.workDir), 'the clone directory is removed');
+  });
+
+  test('the message names the limit in minutes', async () => {
+    const r = await run({ buildTimeoutMinutes: 45 * 0 + MINUTE }, fakeEngine({ onRun: hangs('docker') }));
+    assert.match(r.error, /longer than \S+ minutes?/);
+    const failure = await run({ buildTimeoutMinutes: 5, onStatus: () => {} , signal: undefined, commit: 'bad' }, fakeEngine());
+    assert.equal(failure.error, 'Invalid commit id'); // other failures keep their own message
+  });
+
+  test('the limit covers the clone as well as the build', async () => {
+    const r = await run({ buildTimeoutMinutes: MINUTE }, fakeEngine({ onRun: hangs('git') }));
+    assert.equal(r.ok, false);
+    assert.match(r.error, /took longer than/i);
+  });
+
+  test('with no limit (none given, or null) a slow build is left alone', async () => {
+    for (const buildTimeoutMinutes of [undefined, null]) {
+      const eng = fakeEngine({ onRun: async (cmd) => { if (cmd === 'docker') await new Promise((r) => setTimeout(r, 120)); } });
+      const r = await run({ buildTimeoutMinutes }, eng);
+      assert.equal(r.ok, true, String(buildTimeoutMinutes));
+    }
+  });
+
+  test('a build that finishes inside the limit is not affected, and the limit does not outlive it', async () => {
+    const timers = () => process.getActiveResourcesInfo().filter((x) => x === 'Timeout').length;
+    const before = timers();
+    const r = await run({ buildTimeoutMinutes: 30 }, fakeEngine({ previous: ['old'] }));
+    assert.equal(r.ok, true);
+    assert.equal(timers(), before, 'a 30-minute timer left running would keep the worker alive and fire later');
+  });
+
+  test('the limit stops counting when the build is done: a LATER failure keeps its own message', async () => {
+    // The build is instant; the candidate then needs longer than the limit and turns out unhealthy.
+    const eng = fakeEngine({ previous: ['old'], health: { candidate: async () => { await new Promise((r) => setTimeout(r, 150)); throw new Error('not healthy'); } } });
+    const r = await run({ buildTimeoutMinutes: MINUTE }, eng);
+    assert.equal(r.ok, false);
+    assert.equal(r.error, 'not healthy');
+    assert.ok(!eng.events.includes('stop old'), 'and the running version is untouched');
+  });
+
+  test('a cancel while a limited build is running is still a cancel (stopped), not a timeout failure', async () => {
+    const ctl = new AbortController();
+    const eng = fakeEngine({ onRun: (cmd, args, opts) => { if (cmd === 'docker') { setTimeout(() => ctl.abort(), 10); return hangs('docker')(cmd, args, opts); } return undefined; } });
+    const r = await run({ buildTimeoutMinutes: 30, signal: ctl.signal }, eng);
+    assert.equal(r.ok, false);
+    assert.equal(r.stopped, true);
+  });
+
+  test('a rollback builds nothing, so the limit never applies to it', async () => {
+    const OLD = 'shipdok/my-app:0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a';
+    const eng = fakeEngine({ previous: ['old'] });
+    eng.imageInfo = async () => ({ labels: { 'shipdok.managed': 'true', 'shipdok.app-id': 'app-1' } });
+    const r = await run({ buildTimeoutMinutes: MINUTE, reuseImage: OLD, onRun: undefined }, eng);
+    assert.equal(r.ok, true);
+    assert.ok(!eng.events.includes('run docker build'));
+  });
+});

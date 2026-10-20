@@ -3,13 +3,15 @@ import { BookOpen, GitBranch, HardDrive, LogOut, Ship, ShieldCheck } from 'lucid
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
-import { usePublicAccess } from '@/lib/queries'
+import { usePublicAccess, useRecovery } from '@/lib/queries'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { forgetSession } from '@/lib/session'
 
 export function Shell({ username, children }) {
   const client = useQueryClient()
   const access = usePublicAccess()
+  const recovery = useRecovery()
+  const codesLeft = recovery.data?.remaining
   const logout = useMutation({
     mutationFn: () => api('/auth/logout', { method: 'POST' }),
     // Whatever the answer, this browser should stop showing the data.
@@ -34,6 +36,12 @@ export function Shell({ username, children }) {
       {access.data?.mode === 'full' && (
         <div role="status" aria-label="Public access" className="border-b border-warning/40 bg-warning/10 px-4 py-2 text-center text-sm text-warning">
           The whole dashboard is reachable from the internet. <Link to="/security" className="underline">Security settings</Link>
+        </div>
+      )}
+      {typeof codesLeft === 'number' && codesLeft <= 3 && (
+        <div role="status" aria-label="Recovery codes" className="border-b border-warning/40 bg-warning/10 px-4 py-2 text-center text-sm text-warning">
+          {codesLeft === 0 ? 'You have no recovery codes left.' : `You have ${codesLeft} recovery ${codesLeft === 1 ? 'code' : 'codes'} left.`}{' '}
+          If you forget your password they are the way back in. <Link to="/security" className="underline">Make new codes</Link>
         </div>
       )}
       <main className="mx-auto max-w-6xl px-4 py-6">{children}</main>

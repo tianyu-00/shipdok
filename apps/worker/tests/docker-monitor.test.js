@@ -133,6 +133,13 @@ describe('what a new container is created with', () => {
     assert.ok(!spec.HostConfig.Binds && !spec.HostConfig.Mounts);
     assert.ok(!JSON.stringify(spec).includes('docker.sock'));
   });
+  test('a container cannot start unlimited processes (a fork bomb cannot take the machine down)', () => {
+    assert.equal(spec.HostConfig.PidsLimit, 512);
+  });
+  test('but nothing else is taken away: the administrator decided against no-new-privileges and a capability drop, because a repository may need them', () => {
+    assert.ok(!('SecurityOpt' in spec.HostConfig));
+    assert.ok(!('CapDrop' in spec.HostConfig) && !('CapAdd' in spec.HostConfig));
+  });
   test('ports and limits come from the app', () => {
     assert.deepEqual(spec.HostConfig.PortBindings, { '3000/tcp': [{ HostPort: '9100' }] });
     assert.equal(spec.HostConfig.Memory, 256 * 1024 * 1024);

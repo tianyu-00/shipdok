@@ -343,6 +343,8 @@ describe('Start, Stop and Restart', () => {
     expect(await screen.findByText('Missing')).toBeInTheDocument()
     expect(await screen.findByText(msg)).toBeInTheDocument()
     expect(screen.getByText('Removed outside Shipdok')).toBeInTheDocument()
+    expect(screen.getByText('Last deployed')).toBeInTheDocument() // nothing runs now, so the card must not say it does
+    expect(screen.queryByText('Running now')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()

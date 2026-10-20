@@ -3,12 +3,14 @@
 export const SETTING_LABELS = {
   name: 'Name', branch: 'Branch', root_dir: 'Root directory', container_port: 'Container port', host_port: 'Host port',
   health_path: 'Health check path', memory_mb: 'Memory limit', cpus: 'CPU limit', max_restarts: 'Automatic restarts',
+  build_timeout_minutes: 'Build time limit',
 }
 
 /** The form's text values for an app. */
 export const settingsToForm = (app) => ({
   name: app.name, branch: app.branch, root_dir: app.root_dir, container_port: String(app.container_port), host_port: String(app.host_port),
   health_path: app.health_path ?? '', memory_mb: String(app.memory_mb), cpus: String(Number(app.cpus)), max_restarts: String(app.max_restarts),
+  build_timeout_minutes: app.build_timeout_minutes == null ? '' : String(app.build_timeout_minutes), // empty = no limit
 })
 
 const whole = (v) => /^\d+$/.test(v.trim()) ? Number(v) : null
@@ -33,6 +35,8 @@ export function settingsProblems(f) {
   if (cpu === null || cpu < 0.1 || cpu > 4) p.cpus = 'A number from 0.1 to 4'
   const mr = whole(f.max_restarts)
   if (mr === null || mr > 50) p.max_restarts = 'A whole number from 0 to 50'
+  const bt = f.build_timeout_minutes.trim()
+  if (bt !== '') { const n = whole(bt); if (n === null || n < 5 || n > 10080) p.build_timeout_minutes = 'Empty for no limit, or a whole number of minutes from 5 to 10080' }
   return p
 }
 
@@ -44,6 +48,7 @@ export function settingsChanges(f, app) {
   for (const k of ['name', 'branch', 'root_dir']) if (text[k] !== was[k]) out[k] = text[k]
   for (const k of ['container_port', 'host_port', 'memory_mb', 'max_restarts']) if (Number(f[k]) !== Number(was[k])) out[k] = Number(f[k])
   if (Number(f.cpus) !== Number(was.cpus)) out.cpus = Number(f.cpus)
+  if (f.build_timeout_minutes.trim() !== was.build_timeout_minutes) out.build_timeout_minutes = f.build_timeout_minutes.trim() === '' ? null : Number(f.build_timeout_minutes)
   if (f.health_path.trim() !== was.health_path) out.health_path = f.health_path.trim() === '' ? null : f.health_path.trim()
   return out
 }

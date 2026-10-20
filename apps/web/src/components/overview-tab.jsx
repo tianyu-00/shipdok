@@ -33,7 +33,7 @@ export default function OverviewTab({ app }) {
     <div className="grid gap-4 lg:grid-cols-2">
       <div className="lg:col-span-2 empty:hidden"><PendingSettings app={app} /></div>
       <Card>
-        <CardHeader><CardTitle className="text-base">Running now</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">{rt?.state === 'missing' ? 'Last deployed' : 'Running now'}</CardTitle></CardHeader>
         <CardContent>
           {live ? (
             <dl className="grid grid-cols-2 gap-4">

@@ -160,6 +160,10 @@ bring it back.
 **A deployment fails.** Open the deployment's build log in the dashboard; the reason is almost always in the last lines. For problems before the
 build (cloning, GitHub access) also check `docker compose logs worker`.
 
+**A deployment never finishes.** A build that hangs blocks the other deployments until you press **Cancel** on it. To have a runaway clone or
+build stopped automatically, set a **Build time limit** (minutes) in the app's **Settings** (empty means no limit, the default). The
+limit applies from the next deployment and covers the clone and the build; the running version is never touched.
+
 **The disk is filling up.** The **Storage** page shows where. Old images are cleaned up from each app's **Images** tab (or turn on
 automatic clean-up), and old logs from the Storage page.
 

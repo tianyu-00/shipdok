@@ -28,6 +28,7 @@ export async function requestDeployment({ db, queue }, app, { trigger = 'manual'
     repo: app.repo, branch: app.branch, root_dir: app.root_dir,
     container_port: app.container_port, host_port: app.host_port,
     health_path: app.health_path, memory_mb: app.memory_mb, cpus: Number(app.cpus),
+    build_timeout_minutes: app.build_timeout_minutes ?? null, // null = no limit
   };
   // Which variable versions this deployment is meant to use (names and numbers only, never values).
   const { rows: envRows } = await db.query(
@@ -70,6 +71,7 @@ export async function requestDeployment({ db, queue }, app, { trigger = 'manual'
       health: snapshot.health_path ?? undefined,
       memoryMb: snapshot.memory_mb,
       cpus: snapshot.cpus,
+      buildTimeoutMinutes: snapshot.build_timeout_minutes ?? undefined, // left out when there is no limit
       startAfterDeploy: startAfter || undefined, // the worker applies it only if the deployment succeeds
     });
     await db.query('UPDATE deployments SET job_id = $2 WHERE id = $1', [deploymentId, String(job.id)]);

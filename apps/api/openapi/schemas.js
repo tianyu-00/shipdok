@@ -76,6 +76,7 @@ export const schemas = {
       health_path: nstr('A path that answers when the app is healthy (`null`: any answer counts).'),
       memory_mb: int('Memory limit in MB.'), cpus: { type: 'string', description: 'CPU limit, as a decimal string (for example `"1.00"`).' },
       max_restarts: int('Automatic restarts allowed within 10 minutes before the app is marked crashed.'),
+      build_timeout_minutes: nint('Minutes the clone and the build may take before they are stopped (5 to 10080); `null` = no limit (the default). A build that hangs and has no limit blocks the queue until it is cancelled.'),
       desired_state: enumOf(['running', 'stopped'], 'What the administrator wants. What really happens is in `runtime`.'),
       keep_previous_images: int('Earlier versions\' images kept besides the running one.'), auto_prune: bool('Clean up images automatically after each successful deployment.'),
       deleting_at: ntime('Set while the app is being deleted.'), delete_error: nstr('Why a deletion failed (press delete again to retry).'),

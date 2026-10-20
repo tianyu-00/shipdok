@@ -73,6 +73,7 @@ describe('what can be edited', () => {
     [{ branch: '..bad' }], [{ branch: '' }], [{ root_dir: '../x' }], [{ root_dir: '/abs' }], [{ container_port: 0 }], [{ container_port: 70000 }],
     [{ host_port: 80 }], [{ host_port: 70000 }], [{ host_port: 'x' }], [{ health_path: 'no-slash' }], [{ health_path: '/has space' }],
     [{ memory_mb: 10 }], [{ memory_mb: 99999 }], [{ cpus: 0 }], [{ cpus: 9 }], [{ max_restarts: -1 }], [{ max_restarts: 51 }], [{ name: '' }], [{ name: '!!!' }],
+    [{ build_timeout_minutes: 4 }], [{ build_timeout_minutes: 0 }], [{ build_timeout_minutes: -5 }], [{ build_timeout_minutes: 10081 }], [{ build_timeout_minutes: 5.5 }], [{ build_timeout_minutes: '30' }],
   ])('refuses %j the way creating does', async (body) => {
     const before = await row(appId);
     const res = await put(appId, body);
@@ -196,5 +197,29 @@ describe('what is running is not touched', () => {
   test('a record without a setting counts as unchanged, not as pending', async () => {
     await deployed(appId, {});
     expect((await agent.get(`/api/apps/${appId}`)).body.settings_pending).toEqual([]);
+  });
+});
+
+describe('the build time limit', () => {
+  test('a new app has no limit', async () => {
+    expect((await agent.get(`/api/apps/${appId}`)).body.build_timeout_minutes).toBeNull();
+  });
+
+  test('can be set (5 minutes to 7 days) and cleared again (null = no limit)', async () => {
+    for (const minutes of [5, 45, 10080]) {
+      const res = await put(appId, { build_timeout_minutes: minutes });
+      expect([minutes, res.status, res.body.build_timeout_minutes]).toEqual([minutes, 200, minutes]);
+      expect((await row(appId)).build_timeout_minutes).toBe(minutes);
+    }
+    const cleared = await put(appId, { build_timeout_minutes: null });
+    expect([cleared.status, cleared.body.build_timeout_minutes]).toEqual([200, null]);
+    expect((await row(appId)).build_timeout_minutes).toBeNull();
+  });
+
+  test('is a setting that waits for the next deployment, like the other build settings', async () => {
+    await deployed(appId, { repo: 'o/a', branch: 'main', root_dir: '.', container_port: 3000, host_port: 8080, health_path: '/health', memory_mb: 512, cpus: 1, build_timeout_minutes: null });
+    expect((await agent.get(`/api/apps/${appId}`)).body.settings_pending).toEqual([]);
+    expect((await put(appId, { build_timeout_minutes: 60 })).body.settings_pending).toEqual(['build_timeout_minutes']);
+    expect((await put(appId, { build_timeout_minutes: null })).body.settings_pending).toEqual([]);
   });
 });

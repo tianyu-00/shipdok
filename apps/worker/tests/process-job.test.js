@@ -49,6 +49,28 @@ const flag = (id, status, by = null) =>
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const T = { timeout: 15000 };
 
+describe('the build time limit reaches the deploy step', () => {
+  test('the limit in the job is handed on, and its absence means no limit', async () => {
+    const appId = await makeApp();
+    const withLimit = fakeDeploy();
+    await processDeployJob(fakeJob({ ...jobFor(appId, await makeDeployment(appId)).data, buildTimeoutMinutes: 45 }), { secretsKey: KEY, deployFn: withLimit });
+    assert.equal(withLimit.calls[0].buildTimeoutMinutes, 45);
+    const without = fakeDeploy();
+    await processDeployJob(jobFor(appId, await makeDeployment(appId)), { secretsKey: KEY, deployFn: without });
+    assert.equal(without.calls[0].buildTimeoutMinutes, undefined);
+  });
+
+  test('a build that ran out of time is recorded as a failed deployment with the reason', async () => {
+    const appId = await makeApp();
+    const depId = await makeDeployment(appId);
+    const msg = 'The build took longer than 5 minutes and was stopped (the limit is a setting of the app)';
+    await assert.rejects(processDeployJob(jobFor(appId, depId), { secretsKey: KEY, deployFn: fakeDeploy({ ok: false, error: msg }) }));
+    const d = await getDeployment(depId);
+    assert.equal(d.status, 'failed');
+    assert.equal(d.error_summary, msg);
+  });
+});
+
 describe('a successful job', () => {
   test('passes the decrypted variables to the deploy step and records success', async () => {
     const appId = await makeApp();

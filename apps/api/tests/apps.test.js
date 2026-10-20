@@ -160,6 +160,27 @@ describe("requesting a deployment", () => {
     });
   });
 
+  test("the build time limit: none by default, reaches the worker when set, and is in the snapshot", async () => {
+    let res = await agent.post(`/api/apps/${created.id}/deployments`);
+    expect(res.body.config_snapshot.build_timeout_minutes).toBeNull();
+    expect(queue.add.mock.calls.at(-1)[1].buildTimeoutMinutes).toBeUndefined(); // no limit: nothing sent
+    await agent.put(`/api/apps/${created.id}`).send({ build_timeout_minutes: 45 });
+    res = await agent.post(`/api/apps/${created.id}/deployments`);
+    expect(res.body.config_snapshot.build_timeout_minutes).toBe(45);
+    expect(queue.add.mock.calls.at(-1)[1].buildTimeoutMinutes).toBe(45);
+  });
+
+  test("an app can be created with a build time limit, and a bad one is refused", async () => {
+    const ok = await agent.post("/api/apps").send({ ...VALID, name: "Limited", host_port: 8099, build_timeout_minutes: 60 });
+    expect([ok.status, ok.body.build_timeout_minutes]).toEqual([201, 60]);
+    const none = await agent.post("/api/apps").send({ ...VALID, name: "Unlimited", host_port: 8098, build_timeout_minutes: null });
+    expect([none.status, none.body.build_timeout_minutes]).toEqual([201, null]);
+    for (const bad of [4, 0, 10081, 2.5, "30"]) {
+      const res = await agent.post("/api/apps").send({ ...VALID, name: "Bad", host_port: 8097, build_timeout_minutes: bad });
+      expect([bad, res.status]).toEqual([bad, 400]);
+    }
+  });
+
   test("snapshots the settings used, so later edits cannot rewrite history", async () => {
     const res = await agent.post(`/api/apps/${created.id}/deployments`);
     expect(res.body.config_snapshot).toMatchObject({

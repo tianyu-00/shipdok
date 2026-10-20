@@ -35,6 +35,8 @@ export const createSchema = z.object({
   // automatically after each successful deployment. Cleaning up is normally requested by the administrator.
   keep_previous_images: z.number().int().min(0).max(10).default(1),
   auto_prune: z.boolean().default(false),
+  // Minutes the clone and the build may take before they are stopped; empty (null) = no limit.
+  build_timeout_minutes: z.number().int().min(5).max(10080).nullish(),
 }).strict();
 
 // What can be edited later. Not the repository (delete and recreate instead) and not the slug (it names the images and containers).
@@ -49,11 +51,12 @@ export const updateSchema = z.object({
   memory_mb: createSchema.shape.memory_mb.unwrap(),
   cpus: createSchema.shape.cpus.unwrap(),
   max_restarts: createSchema.shape.max_restarts.unwrap(),
+  build_timeout_minutes: z.number().int().min(5).max(10080).nullable(),
 }).partial().strict().refine((v) => Object.keys(v).length > 0, 'Give at least one setting to change');
 
 // The settings a deployment bakes into its container. An edit to one of these is "pending" until the next deployment; the name
 // and the restart limit are read live, so they never are.
-const SNAPSHOT_SETTINGS = ['branch', 'root_dir', 'container_port', 'host_port', 'health_path', 'memory_mb', 'cpus'];
+const SNAPSHOT_SETTINGS = ['branch', 'root_dir', 'container_port', 'host_port', 'health_path', 'memory_mb', 'cpus', 'build_timeout_minutes'];
 
 export const retentionSchema = z.object({
   keep_previous_images: z.number().int().min(0).max(10).optional(),
@@ -132,9 +135,9 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
           }
           try {
             ({ rows } = await db.query(
-              `INSERT INTO apps (name, slug, repo, branch, root_dir, container_port, host_port, health_path, memory_mb, cpus, max_restarts, keep_previous_images, auto_prune)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-              [a.name, slug, a.repo, a.branch, a.root_dir, a.container_port, hostPort, a.health_path ?? null, a.memory_mb, a.cpus, a.max_restarts, a.keep_previous_images, a.auto_prune],
+              `INSERT INTO apps (name, slug, repo, branch, root_dir, container_port, host_port, health_path, memory_mb, cpus, max_restarts, keep_previous_images, auto_prune, build_timeout_minutes)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+              [a.name, slug, a.repo, a.branch, a.root_dir, a.container_port, hostPort, a.health_path ?? null, a.memory_mb, a.cpus, a.max_restarts, a.keep_previous_images, a.auto_prune, a.build_timeout_minutes ?? null],
             ));
             break;
           } catch (err) {

@@ -27,6 +27,18 @@ describe('creating an app', () => {
     })
   })
 
+  test('the build time limit: empty means none (not sent), a number is sent', async () => {
+    const api = mockApi({ 'GET /api/github/repos': repos, 'POST /api/apps': answer(201, { id: 'new-id', name: 'site' }) })
+    page()
+    await userEvent.type(screen.getByLabelText('GitHub repository'), 'tianyu-00/site')
+    expect(screen.getByLabelText('Build time limit (minutes)')).toHaveValue('')
+    expect(screen.getByText(/leave empty for no limit/i)).toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('Build time limit (minutes)'), '45')
+    await userEvent.click(screen.getByRole('button', { name: 'Create app' }))
+    expect(await screen.findByText('detail page')).toBeInTheDocument()
+    expect(api.called('POST', '/api/apps')[0].body.build_timeout_minutes).toBe(45)
+  })
+
   test('a host port left empty is not sent, so the server picks one', async () => {
     const api = mockApi({ 'GET /api/github/repos': repos, 'POST /api/apps': answer(201, { id: 'new-id', name: 'site' }) })
     page()

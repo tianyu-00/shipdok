@@ -93,6 +93,7 @@ as described in [Public access](docs/public-access.md).
 | Task | Where |
 |---|---|
 | Upgrade, back up, restore, troubleshoot | [Operations](docs/operations.md) |
+| What is protected, and the risks to know about | [Security](docs/security.md) |
 | Put Shipdok behind Nginx, Caddy, Nginx Proxy Manager or a tunnel | [Public access](docs/public-access.md) |
 | Forgot the password | use a recovery code on the login screen, or [reset it on the host](docs/operations.md#forgot-the-password) |
 | Look up an API call | the API reference at `/api/docs` in the dashboard's address (signed in; switch off with `API_DOCS=false`) |

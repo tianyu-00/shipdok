@@ -15,6 +15,45 @@ const box = (label) => screen.getByLabelText(label)
 const save = () => screen.getByRole('button', { name: 'Save' })
 const type = async (label, text) => { await userEvent.clear(box(label)); if (text) await userEvent.type(box(label), text) }
 
+describe('the build time limit', () => {
+  test('is an empty box when there is no limit, and says what that means', () => {
+    tab(makeApp({ build_timeout_minutes: null }))
+    expect(box('Build time limit (minutes)')).toHaveValue('')
+    expect(screen.getByText(/leave empty for no limit/i)).toBeInTheDocument()
+    expect(screen.getByText(/blocks? (the )?other deployments|until you cancel/i)).toBeInTheDocument()
+  })
+
+  test('setting it sends the number, and it waits for the next deployment', async () => {
+    const api = mockApi({ [PUT]: makeApp({ build_timeout_minutes: 60, settings_pending: ['build_timeout_minutes'] }) })
+    tab()
+    await type('Build time limit (minutes)', '60')
+    await userEvent.click(save())
+    await waitFor(() => expect(api.called('PUT', `/api/apps/${APP_ID}`)).toHaveLength(1))
+    expect(api.called('PUT', `/api/apps/${APP_ID}`)[0].body).toEqual({ build_timeout_minutes: 60 })
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('Saved. Deploy to apply the changes.'))
+  })
+
+  test('emptying it sends null (no limit)', async () => {
+    const api = mockApi({ [PUT]: makeApp({ build_timeout_minutes: null, settings_pending: ['build_timeout_minutes'] }) })
+    tab(makeApp({ build_timeout_minutes: 45 }))
+    expect(box('Build time limit (minutes)')).toHaveValue('45')
+    await type('Build time limit (minutes)', '')
+    await userEvent.click(save())
+    await waitFor(() => expect(api.called('PUT', `/api/apps/${APP_ID}`)).toHaveLength(1))
+    expect(api.called('PUT', `/api/apps/${APP_ID}`)[0].body).toEqual({ build_timeout_minutes: null })
+  })
+
+  test('a number the server would refuse is caught first', async () => {
+    const api = mockApi({})
+    tab()
+    await type('Build time limit (minutes)', '3')
+    await userEvent.click(save())
+    expect(await screen.findByText(/from 5 to 10080/i)).toBeInTheDocument()
+    expect(box('Build time limit (minutes)')).toHaveAttribute('aria-invalid', 'true')
+    expect(api.called('PUT', `/api/apps/${APP_ID}`)).toHaveLength(0)
+  })
+})
+
 describe('the settings form', () => {
   test('starts with the app\'s values, and nothing to save', () => {
     tab(makeApp({ health_path: null, cpus: '1.50' }))

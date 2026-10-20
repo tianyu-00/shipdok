@@ -31,7 +31,7 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 019_missing_container
+  migrations/    001_init ... 020_build_timeout
   src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), recovery.js (recovery codes), resetpassword.js (host-side reset), authutil.js, settings.js + publicurl.js (public-access settings), visitor.js (local or outside), middleware/ (originCheck, publicAccess, requireAuth), routes/ (auth, recovery, settings, apps, env, webhooks, github, logs)
   openapi/       API documentation: operations/*.js (one description per route), schemas.js, build.js, inventory.js (real routes), generate.js, openapi.json (generated, committed)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`), reset-password.js (host-side password reset; `npm run reset-password`)
@@ -74,7 +74,7 @@ test projects do): `POSTGRES_USER`/`POSTGRES_DB` (default `shipdok`), `API_HOST_
 requests from whatever address it is opened at), `MONITOR_INTERVAL_MS`, `STATS_INTERVAL_MS`, and the four secrets below (your value wins).
 `LOG_DIR` is set by compose to the `shipdok_logs` volume (outside Docker it defaults to `~/.shipdok/logs`). **`DOCKER_GID` is gone.**
 
-Tests: API 904, worker 530, shared 232, web 524. Worker tests reuse the `_test` database the API tests create and
+Tests: API 915, worker 542, shared 232, web 547. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` is now needed only for development with npm (`POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY`: 64 hex, losing
 it makes stored secrets unrecoverable) and for the optional settings above. **The GitHub App is NOT configured here any more** (dashboard,
@@ -583,6 +583,25 @@ GitHub page; see "Connect GitHub").
   through nginx: signed out `/api/docs` -> login at `/api-docs` -> after login the reference; the header link and its new tab; phone width. Known limits: Scalar tries `eval` once
   and the policy blocks it (nothing visible is lost); Scalar's "Generate SDK" button is still shown; response shapes are written by hand from the
   routes (only the app request bodies come from validators), so a changed response is not caught by a test unless the route list changes.
+- **Hardening slice: per-app build time limit, container hardening, security doc, two dashboard notices (verified with real Docker and a real
+  browser; the reveal rate limit and HSTS were dropped by the administrator on purpose: a session can already deploy code that reads every variable,
+  and HSTS only matters in `full` mode over HTTPS):** **Administrator's decisions: the build time limit is a per-APP setting in the dashboard, not an
+  environment variable; 5 minutes up to 7 days or UNLIMITED, and the default is UNLIMITED.** Column `apps.build_timeout_minutes` (migration 020, NULL = no limit,
+  CHECK 5..10080); on the create form (under "Limits and clean-up") and the Settings tab ("Build time limit (minutes)", empty = no limit, hint says a
+  hanging build with no limit blocks the queue until cancelled); it is part of the deployment snapshot and the list of settings that wait for the next
+  deployment; zod validators (so the API docs follow); the job carries `buildTimeoutMinutes` (absent = no limit). `deploy()` starts a timer just before
+  the clone and stops it when the build ends (so a LATER failure, for instance an unhealthy candidate, is never blamed on it); the timer aborts the clone
+  and `docker build` through the same signal a cancel uses (`AbortSignal.any`), and a timeout is reported as a FAILURE with "The build took longer than N
+  minutes and was stopped (the limit is a setting of the app)" while a user cancel stays "stopped"; the running version is never touched; a rollback builds
+  nothing so it is not limited. Checked for real: the real worker engine against a local repo whose Dockerfile runs `sleep 600` and a limit of 0.1 minutes:
+  stopped at 6.0 s, BuildKit printed `#6 CANCELED`, no process and no image left. Two mutants that first survived (timer not cleared after the build; a dead
+  `!signal.aborted` condition) led to a new test and a simplification. **Containers** now get `PidsLimit: 512`. **Administrator's decision: NO `no-new-privileges` and no capability drop**
+  (a repository may legitimately need to elevate; I had added it, it was removed again and a test now pins that it is absent); checked for real: PidsLimit 512 on a real container and
+  starting 700 processes fails with "can't fork: Resource temporarily unavailable". **`docs/security.md`** states what is protected and the residual risks
+  plainly (no 2FA; a signed-in administrator owns the host; deployed code is trusted; no build limit by default; HTTP is not encrypted; backups hold secrets);
+  linked from the README and operations. **Dashboard:** a notice bar in the header area when 3 or fewer recovery codes are left (0 says "no recovery codes left",
+  links to Security; checked for real with 2 left), and the Overview card says "Last deployed" instead of "Running now" while the container is missing.
+  Not tested: a truly hostile repository, a build that ignores SIGTERM inside BuildKit for a long time, Pi limits.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
@@ -606,7 +625,7 @@ Build order (SPEC.md Milestone 6); steps 1 to 5 (password policy and lockout, re
    into a fresh project (old password logs in, app listed, a stored secret decrypts; backup files need `chmod 600`), the Nginx and Caddy examples in
    all three modes against a live stack (webhook-only and full proxies, Secure cookie, wrong Origin 403, real client address in the sign-ins list;
    Caddy needs `handle` blocks, a bare `respond 404` swallows everything). NOT tested: Nginx Proxy Manager itself, restoring over a non-empty
-   install. API docs and the MIT LICENSE are DONE (see "API documentation"). Still to do: hardening (rate limit/audit on `reveal`).
+   install. API docs and the MIT LICENSE are DONE (see "API documentation"). Hardening is DONE (see "Hardening slice"). Nothing from the Milestone 6 list is left except the optional Caddy profile (step 8).
 8. Optional: Caddy compose profile for people without a proxy.
 
 Later (idea from the administrator, not started, decided to come back to it): deploying from several GitHub accounts or organisations. Option A (small):

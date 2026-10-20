@@ -31,6 +31,7 @@ import { checkoutSource, gitEnvironment } from './git.js';
  * @param {string[]} [opts.env=[]]      ['KEY=VALUE', ...] for the container
  * @param {Record<string,string>} [opts.gitEnv]  extra environment for GIT ONLY (a GitHub token). Never given to docker or the container.
  * @param {(container: object) => Promise<void>} [opts.onRetire]  called with each old container after the new one is live, before it is removed (save its output)
+ * @param {number|null} [opts.buildTimeoutMinutes]  stop the clone and the build if they take longer than this; none/null = no limit
  * @param {number} [opts.retireTimeoutMs=10000]  how long to wait for onRetire
  * @param {{write: Function, line: Function}} [opts.logSink]  also receives the output of git and docker build (the deployment's log file)
  * @param {AbortSignal} [opts.signal]   aborts work in progress, up to the point of no return
@@ -59,6 +60,16 @@ export async function deploy(opts, eng = realEngine) {
   const image = reused ? o.reuseImage : `shipdok/${name}:${deploymentId}`;
   const healthOpts = { containerPort: o.containerPort, health: o.health };
   const { signal } = o;
+  // The build time limit covers the clone and the build together (not the health check, which has its own). It aborts them the same way a
+  // cancel does, but it is remembered, so that it is reported as a FAILURE with its own message and not as "stopped on request".
+  const limitMs = o.buildTimeoutMinutes ? o.buildTimeoutMinutes * 60_000 : null;
+  const limit = limitMs ? new AbortController() : null;
+  let timedOut = false;
+  let limitTimer = null;
+  const buildSignal = limit ? AbortSignal.any([signal, limit.signal].filter(Boolean)) : signal;
+  const startLimit = () => { if (limit) limitTimer = setTimeout(() => { timedOut = true; limit.abort(); }, limitMs); };
+  const stopLimit = () => { clearTimeout(limitTimer); limitTimer = null; };
+  const timeoutMessage = () => `The build took longer than ${o.buildTimeoutMinutes} minute${o.buildTimeoutMinutes === 1 ? '' : 's'} and was stopped (the limit is a setting of the app)`;
   const stopIfAborted = () => { if (signal?.aborted) throw eng.abortError(); };
 
   const make = (role, hostPort) => eng.createContainer({
@@ -138,21 +149,26 @@ export async function deploy(opts, eng = realEngine) {
       if (!info) throw new Error('The image of that version no longer exists (it was removed to free space), so it cannot be rolled back to');
       if (info.labels?.[LABEL.managed] !== 'true' || info.labels?.[LABEL.app] !== o.appId) throw new Error('That image does not belong to this app');
     } else {
-      const head = await checkoutSource(eng, {
-        workDir, repo: o.repo, ref: o.ref, commit: o.commit, env: gitEnvironment(o.gitEnv), signal, sink: o.logSink, log,
-      });
-      notify(o.onCommit, head);
-      // Resolve symlinks AFTER cloning: the API validates the string, but only the real path is trustworthy.
-      const buildDir = await resolveBuildDir(workDir, o.dir);
+      startLimit();
+      try {
+        const head = await checkoutSource(eng, {
+          workDir, repo: o.repo, ref: o.ref, commit: o.commit, env: gitEnvironment(o.gitEnv), signal: buildSignal, sink: o.logSink, log,
+        });
+        notify(o.onCommit, head);
+        // Resolve symlinks AFTER cloning: the API validates the string, but only the real path is trustworthy.
+        const buildDir = await resolveBuildDir(workDir, o.dir);
 
-      log(`Building ${image}`);
-      await eng.run('docker', [
-        'build', '--progress=plain', '-t', image, // plain: readable in a file, no terminal redrawing
-        '--label', 'shipdok.managed=true',
-        '--label', `shipdok.app-id=${o.appId}`,
-        '--label', `shipdok.deployment-id=${deploymentId}`,
-        buildDir,
-      ], { env: { ...process.env, DOCKER_BUILDKIT: '1' }, signal, sink: o.logSink });
+        log(`Building ${image}`);
+        await eng.run('docker', [
+          'build', '--progress=plain', '-t', image, // plain: readable in a file, no terminal redrawing
+          '--label', 'shipdok.managed=true',
+          '--label', `shipdok.app-id=${o.appId}`,
+          '--label', `shipdok.deployment-id=${deploymentId}`,
+          buildDir,
+        ], { env: { ...process.env, DOCKER_BUILDKIT: '1' }, signal: buildSignal, sink: o.logSink });
+      } finally {
+        stopLimit();
+      }
     }
     log(`Image arch: ${await eng.imageArch(image)}, host: ${await eng.hostArchitecture()}`);
     const imageBytes = await eng.imageSize(image).then(Number, () => null); // for the clean-up summary; never worth failing a deployment
@@ -218,9 +234,12 @@ export async function deploy(opts, eng = realEngine) {
       if (!reused) await eng.removeImage(image);
       return { ok: false, stopped: true, deploymentId, image };
     }
-    log(`Deployment FAILED: ${err.message}`);
-    return { ok: false, deploymentId, image, error: err.message };
+    // A limit that fired is a failure with its own message, whatever error the aborted command raised. (A cancel was handled above.)
+    const message = timedOut ? timeoutMessage() : err.message;
+    log(`Deployment FAILED: ${message}`);
+    return { ok: false, deploymentId, image, error: message };
   } finally {
+    stopLimit();
     if (candidate) await eng.removeQuietly(candidate);
     await rm(workDir, { recursive: true, force: true });
   }
