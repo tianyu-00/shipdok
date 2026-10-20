@@ -19,7 +19,8 @@ effect at once). If you set `SHIPDOK_PUBLIC` or `PUBLIC_URL` in the environment,
 Someone on your local network, or on a VPN you run, always reaches everything, whatever the mode.
 
 The **public address** is the one outside visitors (and GitHub) use, for example `https://shipdok.example.com`. Shipdok gives it to
-GitHub as the webhook address (`<public address>/api/webhooks/github`) and keeps GitHub's copy up to date when you change it.
+GitHub as the webhook address (`<public address>/api/webhooks/github`) and keeps GitHub's copy up to date when you change it. With several GitHub Apps
+connected they all use the same address (each has its own secret), and a change is sent to every one of them.
 
 ## What your proxy must do
 

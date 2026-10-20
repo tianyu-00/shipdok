@@ -15,9 +15,9 @@ import { useDebounced } from '@/lib/use-debounced'
  *
  * `onDefaultKnown(branch)` is called once the repository's default branch is known, so a form can start with it.
  */
-export function BranchPicker({ id, repo, value, onChange, onDefaultKnown, invalid }) {
+export function BranchPicker({ id, repo, value, onChange, onDefaultKnown, invalid, githubAppId }) {
   const wanted = useDebounced(String(repo ?? '').trim(), 400) // not on every key while the repository is being typed
-  const branches = useBranches(wanted)
+  const branches = useBranches(wanted, githubAppId)
   const data = branches.data
   const known = isRepoName(wanted)
 

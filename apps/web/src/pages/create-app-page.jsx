@@ -9,9 +9,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { api } from '@/lib/api'
-import { useRepos } from '@/lib/queries'
+import { useGithub, useRepos } from '@/lib/queries'
+import { githubAppBody, startingApp } from '@/lib/github-apps'
 import { BranchPicker } from '@/components/branch-picker'
 import { RepoPicker } from '@/components/repo-picker'
+import { GithubAppSelect } from '@/components/github-app-select'
 import { Field } from '@/components/field'
 
 const num = (v) => (v === '' ? undefined : Number(v))
@@ -19,7 +21,11 @@ const num = (v) => (v === '' ? undefined : Number(v))
 export default function CreateAppPage() {
   const navigate = useNavigate()
   const client = useQueryClient()
-  const repos = useRepos()
+  const github = useGithub()
+  const apps = github.data?.apps ?? []
+  const [chosenApp, setChosenApp] = useState(undefined) // undefined = not chosen yet, '' = none, otherwise an app's id
+  const githubApp = chosenApp ?? startingApp(apps) // the only connected app is the starting choice
+  const repos = useRepos(githubApp)
   const [f, setF] = useState({
     repo: '', name: '', branch: 'main', root_dir: '.', container_port: '3000', host_port: '', health_path: '',
     memory_mb: '512', cpus: '1', max_restarts: '5', build_timeout_minutes: '', keep_previous_images: '1', auto_prune: false,
@@ -49,6 +55,7 @@ export default function CreateAppPage() {
         memory_mb: num(f.memory_mb), cpus: num(f.cpus), max_restarts: num(f.max_restarts),
         keep_previous_images: num(f.keep_previous_images), auto_prune: f.auto_prune,
         ...(f.build_timeout_minutes.trim() ? { build_timeout_minutes: num(f.build_timeout_minutes.trim()) } : {}),
+        ...githubAppBody(apps, githubApp),
       },
     }),
     onSuccess: (app) => {
@@ -69,13 +76,18 @@ export default function CreateAppPage() {
         </CardHeader>
         <CardContent>
           <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); create.mutate() }} noValidate>
-            <Field id="repo" label="GitHub repository" hint={repos.data?.available ? 'The repositories the Shipdok GitHub App can see. For any other public repository, type owner/repo or paste its GitHub link.' : 'owner/repo, or paste the repository\'s GitHub link. Private repositories need the Shipdok GitHub App.'}>
-              <RepoPicker id="repo" value={f.repo} onChange={onRepo} repos={repos} />
+            {apps.length > 0 && (
+              <Field id="github_app" label="GitHub app" hint="The connected GitHub app that has this repository: it lists the repositories, clones a private one and its pushes deploy the app. Choose None for a public repository you deploy by hand.">
+                <GithubAppSelect id="github_app" value={githubApp} onChange={setChosenApp} apps={apps} choose={apps.length > 1} />
+              </Field>
+            )}
+            <Field id="repo" label="GitHub repository" hint={repos.data?.available ? 'The repositories the chosen GitHub app can see. For any other public repository, type owner/repo or paste its GitHub link.' : apps.length > 0 ? 'owner/repo, or paste the repository\'s GitHub link. A private repository needs a GitHub app that is installed on it.' : 'owner/repo, or paste the repository\'s GitHub link. Private repositories need a GitHub app: connect one on the GitHub page.'}>
+              <RepoPicker id="repo" value={f.repo} onChange={onRepo} repos={repos} githubAppId={githubApp} />
             </Field>
             <div className="grid gap-4 sm:grid-cols-2">
               <Field id="name" label="Name"><Input id="name" value={f.name} onChange={(e) => { setNameTouched(true); set({ name: e.target.value }) }} /></Field>
               <Field id="branch" label="Branch" hint="Pushes to this branch deploy the app.">
-                <BranchPicker id="branch" repo={f.repo} value={f.branch}
+                <BranchPicker id="branch" repo={f.repo} value={f.branch} githubAppId={githubApp || undefined}
                   onChange={(branch) => { setBranchTouched(true); set({ branch }) }}
                   onDefaultKnown={(branch) => { if (!branchTouched) set({ branch }) }} />
               </Field>
@@ -122,7 +134,7 @@ export default function CreateAppPage() {
             )}
             <div className="flex justify-end gap-2">
               <Button variant="outline" asChild><Link to="/">Cancel</Link></Button>
-              <Button type="submit" disabled={create.isPending}>{create.isPending ? 'Creating…' : 'Create app'}</Button>
+              <Button type="submit" disabled={create.isPending || (apps.length > 1 && githubApp === undefined)}>{create.isPending ? 'Creating…' : 'Create app'}</Button>
             </div>
           </form>
         </CardContent>

@@ -18,7 +18,7 @@ export class GitAuthError extends Error {}
 export async function resolveGitAuth({ github, db, installationId, appId, repoFullName, log = () => {} }) {
   if (!github) {
     // Without the app we can only clone public repositories, which needs no auth at all.
-    if (installationId) throw new GitAuthError('This app uses the GitHub App, but it is not configured on the worker');
+    if (installationId) throw new GitAuthError('This app uses a GitHub app that is not available (it was removed, or its credentials cannot be read). Choose a GitHub app for it in its settings');
     return {};
   }
   if (typeof repoFullName !== 'string' || !REPO_FULL_NAME_RE.test(repoFullName)) {

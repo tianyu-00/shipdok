@@ -19,7 +19,7 @@ export async function makeApp({ queue, ...rest } = {}) {
 }
 
 export async function resetDb() {
-  await testPool.query('TRUNCATE users, deployments, apps, "session", webhook_deliveries, login_attempts, settings RESTART IDENTITY CASCADE');
+  await testPool.query('TRUNCATE users, deployments, apps, github_apps, "session", webhook_deliveries, login_attempts, settings RESTART IDENTITY CASCADE');
 }
 
 export async function closeDb() {

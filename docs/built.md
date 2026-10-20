@@ -726,5 +726,26 @@ accounts so a stranger's installation does not show up in the repository picker.
 one row, the webhook receiver finds the secret from the app id header GitHub sends, each Shipdok app records its GitHub app, a client per app in the
 worker, a merged repository picker, webhook sync per app). Do A first if repositories live on more than one unrelated account; B only for isolation.
 
+- **Several GitHub Apps, one per project (verified with a fake GitHub and signed webhooks in tests through the real receiver, a real database, and the migration run by hand on databases that had the old single app; the dashboard only in jsdom):**
+  **Administrator's decisions: one GitHub app's repositories at a time (the app is chosen first, then its repositories); disconnecting an app that projects use is allowed, with a list of those
+  projects; a push deploys only the projects assigned to the app that sent it; no limit on how many apps.** Migration 025: table `github_apps` (uuid id, GitHub's `app_id` UNIQUE so the same
+  GitHub App cannot be connected twice, the three encrypted secrets, `legacy_context`), `apps.github_app_id` (FK, ON DELETE SET NULL), the old `github_app` row copied with `legacy_context = true` (its
+  ciphertext is bound to the field name alone, so it stays readable until saved again) and every existing project assigned to it; the old table is dropped. Checked by hand on a database with the old
+  app and two projects (one with a remembered installation: kept) and on one with no app (nothing assigned). Shared `githubapp.js`: `saveGithubApp` (upsert by GitHub's number, returns `{id, created}`),
+  `listGithubApps`, `githubAppSummary(id)`, `loadGithubApp(id)`, `loadGithubApps` (an app that cannot be decrypted is listed with `problem: 'cannot_decrypt'`, the others still work), `deleteGithubApp(id)`
+  (returns the projects that used it and clears their `github_app_id` and installation), and the provider (`client(id)`, `clients()`, `webhookSecrets()` = `[{id, secret}]`, `status()`; one client per saved
+  version of each app so its token cache survives). API: `GET /api/github` lists apps with their `projects`; `POST /api/github/apps` (manual; 201 new, 200 replaced); `DELETE /api/github/apps/:id` (password,
+  404 for none); per app `GET .../repos`, `.../installations`, `.../webhook`, `POST .../webhook/sync` (404 `github_app_not_found`, 409 `cannot_decrypt`); `GET /api/github/branches?repo&app=` (anonymous without
+  `app`; the one-minute memory is per app); the manifest flow no longer refuses a second app and redirects with `connected=<id>`; a changed public address updates EVERY app's webhook (one failing does not
+  stop the others; `githubWebhook.failed` names it). `github_app_id` on create and in `PUT /api/apps/:id` (not a pending setting; the installation is looked up again with the new app, warning if absent,
+  nothing asked when the app is unchanged or none). The webhook receiver tries every app's secret and takes the app that signed the delivery; it deploys only projects with that `github_app_id` and the
+  history says when the project exists but uses a different app. The job carries `githubAppId`; the worker asks the provider for that app (none: public repositories only). Dashboard: GitHub page = a card
+  per app (owner, projects using it as links, install link, check again, its own webhook card, Disconnect with the affected projects listed) then the two ways to add another; the create form has a "GitHub
+  app" choice (the only app is chosen for you; with several you must choose, or None; the repository list and branch lists are that app's; None = a plain box and anonymous branches); the Settings tab has a
+  "GitHub app" card; native select moved to `components/native-select.jsx`. **Checked:** the migration by hand (above); the receiver with two apps and signed deliveries; mutation-proofed (28 planted bugs on the
+  server side all caught, 1 harmless equivalent found and simplified; 40 in the dashboard, 6 survivors that each got a test). **Not tested:** real github.com with two apps (needs a second account: creating the
+  second app with the button, installing it, a push through it), a real browser pass of the new screens, the Pi. Known limits: a job queued before the upgrade has no `githubAppId` (rare; deploy again);
+  an app with no GitHub app is never deployed by a push; the same repository tracked by projects of two apps is deployed by each app's own pushes only.
+
 Known gaps (persistent volumes are built; see above): old `shipdok/*` images pile up until the administrator prunes (or turns on `auto_prune`); build-time env vars; Railpack; DB backup docs.
 The portfolio backend (`tianyu-00/TianYuSiteV2`, `backend/`, port 9090) is not yet deployed through the platform.

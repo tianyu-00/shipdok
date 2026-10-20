@@ -14,18 +14,21 @@ const REPOS = { repos: [
   { fullName: 'acme/widgets', private: true, defaultBranch: 'main' },
 ] }
 
-function Host({ initial = '' }) {
-  const repos = useRepos()
+const APP = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const REPOS_URL = `GET /api/github/apps/${APP}/repos`
+
+function Host({ initial = '', githubAppId = APP }) {
+  const repos = useRepos(githubAppId)
   const [value, setValue] = useState(initial)
   return (
     <div>
       <label htmlFor="r">Repository</label>
-      <RepoPicker id="r" value={value} onChange={setValue} repos={repos} />
+      <RepoPicker id="r" value={value} onChange={setValue} repos={repos} githubAppId={githubAppId} />
       <output data-testid="value">{value}</output>
     </div>
   )
 }
-const show = (routes = { 'GET /api/github/repos': REPOS }, props) => { mockApi(routes); return renderWithProviders(<Host {...props} />) }
+const show = (routes = { [REPOS_URL]: REPOS }, props) => { mockApi(routes); return renderWithProviders(<Host {...props} />) }
 const picked = () => screen.getByTestId('value').textContent
 const opened = async () => { await userEvent.click(await screen.findByRole('combobox')); return screen.findByRole('listbox') }
 const options = (box) => within(box).getAllByRole('option').map((o) => o.textContent)
@@ -35,7 +38,7 @@ describe('before the repositories are known', () => {
   test('shows "Loading repositories…" while they load', async () => {
     let release
     const gate = new Promise((resolve) => { release = resolve })
-    mockApi({ 'GET /api/github/repos': async () => { await gate; return REPOS } })
+    mockApi({ [REPOS_URL]: async () => { await gate; return REPOS } })
     renderWithProviders(<Host />)
     const loading = await screen.findByLabelText('Repository')
     expect(loading).toBeDisabled()
@@ -55,12 +58,12 @@ describe('the list', () => {
     show()
     const list = await opened()
     expect(options(list)).toEqual(['acme/widgetsprivate', 'tianyu-00/apipublic', 'tianyu-00/siteprivate'])
-    expect(screen.getByText(/3 repositories the Shipdok GitHub App can see/)).toBeInTheDocument()
+    expect(screen.getByText(/3 repositories this GitHub app can see/)).toBeInTheDocument()
     expect(screen.getByText(/Paste a GitHub link or type owner\/name to use any public repository/)).toBeInTheDocument()
   })
 
   test('the chosen repository is shown with its badge, and has the check in the list', async () => {
-    show({ 'GET /api/github/repos': REPOS }, { initial: 'tianyu-00/site' })
+    show({ [REPOS_URL]: REPOS }, { initial: 'tianyu-00/site' })
     const box = await screen.findByRole('combobox')
     expect(box).toHaveTextContent('tianyu-00/site')
     expect(box).toHaveTextContent('private')
@@ -69,7 +72,7 @@ describe('the list', () => {
   })
 
   test('a repository that is not in the list (typed earlier, public) is shown without a badge', async () => {
-    show({ 'GET /api/github/repos': REPOS }, { initial: 'someone/else' })
+    show({ [REPOS_URL]: REPOS }, { initial: 'someone/else' })
     const box = await screen.findByRole('combobox')
     expect(box).toHaveTextContent('someone/else')
     expect(box).not.toHaveTextContent(/private|public/)
@@ -84,7 +87,7 @@ describe('the list', () => {
   })
 
   test('says so when the app can see no repository yet', async () => {
-    show({ 'GET /api/github/repos': { repos: [] } })
+    show({ [REPOS_URL]: { repos: [] } })
     const list = await opened()
     expect(within(list).getByText('No repository matches.')).toBeInTheDocument()
     expect(screen.getByText(/cannot see any repository yet: install it on one from the GitHub page/)).toBeInTheDocument()
@@ -92,7 +95,7 @@ describe('the list', () => {
 
   test('many repositories: only the first are drawn and it says to keep typing', async () => {
     const many = { repos: Array.from({ length: 130 }, (_, i) => ({ fullName: `o/r${String(i).padStart(3, '0')}`, private: false })) }
-    show({ 'GET /api/github/repos': many })
+    show({ [REPOS_URL]: many })
     const list = await opened()
     expect(within(list).getAllByRole('option')).toHaveLength(100)
     expect(screen.getByText(/30 more matches: keep typing/)).toBeInTheDocument()
@@ -146,7 +149,7 @@ describe('searching', () => {
 
 describe('the keyboard', () => {
   test('arrows move (and wrap), Enter chooses, Escape closes without changing anything', async () => {
-    show({ 'GET /api/github/repos': REPOS }, { initial: 'tianyu-00/api' })
+    show({ [REPOS_URL]: REPOS }, { initial: 'tianyu-00/api' })
     await opened()
     const active = () => document.getElementById(search().getAttribute('aria-activedescendant')).textContent
     expect(active()).toBe('tianyu-00/apipublic') // opens on the current one
@@ -185,16 +188,35 @@ describe('the keyboard', () => {
   })
 })
 
-describe('without a GitHub App, or when the list cannot be loaded', () => {
+describe('without a GitHub app, or when the list cannot be loaded', () => {
   test.each([
-    ['no GitHub App connected (501)', answer(501, { error: 'GitHub is not connected' })],
+    ['the GitHub app is gone (404)', answer(404, { error: 'No such GitHub app', code: 'github_app_not_found' })],
+    ['its credentials cannot be read (409)', answer(409, { error: 'cannot be read', code: 'cannot_decrypt' })],
     ['a failure (500)', answer(500, { error: 'boom' })],
   ])('%s: a plain text box that still takes typing', async (_, reply) => {
-    show({ 'GET /api/github/repos': reply })
+    show({ [REPOS_URL]: reply })
     const input = await screen.findByPlaceholderText(/owner\/repo/)
     expect(input.tagName).toBe('INPUT')
     await userEvent.type(input, 'a/b')
     expect(picked()).toBe('a/b')
     expect(screen.queryByRole('combobox')).toBeNull()
+  })
+
+  test('no GitHub app chosen: a plain text box straight away, and no list is asked for', async () => {
+    const api = mockApi({ [REPOS_URL]: REPOS })
+    renderWithProviders(<Host githubAppId="" />)
+    const input = await screen.findByPlaceholderText(/owner\/repo/)
+    await userEvent.type(input, 'a/b')
+    expect(picked()).toBe('a/b')
+    expect(api.called('GET', `/api/github/apps/${APP}/repos`)).toHaveLength(0)
+  })
+
+  test('a link pasted into that box becomes owner/name', async () => {
+    mockApi({})
+    renderWithProviders(<Host githubAppId="" />)
+    const input = await screen.findByPlaceholderText(/owner\/repo/)
+    await userEvent.click(input)
+    await userEvent.paste('https://github.com/tianyu-00/shipdok-test-app')
+    expect(picked()).toBe('tianyu-00/shipdok-test-app')
   })
 })

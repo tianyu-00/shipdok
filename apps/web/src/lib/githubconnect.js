@@ -44,7 +44,6 @@ const ERRORS = {
   state: 'This connection attempt expired or was started in another window. Start it again here.',
   exchange_failed: 'GitHub did not hand over the new app (the code may have been used or expired). Try again.',
   github_unreachable: 'Shipdok could not reach GitHub to finish connecting. Try again in a moment.',
-  already_connected: 'GitHub was already connected, so nothing was changed. The new app was left on GitHub: delete it there if you do not want it.',
 }
 export const errorMessage = (code) => ERRORS[code] ?? 'Connecting GitHub did not finish. Try again.'
 

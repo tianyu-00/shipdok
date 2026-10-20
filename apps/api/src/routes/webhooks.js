@@ -64,7 +64,7 @@ const finish = (db, id, outcome, reason, { repo = null, ref = null, sha = null, 
       WHERE delivery_id = $1`,
     [id, outcome, reason, repo, ref && ref.slice(0, 200), sha, details ? JSON.stringify(details) : null]);
 
-export function webhookReceiver({ db, queue, secret, rateLimitPerMinute = 120, logDir = '', diskUsage = defaultDiskUsage }) {
+export function webhookReceiver({ db, queue, secrets, rateLimitPerMinute = 120, logDir = '', diskUsage = defaultDiskUsage }) {
   const r = Router();
   r.use(rateLimit({
     windowMs: 60_000,
@@ -78,14 +78,14 @@ export function webhookReceiver({ db, queue, secret, rateLimitPerMinute = 120, l
     let deliveryId = null;
     try {
       // 1. Disabled until a secret is configured: never accept unsigned traffic "because nothing is set up".
-      const secretNow = typeof secret === 'function' ? await secret() : secret; // read live: connecting GitHub in the dashboard switches it on
-      if (!secretNow) return res.status(503).json({ error: 'Webhooks are not configured' });
+      const candidates = (await secrets()).filter((c) => c.secret); // read live: connecting GitHub in the dashboard switches it on
+      if (!candidates.length) return res.status(503).json({ error: 'Webhooks are not configured' });
 
-      // 2. Signature over the EXACT bytes received (hence the raw body parser, not JSON).
+      // 2. Signature over the EXACT bytes received (hence the raw body parser, not JSON). Each connected GitHub App has its own secret: the
+      // one that signed this delivery says which app sent it. What is learned is only which GitHub App it is.
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-      if (!validSignature(secretNow, raw, req.get('x-hub-signature-256'))) {
-        return res.status(401).json({ error: 'Invalid signature' });
-      }
+      const sender = candidates.find((c) => validSignature(c.secret, raw, req.get('x-hub-signature-256')));
+      if (sender === undefined) return res.status(401).json({ error: 'Invalid signature' });
 
       // 3. Only now look at anything else.
       const event = req.get('x-github-event');
@@ -123,11 +123,14 @@ export function webhookReceiver({ db, queue, secret, rateLimitPerMinute = 120, l
       const { repo, branch, sha } = parsed;
       const meta = { repo, ref: branch, sha };
 
+      // Only the apps assigned to the GitHub App that sent this push.
       const { rows: apps } = await db.query(
-        'SELECT * FROM apps WHERE lower(repo) = lower($1) AND branch = $2 ORDER BY created_at', [repo, branch]);
+        'SELECT * FROM apps WHERE lower(repo) = lower($1) AND branch = $2 AND github_app_id IS NOT DISTINCT FROM $3 ORDER BY created_at', [repo, branch, sender.id]);
       if (!apps.length) {
-        await finish(db, delivery, 'ignored', 'No app tracks this repository and branch', meta);
-        return res.status(200).json({ status: 'ignored', reason: 'No app tracks this repository and branch' });
+        const { rowCount: other } = await db.query('SELECT 1 FROM apps WHERE lower(repo) = lower($1) AND branch = $2', [repo, branch]);
+        const reason = other ? 'An app tracks this repository and branch, but it uses a different GitHub app than the one that sent this push' : 'No app tracks this repository and branch';
+        await finish(db, delivery, 'ignored', reason, meta);
+        return res.status(200).json({ status: 'ignored', reason });
       }
 
       const details = [];

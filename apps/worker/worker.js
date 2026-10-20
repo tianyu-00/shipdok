@@ -58,7 +58,7 @@ const worker = new Worker(
   DEPLOY_QUEUE,
   jobProcessor({
     activity,
-    deploy: (job) => processDeployJob(job, { secretsKey, github: () => githubProvider.client(), collector }),
+    deploy: (job) => processDeployJob(job, { secretsKey, github: (githubAppId) => githubProvider.client(githubAppId), collector }),
     control: (job) => processControlJob(job),
     prune: (job) => processPruneJob(job),
     deleteApp: (job) => processDeleteJob(job, { collector }),

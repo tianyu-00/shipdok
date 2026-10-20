@@ -38,6 +38,9 @@ export const createSchema = z.object({
   auto_prune: z.boolean().default(false),
   // Minutes the clone and the build may take before they are stopped; empty (null) = no limit.
   build_timeout_minutes: z.number().int().min(5).max(10080).nullish(),
+  // The GitHub App (one of those connected on the GitHub page) that lists this repository, clones it when it is private and whose webhooks deploy it.
+  // Empty (null): none, which is fine for a public repository that is only deployed by hand.
+  github_app_id: z.string().regex(UUID_RE, 'Must be the id of a connected GitHub app').nullish(),
 }).strict();
 
 // What can be edited later. Not the repository (delete and recreate instead) and not the slug (it names the images and containers).
@@ -53,6 +56,7 @@ export const updateSchema = z.object({
   cpus: createSchema.shape.cpus.unwrap(),
   max_restarts: createSchema.shape.max_restarts.unwrap(),
   build_timeout_minutes: z.number().int().min(5).max(10080).nullable(),
+  github_app_id: z.string().regex(UUID_RE, 'Must be the id of a connected GitHub app').nullable(),
 }).partial().strict().refine((v) => Object.keys(v).length > 0, 'Give at least one setting to change');
 
 // The settings a deployment bakes into its container. An edit to one of these is "pending" until the next deployment; the name
@@ -113,8 +117,36 @@ const CLEANUP = `(SELECT row_to_json(c) FROM (
 // noCache: build this one deployment from scratch (docker build --no-cache). Webhook pushes and rollbacks never use it.
 export const deploySchema = z.object({ start: z.boolean().optional(), ignoreDiskWarning: z.boolean().optional(), noCache: z.boolean().optional() }).strict();
 
+const NO_GITHUB_APP = { error: 'No such GitHub app. Connect it on the GitHub page first.', code: 'github_app_not_found' };
+
+// `github` is a function from a GitHub App's id to its client (or null), or a client used for every id (tests).
 export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = defaultDiskUsage, portRange = parsePortRange() }) {
   const r = Router();
+
+  const githubAppExists = async (id) => (await db.query('SELECT 1 FROM github_apps WHERE id = $1', [id])).rowCount === 1;
+
+  // Which installation of the app holds the repository, remembered for the project (and forgotten when there is none). Never throws:
+  // a GitHub problem is a warning, not a failure.
+  async function lookUpInstallation(appId, repo, githubAppId) {
+    if (!githubAppId) {
+      await db.query('UPDATE apps SET github_installation_id = NULL WHERE id = $1 AND github_installation_id IS NOT NULL', [appId]);
+      return { installationId: null };
+    }
+    let gh = null;
+    try { gh = typeof github === 'function' ? await github(githubAppId) : github; } catch { gh = null; }
+    if (!gh) {
+      await db.query('UPDATE apps SET github_installation_id = NULL WHERE id = $1', [appId]);
+      return { installationId: null, warning: 'Could not check whether the GitHub app is installed on this repository.' };
+    }
+    try {
+      const installationId = await gh.findInstallationForRepo(repo);
+      await db.query('UPDATE apps SET github_installation_id = $2 WHERE id = $1', [appId, installationId || null]);
+      if (installationId) return { installationId };
+      return { installationId: null, warning: 'The chosen GitHub app is not installed on this repository. Public repositories still deploy, but private ones will fail and pushes will not trigger deployments until it is installed.' };
+    } catch {
+      return { installationId: null, warning: 'Could not check whether the GitHub app is installed on this repository.' };
+    }
+  }
 
   r.post('/', async (req, res, next) => {
     try {
@@ -125,6 +157,7 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       const a = parsed.data;
       const slug = slugify(a.name);
       if (!slug) return res.status(400).json({ error: 'Name must contain letters or numbers' });
+      if (a.github_app_id && !(await githubAppExists(a.github_app_id))) return res.status(400).json(NO_GITHUB_APP);
 
       try {
         // Without a host port, take the lowest free one in the range. Two creations at the same moment can pick the same port;
@@ -137,9 +170,9 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
           }
           try {
             ({ rows } = await db.query(
-              `INSERT INTO apps (name, slug, repo, branch, root_dir, container_port, host_port, health_path, memory_mb, cpus, max_restarts, keep_previous_images, auto_prune, build_timeout_minutes)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
-              [a.name, slug, a.repo, a.branch, a.root_dir, a.container_port, hostPort, a.health_path ?? null, a.memory_mb, a.cpus, a.max_restarts, a.keep_previous_images, a.auto_prune, a.build_timeout_minutes ?? null],
+              `INSERT INTO apps (name, slug, repo, branch, root_dir, container_port, host_port, health_path, memory_mb, cpus, max_restarts, keep_previous_images, auto_prune, build_timeout_minutes, github_app_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+              [a.name, slug, a.repo, a.branch, a.root_dir, a.container_port, hostPort, a.health_path ?? null, a.memory_mb, a.cpus, a.max_restarts, a.keep_previous_images, a.auto_prune, a.build_timeout_minutes ?? null, a.github_app_id ?? null],
             ));
             break;
           } catch (err) {
@@ -147,23 +180,11 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
           }
         }
         const created = rows[0];
-        // Is the GitHub App installed on this repository? Best effort and NEVER blocks creation:
+        // Is the chosen GitHub App installed on this repository? Best effort and NEVER blocks creation:
         // public repositories work without it, and the app can be installed later.
-        let warning;
-        const gh = typeof github === 'function' ? await github().catch(() => null) : github;
-        if (gh) {
-          try {
-            const installationId = await gh.findInstallationForRepo(a.repo);
-            if (installationId) {
-              await db.query('UPDATE apps SET github_installation_id = $2 WHERE id = $1', [created.id, installationId]);
-              created.github_installation_id = installationId;
-            } else {
-              warning = 'The Shipdok GitHub App is not installed on this repository. Public repositories still deploy, but private ones will fail and pushes will not trigger deployments until it is installed.';
-            }
-          } catch {
-            warning = 'Could not check whether the GitHub App is installed on this repository.';
-          }
-        }
+        const looked = await lookUpInstallation(created.id, a.repo, a.github_app_id);
+        if (looked.installationId) created.github_installation_id = looked.installationId;
+        const warning = looked.warning;
         res.status(201).json(warning ? { ...created, warning } : created);
       } catch (err) {
         if (err.code === '23505') return res.status(409).json({ error: UNIQUE_MESSAGES[err.constraint] ?? 'App already exists' });
@@ -225,9 +246,10 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       }
       const v = parsed.data;
       if (v.name !== undefined && !slugify(v.name)) return res.status(400).json({ error: 'Name must contain letters or numbers' });
-      const { rows: found } = await db.query('SELECT id, deleting_at FROM apps WHERE id = $1', [req.params.id]);
+      const { rows: found } = await db.query('SELECT id, deleting_at, repo, github_app_id FROM apps WHERE id = $1', [req.params.id]);
       if (!found[0]) return res.status(404).json({ error: 'App not found' });
       if (found[0].deleting_at) return res.status(409).json(DELETING);
+      if (v.github_app_id && !(await githubAppExists(v.github_app_id))) return res.status(400).json(NO_GITHUB_APP);
 
       const conflict = async (column, value) => {
         const { rows } = await db.query(`SELECT id, name FROM apps WHERE ${column} = $1 AND id <> $2`, [value, req.params.id]);
@@ -248,7 +270,13 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
         if (err.code === '23505' && err.constraint === 'apps_name_key') return res.status(409).json(taken('name_taken', `The name "${v.name}"`, await conflict('name', v.name)));
         throw err;
       }
-      res.json(await appDetail(req.params.id));
+      // A different GitHub App means a different installation: look it up again (the repository is the same).
+      let warning;
+      if ('github_app_id' in v && (v.github_app_id ?? null) !== found[0].github_app_id) {
+        warning = (await lookUpInstallation(req.params.id, found[0].repo, v.github_app_id)).warning;
+      }
+      const detail = await appDetail(req.params.id);
+      res.json(warning ? { ...detail, warning } : detail);
     } catch (err) { next(err); }
   });
 

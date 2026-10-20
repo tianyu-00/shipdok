@@ -233,7 +233,7 @@
           "Apps"
         ],
         "summary": "Edit an app's settings",
-        "description": "Changes the settings you send. **Nothing running is touched:** the next deployment uses the new values (see `settings_pending`, which includes the build time limit); the name and the restart limit apply at once. The repository and the slug cannot be changed (delete the app and create a new one).",
+        "description": "Changes the settings you send. **Nothing running is touched:** the next deployment uses the new values (see `settings_pending`, which includes the build time limit); the name and the restart limit apply at once. The repository and the slug cannot be changed (delete the app and create a new one). The GitHub App (`github_app_id`) can: it is read when a deployment starts and when a push arrives, so it is **not** a pending change; the installation is looked up again with the new app and a `warning` says if it is not installed on the repository.",
         "parameters": [
           {
             "name": "id",
@@ -1111,14 +1111,25 @@
         ]
       }
     },
-    "/api/github": {
+    "/api/github/apps/{id}": {
       "delete": {
         "tags": [
           "GitHub"
         ],
-        "summary": "Disconnect GitHub",
-        "description": "Forgets the app. Deployed apps keep running; private repositories cannot be built until GitHub is connected again. Shipdok cannot delete the app on github.com. Needs the current password.",
-        "parameters": [],
+        "summary": "Disconnect one GitHub App",
+        "description": "Forgets that app. The projects assigned to it keep running and are left with **no GitHub app and no remembered installation**: private repositories cannot be built, and pushes do not deploy them, until they are given another GitHub app in their settings. The dashboard lists those projects (`projects` in `GET /api/github`) before asking. Shipdok cannot delete the app on github.com. Needs the current password.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The id of a connected GitHub App (from `GET /api/github`).",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
         "responses": {
           "204": {
             "description": "Disconnected."
@@ -1153,6 +1164,16 @@
               }
             }
           },
+          "404": {
+            "description": "No such GitHub app (`code: github_app_not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Too many tries.",
             "content": {
@@ -1170,41 +1191,6 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/PasswordOnly"
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session": []
-          }
-        ]
-      },
-      "get": {
-        "tags": [
-          "GitHub"
-        ],
-        "summary": "Is GitHub connected?",
-        "description": "The connected GitHub App's details, never a secret. `problem: cannot_decrypt` means the stored credentials do not fit the platform key.",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "The status.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GithubStatus"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
               }
             }
           }
@@ -1362,7 +1348,7 @@
           "Apps"
         ],
         "summary": "Create an app",
-        "description": "Registers an app; nothing is built until you deploy. Leave `host_port` out and the lowest free port in the platform's port range (default 20000-20999) is used. If a GitHub App is connected, the API looks up its installation for the repository; a missing installation never blocks creation and only adds a `warning` (public repositories still deploy).",
+        "description": "Registers an app; nothing is built until you deploy. Leave `host_port` out and the lowest free port in the platform's port range (default 20000-20999) is used. Choose the GitHub App the project uses with `github_app_id` (one of `GET /api/github`; `null` or left out: none, which is fine for a public repository). The API then looks up that app's installation for the repository; a missing installation never blocks creation and only adds a `warning` (public repositories still deploy).",
         "parameters": [],
         "responses": {
           "201": {
@@ -2374,19 +2360,315 @@
         ]
       }
     },
+    "/api/github": {
+      "get": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "The connected GitHub Apps",
+        "description": "Every connected GitHub App, oldest first, never a secret, each with the projects assigned to it (`projects`, what the Disconnect warning lists). `problem: cannot_decrypt` on an app means its stored credentials do not fit the platform key; the others are not affected.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The apps.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GithubStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/github/apps/{id}/installations": {
+      "get": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Where one GitHub App is installed",
+        "description": "Asked from GitHub when you press \"Check again\" after installing the app.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The id of a connected GitHub App (from `GET /api/github`).",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The installations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "installations": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/GithubInstallation"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such GitHub app (`code: github_app_not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "That GitHub app's stored credentials cannot be read (`code: cannot_decrypt`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "GitHub could not be asked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/github/apps/{id}/repos": {
+      "get": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Repositories one GitHub App can see",
+        "description": "Across all installations of that GitHub App. This is the list behind the repository picker once a GitHub app is chosen.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The id of a connected GitHub App (from `GET /api/github`).",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The repositories.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "repos": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/GithubRepo"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such GitHub app (`code: github_app_not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "That GitHub app's stored credentials cannot be read (`code: cannot_decrypt`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "GitHub could not be asked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/github/apps/{id}/webhook": {
+      "get": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Does GitHub send this app's webhooks to the right address?",
+        "description": "Compares the address GitHub has (read from that app) with the one Shipdok expects (the public address + `/api/webhooks/github`). Every GitHub app sends to the same Shipdok address; each has its own secret.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The id of a connected GitHub App (from `GET /api/github`).",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The comparison.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GithubWebhook"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such GitHub app (`code: github_app_not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "That GitHub app's stored credentials cannot be read (`code: cannot_decrypt`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "GitHub could not be asked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/github/branches": {
       "get": {
         "tags": [
           "GitHub"
         ],
         "summary": "The branches of a repository",
-        "description": "For the branch pickers in the dashboard. When the GitHub App is installed on the repository the branches are read with a token for that one repository (read-only); otherwise anonymously, which works for **public** repositories, and also when no GitHub App is connected at all. The default branch comes first, the rest alphabetical; at most the first 500 branches are read (`truncated`). Good answers are kept for a minute. A repository that is private and not covered by the app is a 404 `repo_not_found`; a GitHub rate limit is a 502 `rate_limited`.",
+        "description": "For the branch pickers in the dashboard. With `app`, and when that GitHub App is installed on the repository, the branches are read with a token for that one repository (read-only); otherwise (no `app`, or it is not installed there) anonymously, which works for **public** repositories, and also when no GitHub App is connected at all. The default branch comes first, the rest alphabetical; at most the first 500 branches are read (`truncated`). Good answers are kept for a minute, separately for each GitHub app (what an app can see differs). A repository that is private and not covered by the app is a 404 `repo_not_found`; a GitHub rate limit is a 502 `rate_limited`.",
         "parameters": [
           {
             "name": "repo",
             "in": "query",
             "required": true,
             "description": "The repository, as `owner/name`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "app",
+            "in": "query",
+            "required": false,
+            "description": "The id of the GitHub App to ask through. Left out: anonymously.",
             "schema": {
               "type": "string"
             }
@@ -2424,7 +2706,17 @@
             }
           },
           "404": {
-            "description": "No such public repository, and the app is not installed on it (`code: repo_not_found`).",
+            "description": "No such public repository, and the app is not installed on it (`code: repo_not_found`); or the `app` is not a connected GitHub App (`code: github_app_not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "That GitHub app's credentials cannot be read (`code: cannot_decrypt`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2457,7 +2749,7 @@
           "GitHub"
         ],
         "summary": "Where GitHub sends the browser back",
-        "description": "A page navigation, not an API call: GitHub redirects the browser here with a one-time `code` and the `state` from the start. Every outcome is a **302 redirect** to `/github?connected=1` or `/github?error=<login|state|exchange_failed|github_unreachable|already_connected>`; the API trades the code for the app's credentials and stores them encrypted. The state is compared in constant time and used once whatever happens. No secret is ever put in a redirect.",
+        "description": "A page navigation, not an API call: GitHub redirects the browser here with a one-time `code` and the `state` from the start. Every outcome is a **302 redirect** to `/github?connected=<the new app's id>` or `/github?error=<login|state|exchange_failed|github_unreachable>`; the API trades the code for the app's credentials and stores them encrypted as one more GitHub App. The state is compared in constant time and used once whatever happens. No secret is ever put in a redirect.",
         "parameters": [
           {
             "name": "code",
@@ -2484,193 +2776,6 @@
           }
         },
         "security": []
-      }
-    },
-    "/api/github/installations": {
-      "get": {
-        "tags": [
-          "GitHub"
-        ],
-        "summary": "Where the app is installed",
-        "description": "Asked from GitHub when you press \"Check again\" after installing the app.",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "The installations.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "installations": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/GithubInstallation"
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "501": {
-            "description": "GitHub is not connected yet (connect it on the GitHub page).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "GitHub could not be asked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session": []
-          }
-        ]
-      }
-    },
-    "/api/github/repos": {
-      "get": {
-        "tags": [
-          "GitHub"
-        ],
-        "summary": "Repositories the app can see",
-        "description": "Across all installations of the connected GitHub App.",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "The repositories.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "repos": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/GithubRepo"
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "501": {
-            "description": "GitHub is not connected yet (connect it on the GitHub page).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "GitHub could not be asked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session": []
-          }
-        ]
-      }
-    },
-    "/api/github/webhook": {
-      "get": {
-        "tags": [
-          "GitHub"
-        ],
-        "summary": "Does GitHub send webhooks to the right address?",
-        "description": "Compares the address GitHub has (read from the app) with the one Shipdok expects (the public address + `/api/webhooks/github`).",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "The comparison.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GithubWebhook"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "501": {
-            "description": "GitHub is not connected yet (connect it on the GitHub page).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "GitHub could not be asked.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session": []
-          }
-        ]
       }
     },
     "/api/settings/public": {
@@ -2714,7 +2819,7 @@
           "Settings"
         ],
         "summary": "Change who may reach Shipdok from outside",
-        "description": "Needs the current password; takes effect at once; recorded in the sign-ins list. A value fixed by the environment (`SHIPDOK_PUBLIC`, `PUBLIC_URL`) cannot be changed here. The address is tidied to an origin (`https://host[:port]`, no path, no credentials). A new address is also sent to GitHub when an app is connected; the answer says how that went in `githubWebhook` (the setting is saved either way).",
+        "description": "Needs the current password; takes effect at once; recorded in the sign-ins list. A value fixed by the environment (`SHIPDOK_PUBLIC`, `PUBLIC_URL`) cannot be changed here. The address is tidied to an origin (`https://host[:port]`, no path, no credentials). A new address is also sent to every connected GitHub app; the answer says how that went in `githubWebhook` (`failed` names the apps that did not take it; the setting is saved either way).",
         "parameters": [],
         "responses": {
           "200": {
@@ -4168,106 +4273,31 @@
         ]
       }
     },
-    "/api/github/connect/start": {
-      "post": {
-        "tags": [
-          "GitHub"
-        ],
-        "summary": "Start the \"Connect GitHub\" flow",
-        "description": "Returns a prepared GitHub App definition (`manifest`) and the address (`postUrl`, always on github.com) the browser posts it to. Keeps a one-time `state` in the session for 10 minutes. The manifest asks only for read access to contents and metadata and the push event, and the app is created private. Needs an Origin that is one of the dashboard's own addresses, because GitHub sends the browser back there.",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "The manifest.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ConnectManifest"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "A bad name or organisation, or the dashboard was not opened at its own address.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "GitHub is already connected (`code: already_connected`).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Too many tries.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ConnectStart"
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session": []
-          }
-        ]
-      }
-    },
-    "/api/github/manual": {
+    "/api/github/apps": {
       "post": {
         "tags": [
           "GitHub"
         ],
         "summary": "Enter an existing GitHub App by hand",
-        "description": "The key and id are proven with GitHub (`GET /app`) BEFORE anything is stored, so a typo never replaces a working connection. Needs the current password. Remembered installations are forgotten, because installation ids belong to one app. Recorded in the sign-ins list as a GitHub change.",
+        "description": "Adds a GitHub App (there is no limit on how many). The key and id are proven with GitHub (`GET /app`) BEFORE anything is stored, so a typo never adds or replaces anything. Entering a GitHub App that is already connected replaces its credentials (same `id`, answer 200, `created: false`; its projects and their installations are kept, because the installations belong to the same GitHub App). Needs the current password. Recorded in the sign-ins list as a GitHub change.",
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Connected.",
+            "description": "The same GitHub App was already connected: its credentials were replaced.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "connected": {
-                      "type": "boolean"
-                    },
-                    "app": {
-                      "$ref": "#/components/schemas/GithubApp"
-                    }
-                  }
+                  "$ref": "#/components/schemas/GithubAppAdded"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Added.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GithubAppAdded"
                 }
               }
             }
@@ -4340,14 +4370,25 @@
         ]
       }
     },
-    "/api/github/webhook/sync": {
+    "/api/github/apps/{id}/webhook/sync": {
       "post": {
         "tags": [
           "GitHub"
         ],
-        "summary": "Point GitHub at the right webhook address",
-        "description": "Updates only the address on GitHub (never the secret). The retry for the automatic update that follows a change of the public address.",
-        "parameters": [],
+        "summary": "Point one GitHub App at the right webhook address",
+        "description": "Updates only the address on GitHub (never the secret), for that app. The retry for the automatic update, which follows a change of the public address and tells every connected app.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The id of a connected GitHub App (from `GET /api/github`).",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Updated.",
@@ -4379,8 +4420,8 @@
               }
             }
           },
-          "429": {
-            "description": "Too many tries.",
+          "404": {
+            "description": "No such GitHub app (`code: github_app_not_found`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4389,8 +4430,18 @@
               }
             }
           },
-          "501": {
-            "description": "GitHub is not connected yet (connect it on the GitHub page).",
+          "409": {
+            "description": "That GitHub app's stored credentials cannot be read (`code: cannot_decrypt`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4406,6 +4457,73 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/github/connect/start": {
+      "post": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Start the \"Connect GitHub\" flow",
+        "description": "Returns a prepared GitHub App definition (`manifest`) and the address (`postUrl`, always on github.com) the browser posts it to. Each run adds one more GitHub App, whether or not others are connected. Keeps a one-time `state` in the session for 10 minutes. The manifest asks only for read access to contents and metadata and the push event, and the app is created private. Needs an Origin that is one of the dashboard's own addresses, because GitHub sends the browser back there.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The manifest.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectManifest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad name or organisation, or the dashboard was not opened at its own address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectStart"
               }
             }
           }
@@ -4737,6 +4855,11 @@
             "type": "integer",
             "minimum": 5,
             "maximum": 10080
+          },
+          "github_app_id": {
+            "nullable": true,
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
           }
         },
         "required": [
@@ -4801,6 +4924,11 @@
             "type": "integer",
             "minimum": 5,
             "maximum": 10080
+          },
+          "github_app_id": {
+            "nullable": true,
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
           }
         },
         "additionalProperties": false,
@@ -5043,6 +5171,12 @@
             "type": "integer",
             "nullable": true,
             "description": "The GitHub App installation remembered for this repository (`null` until found)."
+          },
+          "github_app_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "The connected GitHub App this project uses to list and clone its repository and whose webhooks deploy it (`null`: none, for a public repository deployed by hand)."
           },
           "branch": {
             "type": "string",
@@ -6113,11 +6247,18 @@
           },
           "githubWebhook": {
             "type": "object",
-            "description": "Only after a change of the public address while GitHub is connected.",
+            "description": "Only after a change of the public address while a GitHub app is connected.",
             "properties": {
               "updated": {
                 "type": "boolean",
-                "description": "Whether GitHub now has the new webhook address."
+                "description": "Whether every connected GitHub app now has the new webhook address."
+              },
+              "failed": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The names of the GitHub apps that did not take it."
               },
               "error": {
                 "type": "string",
@@ -6139,8 +6280,13 @@
       },
       "GithubApp": {
         "type": "object",
-        "description": "The connected GitHub App. Never contains a secret.",
+        "description": "A connected GitHub App. Never contains a secret.",
         "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Shipdok's id for this GitHub App (what a project's `github_app_id` refers to)."
+          },
           "appId": {
             "type": "string",
             "description": "The GitHub App id."
@@ -6190,6 +6336,7 @@
           }
         },
         "required": [
+          "id",
           "appId",
           "slug",
           "name",
@@ -6201,31 +6348,87 @@
           "updatedAt"
         ]
       },
+      "GithubAppListed": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/GithubApp"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "problem": {
+                "type": "string",
+                "nullable": true,
+                "enum": [
+                  "cannot_decrypt",
+                  null
+                ],
+                "description": "`cannot_decrypt`: the stored credentials do not fit the platform key."
+              },
+              "projects": {
+                "type": "array",
+                "description": "The projects assigned to this GitHub App.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "description": "The project's id."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Its name."
+                    },
+                    "slug": {
+                      "type": "string",
+                      "description": "Its slug."
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "slug"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "problem",
+              "projects"
+            ]
+          }
+        ]
+      },
       "GithubStatus": {
         "type": "object",
         "properties": {
-          "connected": {
-            "type": "boolean",
-            "description": "Whether an app is connected."
-          },
-          "app": {
-            "$ref": "#/components/schemas/GithubApp",
-            "nullable": true
-          },
-          "problem": {
-            "type": "string",
-            "nullable": true,
-            "enum": [
-              "cannot_decrypt",
-              null
-            ],
-            "description": "`cannot_decrypt`: the stored credentials do not fit the platform key."
+          "apps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GithubAppListed"
+            },
+            "description": "Every connected GitHub App, oldest first."
           }
         },
         "required": [
-          "connected",
-          "app",
-          "problem"
+          "apps"
+        ]
+      },
+      "GithubAppAdded": {
+        "type": "object",
+        "properties": {
+          "created": {
+            "type": "boolean",
+            "description": "`true` for a new GitHub App, `false` when an app that was already connected had its credentials replaced."
+          },
+          "app": {
+            "$ref": "#/components/schemas/GithubApp"
+          }
+        },
+        "required": [
+          "created",
+          "app"
         ]
       },
       "GithubManual": {

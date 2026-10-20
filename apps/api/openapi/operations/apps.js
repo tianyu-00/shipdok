@@ -15,7 +15,7 @@ export default Object.fromEntries([
   })),
   route('POST', '/api/apps', op({
     tag: TAG, summary: 'Create an app',
-    description: 'Registers an app; nothing is built until you deploy. Leave `host_port` out and the lowest free port in the platform\'s port range (default 20000-20999) is used. If a GitHub App is connected, the API looks up its installation for the repository; a missing installation never blocks creation and only adds a `warning` (public repositories still deploy).',
+    description: 'Registers an app; nothing is built until you deploy. Leave `host_port` out and the lowest free port in the platform\'s port range (default 20000-20999) is used. Choose the GitHub App the project uses with `github_app_id` (one of `GET /api/github`; `null` or left out: none, which is fine for a public repository). The API then looks up that app\'s installation for the repository; a missing installation never blocks creation and only adds a `warning` (public repositories still deploy).',
     body: ref('AppCreate'),
     responses: { 201: ok('Created.', ref('App')) },
     errors: { 400: 'Invalid settings (`details` lists each problem).', 409: 'The name or host port is taken (the message says which), or every port in the range is used (`code: no_free_port`).' },
@@ -27,7 +27,7 @@ export default Object.fromEntries([
   })),
   route('PUT', '/api/apps/{id}', op({
     tag: TAG, summary: 'Edit an app\'s settings', parameters: [APP_ID],
-    description: 'Changes the settings you send. **Nothing running is touched:** the next deployment uses the new values (see `settings_pending`, which includes the build time limit); the name and the restart limit apply at once. The repository and the slug cannot be changed (delete the app and create a new one).',
+    description: 'Changes the settings you send. **Nothing running is touched:** the next deployment uses the new values (see `settings_pending`, which includes the build time limit); the name and the restart limit apply at once. The repository and the slug cannot be changed (delete the app and create a new one). The GitHub App (`github_app_id`) can: it is read when a deployment starts and when a push arrives, so it is **not** a pending change; the installation is looked up again with the new app and a `warning` says if it is not installed on the repository.',
     body: ref('AppUpdate'),
     responses: { 200: ok('The app after the change.', ref('App')) },
     errors: { 400: 'Invalid settings (`details`).', 404: 'No such app.', 409: 'The name or host port belongs to another app (`code: name_taken` or `port_taken`, and `app` names it), or the app is being deleted.' },

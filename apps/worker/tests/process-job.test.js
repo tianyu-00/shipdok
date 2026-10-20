@@ -485,6 +485,30 @@ describe('GitHub authentication in the job', () => {
     assert.equal(deployFn.calls[0].gitEnv.GIT_CONFIG_KEY_0, 'http.extraHeader');
   });
 
+  test('the function is asked for the GitHub app the project is assigned to (the job says which)', async () => {
+    const appId = await makeApp(); const depId = await makeDeployment(appId);
+    const asked = [];
+    const mine = gh({ async getInstallationToken() { return 'ghs_MINE_123456'; } });
+    const theirs = gh({ async getInstallationToken() { return 'ghs_THEIRS_123456'; } });
+    const deployFn = fakeDeploy();
+    await processDeployJob(jobWith(appId, depId, { githubAppId: 'app-two' }), {
+      secretsKey: KEY, deployFn, github: async (id) => { asked.push(id); return id === 'app-two' ? theirs : mine; },
+    });
+    assert.deepEqual(asked, ['app-two']);
+    const header = Buffer.from(deployFn.calls[0].gitEnv.GIT_CONFIG_VALUE_0.split(' ').at(-1), 'base64').toString(); // the token travels as Basic auth
+    assert.match(header, /ghs_THEIRS_123456/);
+    assert.doesNotMatch(header, /ghs_MINE/);
+  });
+
+  test('a job with no GitHub app asks for none (public repositories only, whatever apps are connected)', async () => {
+    const appId = await makeApp(); const depId = await makeDeployment(appId);
+    const asked = [];
+    const deployFn = fakeDeploy();
+    await processDeployJob(jobWith(appId, depId), { secretsKey: KEY, deployFn, github: async (id) => { asked.push(id); return id ? gh() : null; } });
+    assert.deepEqual(asked, [undefined]);
+    assert.equal(deployFn.calls[0].gitEnv, undefined);
+  });
+
   test('a function that finds no app means public repositories only', async () => {
     const appId = await makeApp(); const depId = await makeDeployment(appId);
     const deployFn = fakeDeploy();

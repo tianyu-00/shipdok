@@ -7,19 +7,21 @@ import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { api } from '@/lib/api'
 
-/** Forget the GitHub App. Needs the password. Running apps are not touched. */
-export function GithubDisconnectDialog({ onClose }) {
+/** Forget one GitHub app. Needs the password. Running apps are not touched; the projects that use it are listed first. */
+export function GithubDisconnectDialog({ app, onClose }) {
   const client = useQueryClient()
   const [password, setPassword] = useState('')
   const [problem, setProblem] = useState(null)
   const disconnect = useMutation({
-    mutationFn: () => api('/github', { method: 'DELETE', body: { password } }),
+    mutationFn: () => api(`/github/apps/${app.id}`, { method: 'DELETE', body: { password } }),
     onSuccess: () => {
-      toast.success('GitHub disconnected')
+      toast.success(`${app.name ?? 'The GitHub app'} disconnected`)
       client.invalidateQueries({ queryKey: ['github'] })
       client.invalidateQueries({ queryKey: ['github-webhook'] })
       client.invalidateQueries({ queryKey: ['logins'] })
       client.invalidateQueries({ queryKey: ['repos'] })
+      client.invalidateQueries({ queryKey: ['apps'] }) // the projects that used it have no GitHub app now
+      client.invalidateQueries({ queryKey: ['app'] })
       onClose()
     },
   })
@@ -34,12 +36,21 @@ export function GithubDisconnectDialog({ onClose }) {
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Disconnect GitHub?</DialogTitle>
+          <DialogTitle>Disconnect {app.name ?? 'this GitHub app'}?</DialogTitle>
           <DialogDescription>
-            Shipdok forgets the app's key and webhook secret. Apps that are already running keep running. New builds of private repositories will fail, and pushes
-            will no longer start deployments, until GitHub is connected again. Shipdok cannot delete the app on GitHub: delete the app on GitHub yourself if you no longer want it.
+            Shipdok forgets this app's key and webhook secret. Apps that are already running keep running. Shipdok cannot delete the app on GitHub: delete it there
+            yourself if you no longer want it.
           </DialogDescription>
         </DialogHeader>
+        {app.projects?.length > 0 ? (
+          <div role="note" className="space-y-1 rounded-md border border-warning/50 p-3 text-sm text-warning">
+            <p className="font-medium">{app.projects.length === 1 ? 'This project uses it' : `These ${app.projects.length} projects use it`} and will be left with no GitHub app:</p>
+            <ul className="list-disc pl-5">{app.projects.map((p) => <li key={p.id}>{p.name}</li>)}</ul>
+            <p>New builds of their private repositories will fail, and pushes will not deploy them, until you give them another GitHub app in their settings.</p>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">No project uses this GitHub app.</p>
+        )}
         <form onSubmit={submit} className="space-y-4" noValidate>
           <div className="space-y-2">
             <Label htmlFor="gd-password">Current password</Label>

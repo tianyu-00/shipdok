@@ -253,3 +253,121 @@ describe('the branch on the settings tab', () => {
     expect(save()).toBeDisabled()
   })
 })
+
+describe('the GitHub app of the project', () => {
+  const ONE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const TWO = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  const gh = (id, name, owner) => ({ id, appId: id.slice(0, 2), name, ownerLogin: owner, slug: name.toLowerCase(), projects: [], problem: null })
+  const LIST = { apps: [gh(ONE, 'Shipdok-ab12', 'tianyu-00'), gh(TWO, 'Shipdok-cd34', 'my-org')] }
+  const select = () => screen.findByLabelText('GitHub app')
+  const saveApp = () => within(screen.getByLabelText('GitHub app').closest('form')).getByRole('button', { name: 'Save' })
+
+  test('shows the saved one, and nothing can be saved until it is changed', async () => {
+    mockApi({ 'GET /api/github': LIST })
+    tab(makeApp({ github_app_id: TWO }))
+    expect(await select()).toHaveValue(TWO)
+    expect(saveApp()).toBeDisabled()
+    await userEvent.selectOptions(screen.getByLabelText('GitHub app'), ONE)
+    expect(saveApp()).toBeEnabled()
+    await userEvent.selectOptions(screen.getByLabelText('GitHub app'), TWO)
+    expect(saveApp()).toBeDisabled() // back to what it was
+  })
+
+  test('lists the connected apps with their owners, and None', async () => {
+    mockApi({ 'GET /api/github': LIST })
+    tab()
+    const names = within(await select()).getAllByRole('option').map((o) => o.textContent)
+    expect(names).toEqual(['Shipdok-ab12 (tianyu-00)', 'Shipdok-cd34 (my-org)', 'None (a public repository, deployed by hand)'])
+    expect(screen.getByLabelText('GitHub app')).toHaveValue('') // a project with none
+  })
+
+  test('saving sends only the GitHub app, says it applies at once, and reads the lists again', async () => {
+    const api = mockApi({ 'GET /api/github': LIST, [PUT]: makeApp({ github_app_id: ONE }) })
+    tab(makeApp({ github_app_id: TWO }))
+    await userEvent.selectOptions(await select(), ONE)
+    await userEvent.click(saveApp())
+    await waitFor(() => expect(api.called('PUT', `/api/apps/${APP_ID}`)).toHaveLength(1))
+    expect(api.called('PUT', `/api/apps/${APP_ID}`)[0].body).toEqual({ github_app_id: ONE })
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('GitHub app saved'))
+    await waitFor(() => expect(api.called('GET', '/api/github').length).toBeGreaterThan(1)) // the projects under each GitHub app
+  })
+
+  test('None sends null', async () => {
+    const api = mockApi({ 'GET /api/github': LIST, [PUT]: makeApp({ github_app_id: null }) })
+    tab(makeApp({ github_app_id: ONE }))
+    await userEvent.selectOptions(await select(), '')
+    await userEvent.click(saveApp())
+    await waitFor(() => expect(api.called('PUT', `/api/apps/${APP_ID}`)).toHaveLength(1))
+    expect(api.called('PUT', `/api/apps/${APP_ID}`)[0].body).toEqual({ github_app_id: null })
+  })
+
+  test('a warning about the installation is shown', async () => {
+    mockApi({ 'GET /api/github': LIST, [PUT]: makeApp({ github_app_id: ONE, warning: 'The chosen GitHub app is not installed on this repository.' }) })
+    tab(makeApp({ github_app_id: TWO }))
+    await userEvent.selectOptions(await select(), ONE)
+    await userEvent.click(saveApp())
+    await waitFor(() => expect(toasts.warning).toHaveBeenCalledWith(expect.stringMatching(/not installed/), expect.anything()))
+  })
+
+  test('a refusal is shown and the choice stays', async () => {
+    mockApi({ 'GET /api/github': LIST, [PUT]: answer(400, { error: 'No such GitHub app. Connect it on the GitHub page first.' }) })
+    tab(makeApp({ github_app_id: TWO }))
+    await userEvent.selectOptions(await select(), ONE)
+    await userEvent.click(saveApp())
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith(expect.stringMatching(/No such GitHub app/)))
+    expect(screen.getByLabelText('GitHub app')).toHaveValue(ONE)
+  })
+
+  test('Discard puts the saved choice back', async () => {
+    mockApi({ 'GET /api/github': LIST })
+    tab(makeApp({ github_app_id: TWO }))
+    await userEvent.selectOptions(await select(), ONE)
+    await userEvent.click(within(screen.getByLabelText('GitHub app').closest('form')).getByRole('button', { name: 'Discard' }))
+    expect(screen.getByLabelText('GitHub app')).toHaveValue(TWO)
+  })
+
+  test('with no GitHub app connected it says so and points to the GitHub page', async () => {
+    mockApi({ 'GET /api/github': { apps: [] } })
+    tab()
+    expect(await screen.findByText(/No GitHub app is connected/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'connect one' })).toHaveAttribute('href', '/github')
+    expect(screen.queryByLabelText('GitHub app')).toBeNull()
+  })
+
+  test('when the list cannot be read it says so instead of showing a choice that would be wrong', async () => {
+    mockApi({ 'GET /api/github': answer(500, { error: 'boom' }) })
+    tab(makeApp({ github_app_id: TWO }))
+    expect(await screen.findByText(/Could not load the connected GitHub apps/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('GitHub app')).toBeNull()
+  })
+
+  test('the branch list is read through the project\'s GitHub app', async () => {
+    const api = mockApi({ 'GET /api/github': LIST, [`${BRANCHES}&app=${TWO}`]: { defaultBranch: 'main', branches: ['main', 'dev'], truncated: false } })
+    tab(makeApp({ github_app_id: TWO }))
+    await waitFor(() => expect(api.called('GET', '/api/github/branches')).toHaveLength(1))
+    expect(api.called('GET', '/api/github/branches')[0].path).toContain(`app=${TWO}`)
+  })
+
+  test('after changing the GitHub app the branches are asked again, through the new one', async () => {
+    const api = mockApi({
+      'GET /api/github': LIST,
+      [`${BRANCHES}&app=${TWO}`]: { defaultBranch: 'main', branches: ['main'], truncated: false },
+      [`${BRANCHES}&app=${ONE}`]: { defaultBranch: 'main', branches: ['main', 'private-branch'], truncated: false },
+      [PUT]: makeApp({ github_app_id: ONE }),
+    })
+    tab(makeApp({ github_app_id: TWO }))
+    await waitFor(() => expect(api.called('GET', '/api/github/branches')).toHaveLength(1))
+    await userEvent.selectOptions(await select(), ONE)
+    await userEvent.click(saveApp())
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('GitHub app saved'))
+    // (the form is rebuilt from the saved copy; here the saved copy is the one the server answered with)
+    await waitFor(() => expect(api.called('GET', '/api/github/branches').length).toBeGreaterThan(1))
+  })
+
+  test('a project with none is read anonymously', async () => {
+    const api = mockApi({ 'GET /api/github': LIST, [BRANCHES]: { defaultBranch: 'main', branches: ['main'], truncated: false } })
+    tab(makeApp({ github_app_id: null }))
+    await waitFor(() => expect(api.called('GET', '/api/github/branches')).toHaveLength(1))
+    expect(api.called('GET', '/api/github/branches')[0].path).not.toContain('app=')
+  })
+})

@@ -1,17 +1,15 @@
 import { Router } from 'express';
 import { verify } from '@node-rs/argon2';
-import { GithubError, createGithubClient, parsePrivateKeyPem, saveGithubApp, deleteGithubApp, listRepoBranches, REPO_FULL_NAME_RE } from '@shipdok/shared';
+import { GithubError, createGithubClient, parsePrivateKeyPem, saveGithubApp, deleteGithubApp, githubAppSummary, listRepoBranches, REPO_FULL_NAME_RE } from '@shipdok/shared';
 import { limiter } from '../authutil.js';
 import { addressOf, recordAttempt } from '../lockout.js';
 
-// Installation ids belong to one GitHub App. Whenever the app changes (a different one entered, connected or disconnected) the ids remembered
-// for each Shipdok app are stale: forget them, and the next deployment looks the installation up again with the app that is connected now.
-export const forgetInstallations = (db) => db.query('UPDATE apps SET github_installation_id = NULL WHERE github_installation_id IS NOT NULL');
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const BRANCH_CACHE_MS = 60_000;
 const BRANCH_CACHE_MAX = 100;
 
-const NOT_CONNECTED = { error: 'GitHub is not connected. Connect it on the GitHub page first.' };
+const NOT_FOUND = { error: 'No such GitHub app. Connect it on the GitHub page first.', code: 'github_app_not_found' };
 
 // Never returns a secret: the app's details, repositories and installations only.
 export function githubRouter({ db, provider, secretsKey, fetch, settings }) {
@@ -26,18 +24,34 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings }) {
     return rows[0];
   }
 
+  // Every connected GitHub App with the projects assigned to it (what the Disconnect warning lists).
   r.get('/', async (req, res, next) => {
     try {
-      const { app, problem } = await provider.status();
-      res.json({ connected: Boolean(app), app, problem });
+      const { apps } = await provider.status();
+      const { rows } = await db.query('SELECT id, name, slug, github_app_id FROM apps WHERE github_app_id IS NOT NULL ORDER BY name');
+      res.json({ apps: apps.map((a) => ({ ...a, projects: rows.filter((p) => p.github_app_id === a.id).map(({ id, name, slug }) => ({ id, name, slug })) })) });
     } catch (err) {
       next(err);
     }
   });
 
+  // The client of one app, or the answer that says why there is none (and null).
+  async function clientOf(req, res) {
+    const id = req.params.id ?? req.query.app;
+    if (typeof id !== 'string' || !UUID_RE.test(id)) { res.status(404).json(NOT_FOUND); return null; }
+    const github = await provider.client(id);
+    if (github) return github;
+    if (await githubAppSummary(db, id)) {
+      res.status(409).json({ error: 'The stored credentials of this GitHub app cannot be read (was APP_SECRETS_KEY changed?)', code: 'cannot_decrypt' });
+    } else {
+      res.status(404).json(NOT_FOUND);
+    }
+    return null;
+  }
+
   // Enter an existing GitHub App by hand. The key and id are proven with GitHub BEFORE anything is stored, so a typo never replaces
   // a working connection. The password is asked for: this decides where webhooks are believed from and what can clone private code.
-  r.post('/manual', limiter(10), async (req, res, next) => {
+  r.post('/apps', limiter(10), async (req, res, next) => {
     try {
       const { password, appId, privateKey: pem, webhookSecret } = req.body ?? {};
       if (typeof password !== 'string') return res.status(400).json({ error: 'Give your current password' });
@@ -70,31 +84,32 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings }) {
         return res.status(400).json({ error: 'GitHub says this key belongs to a different app than the ID you entered.', code: 'app_id_mismatch' });
       }
 
-      await saveGithubApp(db, secretsKey, {
+      // The same GitHub App entered again replaces its credentials (its projects stay with it, and so do their installations).
+      const saved = await saveGithubApp(db, secretsKey, {
         appId: id.trim(), slug: info.slug, name: info.name, ownerLogin: info.ownerLogin, htmlUrl: info.htmlUrl,
         privateKeyPem: key.export({ type: 'pkcs8', format: 'pem' }).toString(), webhookSecret, source: 'manual',
       });
-      await forgetInstallations(db);
       provider.invalidate();
       await recordAttempt(db, { kind: 'github', username: user.username, address: addressOf(req), success: true });
-      const { app } = await provider.status();
-      res.json({ connected: Boolean(app), app });
+      res.status(saved.created ? 201 : 200).json({ app: await githubAppSummary(db, saved.id), created: saved.created });
     } catch (err) {
       next(err);
     }
   });
 
-  // Forget the app. Deployed apps keep running; private repositories cannot be built until GitHub is connected again.
-  r.delete('/', limiter(10), async (req, res, next) => {
+  // Forget one GitHub App. The projects assigned to it keep running; private repositories cannot be built until they are given another
+  // GitHub App. The password is asked for.
+  r.delete('/apps/:id', limiter(10), async (req, res, next) => {
     try {
       const { password } = req.body ?? {};
       if (typeof password !== 'string') return res.status(400).json({ error: 'Give your current password' });
+      if (!UUID_RE.test(req.params.id)) return res.status(404).json(NOT_FOUND);
       const user = await checkPassword(req, res, password);
       if (!user) return undefined;
-      const removed = await deleteGithubApp(db);
-      await forgetInstallations(db);
+      const projects = await deleteGithubApp(db, req.params.id);
       provider.invalidate();
-      if (removed) await recordAttempt(db, { kind: 'github', username: user.username, address: addressOf(req), success: true });
+      if (projects === null) return res.status(404).json(NOT_FOUND);
+      await recordAttempt(db, { kind: 'github', username: user.username, address: addressOf(req), success: true });
       res.status(204).end();
     } catch (err) {
       next(err);
@@ -114,10 +129,10 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings }) {
   };
 
   // Does GitHub send webhooks to the address Shipdok expects (the public address + the webhook path)?
-  r.get('/webhook', async (req, res, next) => {
+  r.get('/apps/:id/webhook', async (req, res, next) => {
     try {
-      const github = await provider.client();
-      if (!github) return res.status(501).json(NOT_CONNECTED);
+      const github = await clientOf(req, res);
+      if (!github) return undefined;
       const expected = await expectedWebhook();
       try {
         const { url: actual } = await github.getWebhookConfig();
@@ -131,10 +146,10 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings }) {
   });
 
   // Point GitHub at the expected address (the retry for the automatic update that follows a change of the public address).
-  r.post('/webhook/sync', limiter(20), async (req, res, next) => {
+  r.post('/apps/:id/webhook/sync', limiter(20), async (req, res, next) => {
     try {
-      const github = await provider.client();
-      if (!github) return res.status(501).json(NOT_CONNECTED);
+      const github = await clientOf(req, res);
+      if (!github) return undefined;
       const expected = await expectedWebhook();
       if (!expected) return res.status(400).json({ error: 'Set the public address first (Security > Public access)', code: 'no_public_address' });
       try {
@@ -148,10 +163,10 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings }) {
     }
   });
 
-  r.get('/repos', async (req, res, next) => {
+  r.get('/apps/:id/repos', async (req, res, next) => {
     try {
-      const github = await provider.client();
-      if (!github) return res.status(501).json(NOT_CONNECTED);
+      const github = await clientOf(req, res);
+      if (!github) return undefined;
       try {
         res.json({ repos: await github.listAllRepos() });
       } catch (err) {
@@ -163,16 +178,21 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings }) {
     }
   });
 
-  // The branches of a repository, for the branch pickers: through the app's installation when it is installed there, otherwise anonymously
+  // The branches of a repository, for the branch pickers: through the chosen GitHub App's installation when it is installed there, otherwise anonymously
   // (public repositories). It works with no GitHub App connected too, for public repositories. Good answers are kept for a minute so a form
   // that is being typed into does not ask GitHub on every keystroke; failures are never kept.
-  const branchCache = new Map(); // "app|owner/name" -> { at, value }
+  const branchCache = new Map(); // "app id or anon|owner/name" -> { at, value }
   r.get('/branches', async (req, res, next) => {
     try {
       const repo = req.query.repo;
       if (typeof repo !== 'string' || !REPO_FULL_NAME_RE.test(repo)) return res.status(400).json({ error: 'repo must be a repository like owner/name', code: 'bad_repo' });
-      const github = await provider.client();
-      const key = `${github ? 'app' : 'anon'}|${repo.toLowerCase()}`;
+      // Through one GitHub App's installation (?app=), or anonymously when no app is given (public repositories).
+      let github = null;
+      if (req.query.app !== undefined) {
+        github = await clientOf(req, res);
+        if (!github) return undefined;
+      }
+      const key = `${github ? req.query.app : 'anon'}|${repo.toLowerCase()}`;
       const hit = branchCache.get(key);
       if (hit && Date.now() - hit.at < BRANCH_CACHE_MS) return res.json(hit.value);
       try {
@@ -195,10 +215,10 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings }) {
   });
 
   // Where the app is installed (the page's "check again" after installing it).
-  r.get('/installations', async (req, res, next) => {
+  r.get('/apps/:id/installations', async (req, res, next) => {
     try {
-      const github = await provider.client();
-      if (!github) return res.status(501).json(NOT_CONNECTED);
+      const github = await clientOf(req, res);
+      if (!github) return undefined;
       try {
         const installations = (await github.listInstallations()).map((i) => ({ id: i.id, account: i.account }));
         res.json({ installations });

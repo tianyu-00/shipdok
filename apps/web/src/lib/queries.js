@@ -33,14 +33,16 @@ export const useBuildCache = () => useQuery({ queryKey: ['build-cache'], queryFn
 
 export const useCrashes = (id) => useQuery({ queryKey: ['crashes', id], queryFn: () => api(`/apps/${id}/crashes`), refetchInterval: 15_000 })
 
-// 501 means no GitHub App is configured: that is an answer, not a failure, so the create form falls back to typing the repo.
-export const useRepos = () => useQuery({
-  queryKey: ['repos'],
+// The repositories one GitHub App can see. No GitHub app chosen: nothing is asked (the form is a plain box). An app that is gone (404) or
+// whose credentials cannot be read (409) is an answer, not a failure, so the form falls back to typing the repo.
+export const useRepos = (githubAppId) => useQuery({
+  queryKey: ['repos', githubAppId ?? null],
+  enabled: Boolean(githubAppId),
   queryFn: async () => {
     try {
-      return { available: true, repos: (await api('/github/repos')).repos }
+      return { available: true, repos: (await api(`/github/apps/${githubAppId}/repos`)).repos }
     } catch (err) {
-      if (err.status === 501) return { available: false, repos: [] }
+      if (err.status === 404 || err.status === 409) return { available: false, repos: [] }
       throw err
     }
   },
@@ -48,11 +50,11 @@ export const useRepos = () => useQuery({
   retry: false,
 })
 
-// The branches of a repository (the app's own installation, or anonymously for a public one). A repository that is not usable, or a failed
-// answer, is an error the branch picker turns into a plain text box: typing the name always works.
-export const useBranches = (repo) => useQuery({
-  queryKey: ['branches', repo],
-  queryFn: () => api(`/github/branches?repo=${encodeURIComponent(repo)}`),
+// The branches of a repository (through the chosen GitHub app's installation, or anonymously for a public one). A repository that is not usable,
+// or a failed answer, is an error the branch picker turns into a plain text box: typing the name always works.
+export const useBranches = (repo, githubAppId) => useQuery({
+  queryKey: ['branches', repo, githubAppId ?? null],
+  queryFn: () => api(`/github/branches?repo=${encodeURIComponent(repo)}${githubAppId ? `&app=${encodeURIComponent(githubAppId)}` : ''}`),
   enabled: isRepoName(repo),
   staleTime: 60_000,
   retry: false,
@@ -78,8 +80,8 @@ export const useRecovery = () => useQuery({ queryKey: ['recovery'], queryFn: () 
 // Who may reach Shipdok from outside, and the public address (also tells whether THIS visit counts as local or outside).
 export const usePublicAccess = () => useQuery({ queryKey: ['public-access'], queryFn: () => api('/settings/public'), retry: false })
 
-// The GitHub App: connected or not, and its details (never a secret).
+// The connected GitHub Apps (`apps`, empty when none), each with its details and the projects assigned to it (never a secret).
 export const useGithub = () => useQuery({ queryKey: ['github'], queryFn: () => api('/github'), retry: false })
 
-// Does GitHub send webhooks to the address Shipdok expects? Only asked while an app is connected.
-export const useGithubWebhook = (enabled) => useQuery({ queryKey: ['github-webhook'], queryFn: () => api('/github/webhook'), enabled, retry: false })
+// Does GitHub send this app's webhooks to the address Shipdok expects?
+export const useGithubWebhook = (githubAppId) => useQuery({ queryKey: ['github-webhook', githubAppId], queryFn: () => api(`/github/apps/${githubAppId}/webhook`), retry: false })

@@ -9,6 +9,7 @@ the folder, so a different folder means an empty installation).
 - [Restore](#restore)
 - [Persistent storage of your apps](#persistent-storage-of-your-apps)
 - [Build cache](#build-cache)
+- [Several GitHub accounts](#several-github-accounts)
 - [Build-time variables](#build-time-variables) (and [build secrets](#build-secrets))
 - [Forgot the password](#forgot-the-password)
 - [Troubleshooting](#troubleshooting)
@@ -186,6 +187,26 @@ next to **Deploy** on the app page and choose **Deploy without cache…**. That 
 The base image is not downloaded again if it is already on the machine, and the next deployment, or a push, uses the cache as usual. It is not
 available for webhook pushes or rollbacks (a rollback builds nothing).
 
+## Several GitHub accounts
+
+A GitHub App belongs to one GitHub account or organisation and sees only the repositories it is installed on. To deploy repositories from more than one
+account, connect **one GitHub App for each** on the **GitHub** page: press **Connect GitHub** again (it creates another private app under the account or
+organisation you choose) or enter an app you already have. There is no limit on how many.
+
+- **Each app uses one GitHub app.** When you create an app, choose the GitHub app that has its repository (the repository list and the branch list are
+  that app's). With exactly one connected it is chosen for you. **None** is for a public repository that you deploy by hand. Change it later in the
+  app's **Settings → GitHub app**: it applies at once, Shipdok looks up the installation again, and says if the new app is not installed on the repository.
+- **Pushes deploy only the apps of the GitHub app that sent them.** All GitHub apps send to the same webhook address; each has its own secret. An app with
+  no GitHub app is never deployed by a push.
+- **Disconnecting one** (needs your password) lists the apps that use it first. They keep running, and are left with no GitHub app, so private repositories
+  cannot be built and pushes do not deploy them until you choose another in their settings. The other GitHub apps are not touched. Shipdok cannot delete the
+  app on github.com: do that there if you no longer want it.
+- **Entering a GitHub app that is already connected** replaces its key and secret; its apps and their installations are kept.
+- **Upgrading from a version with one GitHub app:** it becomes the first entry and every existing app is assigned to it, so nothing changes. An app that has
+  no GitHub app after that (created while none was connected) must be given one before pushes deploy it.
+- A GitHub app whose stored credentials cannot be read (for example after `APP_SECRETS_KEY` changed) is marked on its own card; the others keep working.
+  Disconnect it and connect it again.
+
 ## Build-time variables
 
 Most variables are for the running app. Some frameworks need a value while the app is **built**: Vite reads `VITE_*` and Next.js reads
@@ -271,7 +292,8 @@ the dashboard's.
 
 **GitHub says the webhook delivery failed.** In **Security → Public access** the mode must be *Webhook only* or *Full access* and the public address
 must be right. Check the GitHub page's *Webhook address* card, and `docker compose logs api`. A delivery that arrived appears in the app's history.
-A `503` means no GitHub App is connected yet.
+A `503` means no GitHub App is connected yet. If a push arrives but nothing deploys, the history says why: *uses a different GitHub app* means the
+app is assigned to another GitHub App than the one that sent the push (change it in the app's **Settings → GitHub app**).
 
 **An app shows "Container missing".** Its container was removed outside Shipdok (for example `docker rm`). Nothing is running. Press **Deploy** to
 bring it back.

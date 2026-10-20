@@ -11,7 +11,7 @@ import { usePublicAccess } from '@/lib/queries'
 import { connectProblem, postManifest } from '@/lib/githubconnect'
 
 /** The button: Shipdok has GitHub create the app, the administrator confirms once on github.com, and GitHub sends the browser back. */
-export function GithubConnectCard() {
+export function GithubConnectCard({ another = false }) {
   const access = usePublicAccess()
   const [kind, setKind] = useState('personal')
   const [org, setOrg] = useState('')
@@ -37,7 +37,7 @@ export function GithubConnectCard() {
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base"><Plug className="size-4" aria-hidden="true" />Connect GitHub</CardTitle>
         <CardDescription>
-          Shipdok has GitHub create a private app for you. Confirm once on GitHub, and Shipdok keeps the app's key and webhook secret, encrypted. The app gets
+          {another ? 'Add another GitHub app, for another account or organisation. ' : ''}Shipdok has GitHub create a private app for you. Confirm once on GitHub, and Shipdok keeps the app's key and webhook secret, encrypted. The app gets
           read access to code and metadata, and hears about pushes. Nothing else. Afterwards you choose which repositories it may see.
         </CardDescription>
       </CardHeader>

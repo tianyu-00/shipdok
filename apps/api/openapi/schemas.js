@@ -71,6 +71,7 @@ export const schemas = {
     properties: {
       id: uuid('The app\'s id.'), name: str('Display name (editable).'), slug: str('Normalised name; names the images and containers and never changes.'),
       repo: str('GitHub `owner/repo`.'), github_installation_id: { type: 'integer', nullable: true, description: 'The GitHub App installation remembered for this repository (`null` until found).' },
+      github_app_id: { type: 'string', format: 'uuid', nullable: true, description: 'The connected GitHub App this project uses to list and clone its repository and whose webhooks deploy it (`null`: none, for a public repository deployed by hand).' },
       branch: str('The branch deployed on push.'), root_dir: str('Where the Dockerfile is, inside the repository.'),
       container_port: int('The port the app listens on inside its container.'), host_port: nint('The port it is published on, on this machine.'),
       health_path: nstr('A path that answers when the app is healthy (`null`: any answer counts).'),
@@ -187,15 +188,22 @@ export const schemas = {
     mode: enumOf(['local', 'webhook', 'full'], 'Who may reach Shipdok from outside.'), publicUrl: nstr('The public address (an origin, no path), or `null`.'),
     modeLocked: bool('The environment (`SHIPDOK_PUBLIC`) fixes the mode.'), urlLocked: bool('The environment (`PUBLIC_URL`) fixes the address.'),
     visitor: enumOf(['local', 'outside'], 'How THIS request was classified.'),
-    githubWebhook: obj({ updated: bool('Whether GitHub now has the new webhook address.'), error: str('Why not.') }, ['updated'], 'Only after a change of the public address while GitHub is connected.'),
+    githubWebhook: obj({ updated: bool('Whether every connected GitHub app now has the new webhook address.'), failed: { type: 'array', items: { type: 'string' }, description: 'The names of the GitHub apps that did not take it.' }, error: str('Why not.') }, ['updated'], 'Only after a change of the public address while a GitHub app is connected.'),
   }, ['mode', 'publicUrl', 'modeLocked', 'urlLocked', 'visitor']),
 
   // ---- GitHub
   GithubApp: obj({
-    appId: str('The GitHub App id.'), slug: nstr('The app\'s URL name.'), name: nstr('Its name.'), ownerLogin: nstr('The account that owns it.'), htmlUrl: nstr('Its page on github.com.'),
+    id: uuid('Shipdok\'s id for this GitHub App (what a project\'s `github_app_id` refers to).'), appId: str('The GitHub App id.'), slug: nstr('The app\'s URL name.'), name: nstr('Its name.'), ownerLogin: nstr('The account that owns it.'), htmlUrl: nstr('Its page on github.com.'),
     clientId: nstr('Its client id.'), source: enumOf(['manifest', 'manual'], 'How it was connected.'), connectedAt: time('When.'), updatedAt: time('Last changed.'),
-  }, undefined, 'The connected GitHub App. Never contains a secret.'),
-  GithubStatus: obj({ connected: bool('Whether an app is connected.'), app: { ...ref('GithubApp'), nullable: true }, problem: { type: 'string', nullable: true, enum: ['cannot_decrypt', null], description: '`cannot_decrypt`: the stored credentials do not fit the platform key.' } }),
+  }, undefined, 'A connected GitHub App. Never contains a secret.'),
+  GithubAppListed: {
+    allOf: [ref('GithubApp'), obj({
+      problem: { type: 'string', nullable: true, enum: ['cannot_decrypt', null], description: '`cannot_decrypt`: the stored credentials do not fit the platform key.' },
+      projects: { type: 'array', description: 'The projects assigned to this GitHub App.', items: obj({ id: uuid('The project\'s id.'), name: str('Its name.'), slug: str('Its slug.') }) },
+    })],
+  },
+  GithubStatus: obj({ apps: { type: 'array', items: ref('GithubAppListed'), description: 'Every connected GitHub App, oldest first.' } }),
+  GithubAppAdded: obj({ created: bool('`true` for a new GitHub App, `false` when an app that was already connected had its credentials replaced.'), app: ref('GithubApp') }),
   GithubManual: obj({
     password: str('The administrator\'s current password.'), appId: { oneOf: [{ type: 'string' }, { type: 'integer' }], description: 'The App ID (a number; not the Client ID).' },
     privateKey: str('The private key (the `.pem` file\'s text).'), webhookSecret: str('The app\'s webhook secret, 16 to 256 characters.', { minLength: 16, maxLength: 256 }),

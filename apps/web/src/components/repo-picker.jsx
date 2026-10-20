@@ -10,11 +10,12 @@ const PrivateBadge = () => <Badge variant="outline" className="ml-auto shrink-0 
 const PublicBadge = () => <Badge variant="outline" className="ml-auto shrink-0 text-muted-foreground">public</Badge>
 
 /**
- * Choose a repository from the ones the Shipdok GitHub App can see (searchable, private or public marked), or use any owner/name, or paste a
- * GitHub link. Without a GitHub App, or if the list cannot be loaded, it is a plain text box (which also turns a pasted link into owner/name),
- * so typing the repository always works.  `repos` is the result of useRepos().
+ * Choose a repository from the ones the chosen GitHub App can see (searchable, private or public marked), or use any owner/name, or paste a
+ * GitHub link. With no GitHub app chosen, or if the list cannot be loaded, it is a plain text box (which also turns a pasted link into owner/name),
+ * so typing the repository always works.  `repos` is the result of useRepos(githubAppId); `githubAppId` is that same app (none: a plain box).
  */
-export function RepoPicker({ id, value, onChange, repos }) {
+export function RepoPicker({ id, value, onChange, repos, githubAppId }) {
+  if (!githubAppId) return <TextRepo id={id} value={value} onChange={onChange} />
   if (repos.isPending) {
     return (
       <Button id={id} type="button" variant="outline" disabled className="w-full justify-start font-normal text-muted-foreground">
@@ -52,7 +53,7 @@ function RepoCombobox({ id, value, onChange, list }) {
   const current = list.find((r) => r.fullName === value)
   const footer = (more) => (
     <p className="border-t px-3 py-2 text-xs text-muted-foreground">
-      {list.length === 0 ? 'The Shipdok GitHub App cannot see any repository yet: install it on one from the GitHub page. ' : `${list.length} repositor${list.length === 1 ? 'y' : 'ies'} the Shipdok GitHub App can see. `}
+      {list.length === 0 ? 'This GitHub app cannot see any repository yet: install it on one from the GitHub page. ' : `${list.length} repositor${list.length === 1 ? 'y' : 'ies'} this GitHub app can see. `}
       {more > 0 ? `${more} more match${more === 1 ? '' : 'es'}: keep typing. ` : ''}
       Paste a GitHub link or type owner/name to use any public repository.
     </p>

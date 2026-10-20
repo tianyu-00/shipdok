@@ -18,7 +18,10 @@ const login = async (extra = {}) => {
   accountMade = true;
   return a;
 };
-const get = (repo = REPO, a = agent) => a.get('/api/github/branches').query({ repo });
+const APP = '11111111-1111-4111-8111-111111111111'; // the test client answers for any GitHub app id
+const OTHER_APP = '22222222-2222-4222-8222-222222222222';
+// Through one GitHub app by default (as the forms do once a GitHub app is chosen); `app: null` asks with none, which is anonymous.
+const get = (repo = REPO, a = agent, app = APP) => a.get('/api/github/branches').query({ repo, ...(app ? { app } : {}) });
 const getWithout = () => agent.get('/api/github/branches');
 
 beforeEach(async () => {
@@ -63,7 +66,7 @@ describe('who may ask, and what', () => {
   });
 });
 
-describe('with no GitHub App connected', () => {
+describe('with no GitHub app chosen, or none connected', () => {
   const publicGithub = (handler) => {
     const calls = [];
     const fn = async (url, init) => {
@@ -79,7 +82,7 @@ describe('with no GitHub App connected', () => {
   test('public repositories still list, anonymously (no Authorization header)', async () => {
     const githubFetch = publicGithub(okHandler);
     const a = await login({ github: null, githubFetch });
-    const res = await get(REPO, a);
+    const res = await get(REPO, a, null);
     expect([res.status, res.body]).toEqual([200, { defaultBranch: 'main', branches: ['main', 'dev'], truncated: false }]);
     expect(githubFetch.calls.length).toBe(2);
     for (const c of githubFetch.calls) expect(c.headers.Authorization).toBeUndefined();
@@ -88,9 +91,39 @@ describe('with no GitHub App connected', () => {
   test('a repository that is not public is a 404 with a plain explanation', async () => {
     const githubFetch = publicGithub(() => ({ status: 404 }));
     const a = await login({ github: null, githubFetch });
-    const res = await get(REPO, a);
+    const res = await get(REPO, a, null);
     expect([res.status, res.body.code]).toEqual([404, 'repo_not_found']);
     expect(res.body.error).toMatch(/private repository needs the app/);
+  });
+
+  test('no GitHub app given means anonymous even when apps are connected: the connected client is not used', async () => {
+    const githubFetch = publicGithub(okHandler);
+    const a = await login({ github, githubFetch });
+    const res = await get(REPO, a, null);
+    expect(res.status).toBe(200);
+    expect(github.listBranches).not.toHaveBeenCalled();
+    for (const c of githubFetch.calls) expect(c.headers.Authorization).toBeUndefined();
+  });
+
+  test('a GitHub app that is not connected is a 404 about the app, and GitHub is not asked', async () => {
+    const githubFetch = publicGithub(okHandler);
+    const a = await login({ github: null, githubFetch });
+    const res = await get(REPO, a, OTHER_APP);
+    expect([res.status, res.body.code]).toEqual([404, 'github_app_not_found']);
+    expect(githubFetch.calls).toHaveLength(0);
+  });
+
+  test('something that is not an id is the same 404', async () => {
+    const res = await get(REPO, agent, 'mine');
+    expect([res.status, res.body.code]).toEqual([404, 'github_app_not_found']);
+    expect(github.listBranches).not.toHaveBeenCalled();
+  });
+});
+
+describe('the chosen GitHub app is the one asked', () => {
+  test('the answer comes through that app\'s client', async () => {
+    await get(REPO, agent, APP);
+    expect(github.listBranches).toHaveBeenCalledWith(REPO);
   });
 });
 
@@ -141,6 +174,15 @@ describe('the one-minute memory', () => {
     expect((await get()).status).toBe(502);
     expect((await get()).status).toBe(200);
     expect(github.listBranches).toHaveBeenCalledTimes(2);
+  });
+
+  test('the same repository through another GitHub app, or through none, is a different answer (what an app can see differs)', async () => {
+    await get(REPO, agent, APP);
+    await get(REPO, agent, OTHER_APP);
+    expect(github.listBranches).toHaveBeenCalledTimes(2);
+    await get(REPO, agent, APP);
+    await get(REPO, agent, OTHER_APP);
+    expect(github.listBranches).toHaveBeenCalledTimes(2); // each remembered on its own
   });
 
   test('upper and lower case of the same repository share an answer (GitHub treats them as one)', async () => {

@@ -6,13 +6,13 @@
 //
 // The state is random, lives in the session for ten minutes and is used once, so nobody else can finish the flow for the administrator.
 // The code is used once. Credentials go straight into the encrypted store and are never returned, logged or put in a redirect.
+// Every run adds one more GitHub App (their number is unlimited); the redirect carries only the new app's id in this installation.
 import { Router } from 'express';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { GithubError, exchangeManifestCode, saveGithubApp, githubAppSummary } from '@shipdok/shared';
+import { GithubError, exchangeManifestCode, saveGithubApp } from '@shipdok/shared';
 import { config } from '../config.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { limiter } from '../authutil.js';
-import { forgetInstallations } from './github.js';
 import { sameOrigin } from '../origin.js';
 import { addressOf, recordAttempt } from '../lockout.js';
 
@@ -40,10 +40,6 @@ export function githubConnectRouter({ db, provider, secretsKey, settings, fetch 
       if (typeof appName !== 'string' || !NAME_RE.test(appName)) {
         return res.status(400).json({ error: 'The app name must be 1-34 characters: letters, numbers, spaces, dot, dash, underscore' });
       }
-      if (await githubAppSummary(db)) {
-        return res.status(409).json({ error: 'GitHub is already connected. Disconnect it first to connect another app.', code: 'already_connected' });
-      }
-
       // GitHub sends the browser back to the address the dashboard is open at, so take it from the request, and only if it is one we accept.
       const origin = req.get('origin');
       const { publicUrl } = await settings.public();
@@ -87,7 +83,6 @@ export function githubConnectRouter({ db, provider, secretsKey, settings, fetch 
       const { code, state } = req.query;
       if (!pending || typeof state !== 'string' || !sameText(state, pending.state) || Date.now() - pending.at > STATE_TTL_MS) return back('error=state');
       if (typeof code !== 'string') return back('error=exchange_failed');
-      if (await githubAppSummary(db)) return back('error=already_connected');
 
       let created;
       try {
@@ -95,12 +90,11 @@ export function githubConnectRouter({ db, provider, secretsKey, settings, fetch 
       } catch (err) {
         return back(err instanceof GithubError && err.status === undefined ? 'error=github_unreachable' : 'error=exchange_failed');
       }
-      await saveGithubApp(db, secretsKey, { ...created, source: 'manifest' });
-      await forgetInstallations(db);
+      const saved = await saveGithubApp(db, secretsKey, { ...created, source: 'manifest' });
       provider.invalidate();
       const { rows } = await db.query('SELECT username FROM users WHERE id = $1', [s.userId]);
       await recordAttempt(db, { kind: 'github', username: rows[0]?.username ?? 'admin', address: addressOf(req), success: true });
-      return back('connected=1');
+      return back(`connected=${saved.id}`);
     } catch (err) {
       return next(err);
     }

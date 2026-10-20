@@ -4,7 +4,7 @@ export {
 export { parseMasterKey, envVarContext, encryptSecret, decryptSecret } from './crypto.js';
 export { parseEnvText } from './envfile.js';
 export {
-  githubFieldContext, GithubStoreError, saveGithubApp, githubAppSummary, loadGithubApp, deleteGithubApp, createGithubProvider, oldGithubEnvNotice,
+  githubFieldContext, GithubStoreError, saveGithubApp, githubAppSummary, listGithubApps, loadGithubApp, loadGithubApps, deleteGithubApp, createGithubProvider, oldGithubEnvNotice,
 } from './githubapp.js';
 export { SECRET_FILES, loadSecretFiles, ensureSecrets, applyPlatformDefaults } from './secretfiles.js';
 export { passwordProblem, PASSWORD_MIN, PASSWORD_MAX } from './password.js';

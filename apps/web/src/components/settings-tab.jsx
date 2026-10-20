@@ -11,6 +11,7 @@ import { Field } from '@/components/field'
 import { PendingSettings } from '@/components/pending-settings'
 import { RepoLink } from '@/components/repo-link'
 import { DeleteApp } from '@/components/delete-app'
+import { GithubAppSetting } from '@/components/github-app-setting'
 import VolumesCard from '@/components/volumes-card'
 
 // Which field a refusal from the server belongs to.
@@ -53,7 +54,7 @@ function SettingsForm({ app }) {
       <div className="grid gap-4 sm:grid-cols-2">
         <Field id="s-name" label="Name" error={err('name')}><Input id="s-name" aria-invalid={bad('name')} value={f.name} onChange={set('name')} /></Field>
         <Field id="s-branch" label="Branch" error={err('branch')} hint="Pushes to this branch deploy the app.">
-          <BranchPicker id="s-branch" repo={app.repo} invalid={bad('branch')} value={f.branch} onChange={(branch) => set('branch')({ target: { value: branch } })} />
+          <BranchPicker id="s-branch" repo={app.repo} githubAppId={app.github_app_id ?? undefined} invalid={bad('branch')} value={f.branch} onChange={(branch) => set('branch')({ target: { value: branch } })} />
         </Field>
         <Field id="s-container_port" label="Container port" error={err('container_port')} hint="The port the app listens on inside its container.">
           <Input id="s-container_port" inputMode="numeric" aria-invalid={bad('container_port')} value={f.container_port} onChange={set('container_port')} />
@@ -104,6 +105,7 @@ export default function SettingsTab({ app }) {
           <SettingsForm key={app.updated_at} app={app} />
         </CardContent>
       </Card>
+      <GithubAppSetting app={app} />
       <VolumesCard app={app} />
       <DeleteApp app={app} />
     </div>

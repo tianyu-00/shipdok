@@ -65,6 +65,7 @@ export async function requestDeployment({ db, queue }, app, { trigger = 'manual'
       repo: `https://github.com/${snapshot.repo}.git`,
       repoFullName: snapshot.repo, // owner/repo, used by the worker to request a repo-scoped GitHub token
       installationId: app.github_installation_id ? Number(app.github_installation_id) : undefined,
+      githubAppId: app.github_app_id ?? undefined, // which GitHub App the worker asks for the repository's access token
       ref: snapshot.branch,
       commit: rollbackOf ? undefined : (commit ?? undefined), // exact commit for webhook pushes (a rollback builds nothing)
       reuseImage: rollbackOf?.image,

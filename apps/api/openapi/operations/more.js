@@ -9,7 +9,8 @@ const HOOK = 'Webhooks';
 const SYS = 'System';
 const nothing = (description) => ({ description });
 const KEY = { name: 'key', in: 'path', required: true, description: 'The variable\'s name: letters, digits and underscore, not starting with a digit, at most 128 characters; some names are reserved.', schema: { type: 'string' } };
-const github501 = { 501: 'GitHub is not connected yet (connect it on the GitHub page).' };
+const GH_APP_ID = idParam('id', 'The id of a connected GitHub App (from `GET /api/github`).');
+const ghApp404 = { 404: 'No such GitHub app (`code: github_app_not_found`).', 409: 'That GitHub app\'s stored credentials cannot be read (`code: cannot_decrypt`).' };
 
 export default Object.fromEntries([
   // ---------------------------------------------------------------- variables
@@ -83,61 +84,64 @@ export default Object.fromEntries([
 
   // ---------------------------------------------------------------- github
   route('GET', '/api/github', op({
-    tag: GH, summary: 'Is GitHub connected?', description: 'The connected GitHub App\'s details, never a secret. `problem: cannot_decrypt` means the stored credentials do not fit the platform key.',
-    responses: { 200: ok('The status.', ref('GithubStatus')) },
+    tag: GH, summary: 'The connected GitHub Apps',
+    description: 'Every connected GitHub App, oldest first, never a secret, each with the projects assigned to it (`projects`, what the Disconnect warning lists). `problem: cannot_decrypt` on an app means its stored credentials do not fit the platform key; the others are not affected.',
+    responses: { 200: ok('The apps.', ref('GithubStatus')) },
   })),
-  route('POST', '/api/github/manual', op({
+  route('POST', '/api/github/apps', op({
     tag: GH, summary: 'Enter an existing GitHub App by hand',
-    description: 'The key and id are proven with GitHub (`GET /app`) BEFORE anything is stored, so a typo never replaces a working connection. Needs the current password. Remembered installations are forgotten, because installation ids belong to one app. Recorded in the sign-ins list as a GitHub change.',
+    description: 'Adds a GitHub App (there is no limit on how many). The key and id are proven with GitHub (`GET /app`) BEFORE anything is stored, so a typo never adds or replaces anything. Entering a GitHub App that is already connected replaces its credentials (same `id`, answer 200, `created: false`; its projects and their installations are kept, because the installations belong to the same GitHub App). Needs the current password. Recorded in the sign-ins list as a GitHub change.',
     body: ref('GithubManual'),
-    responses: { 200: ok('Connected.', { type: 'object', properties: { connected: { type: 'boolean' }, app: ref('GithubApp') } }) },
+    responses: { 201: ok('Added.', ref('GithubAppAdded')), 200: ok('The same GitHub App was already connected: its credentials were replaced.', ref('GithubAppAdded')) },
     errors: { 400: 'A missing or malformed field, or GitHub did not accept the id and key (`code: github_rejected`), or the key belongs to another app (`code: app_id_mismatch`).', 403: 'Wrong password, or the Origin is not allowed.', 429: 'Too many tries.', 502: 'GitHub could not be reached (`code: github_unreachable`) or could not check the app.' },
   })),
-  route('DELETE', '/api/github', op({
-    tag: GH, summary: 'Disconnect GitHub',
-    description: 'Forgets the app. Deployed apps keep running; private repositories cannot be built until GitHub is connected again. Shipdok cannot delete the app on github.com. Needs the current password.',
+  route('DELETE', '/api/github/apps/{id}', op({
+    tag: GH, summary: 'Disconnect one GitHub App', parameters: [GH_APP_ID],
+    description: 'Forgets that app. The projects assigned to it keep running and are left with **no GitHub app and no remembered installation**: private repositories cannot be built, and pushes do not deploy them, until they are given another GitHub app in their settings. The dashboard lists those projects (`projects` in `GET /api/github`) before asking. Shipdok cannot delete the app on github.com. Needs the current password.',
     body: ref('PasswordOnly'), responses: { 204: nothing('Disconnected.') },
-    errors: { 400: 'No password given.', 403: 'Wrong password, or the Origin is not allowed.', 429: 'Too many tries.' },
+    errors: { 400: 'No password given.', 403: 'Wrong password, or the Origin is not allowed.', 404: 'No such GitHub app (`code: github_app_not_found`).', 429: 'Too many tries.' },
   })),
   route('POST', '/api/github/connect/start', op({
     tag: GH, summary: 'Start the "Connect GitHub" flow',
-    description: 'Returns a prepared GitHub App definition (`manifest`) and the address (`postUrl`, always on github.com) the browser posts it to. Keeps a one-time `state` in the session for 10 minutes. The manifest asks only for read access to contents and metadata and the push event, and the app is created private. Needs an Origin that is one of the dashboard\'s own addresses, because GitHub sends the browser back there.',
+    description: 'Returns a prepared GitHub App definition (`manifest`) and the address (`postUrl`, always on github.com) the browser posts it to. Each run adds one more GitHub App, whether or not others are connected. Keeps a one-time `state` in the session for 10 minutes. The manifest asks only for read access to contents and metadata and the push event, and the app is created private. Needs an Origin that is one of the dashboard\'s own addresses, because GitHub sends the browser back there.',
     body: ref('ConnectStart'), bodyRequired: false, responses: { 200: ok('The manifest.', ref('ConnectManifest')) },
-    errors: { 400: 'A bad name or organisation, or the dashboard was not opened at its own address.', 409: 'GitHub is already connected (`code: already_connected`).', 429: 'Too many tries.' },
+    errors: { 400: 'A bad name or organisation, or the dashboard was not opened at its own address.', 429: 'Too many tries.' },
   })),
   route('GET', '/api/github/connect/callback', op({
     tag: GH, auth: 'none', summary: 'Where GitHub sends the browser back',
-    description: 'A page navigation, not an API call: GitHub redirects the browser here with a one-time `code` and the `state` from the start. Every outcome is a **302 redirect** to `/github?connected=1` or `/github?error=<login|state|exchange_failed|github_unreachable|already_connected>`; the API trades the code for the app\'s credentials and stores them encrypted. The state is compared in constant time and used once whatever happens. No secret is ever put in a redirect.',
+    description: 'A page navigation, not an API call: GitHub redirects the browser here with a one-time `code` and the `state` from the start. Every outcome is a **302 redirect** to `/github?connected=<the new app\'s id>` or `/github?error=<login|state|exchange_failed|github_unreachable>`; the API trades the code for the app\'s credentials and stores them encrypted as one more GitHub App. The state is compared in constant time and used once whatever happens. No secret is ever put in a redirect.',
     parameters: [query('code', 'The one-time code from GitHub.'), query('state', 'The state returned by the start call.')],
     responses: { 302: nothing('Redirect to the GitHub page of the dashboard, with a short result code.') },
   })),
-  route('GET', '/api/github/repos', op({
-    tag: GH, summary: 'Repositories the app can see', description: 'Across all installations of the connected GitHub App.',
+  route('GET', '/api/github/apps/{id}/repos', op({
+    tag: GH, summary: 'Repositories one GitHub App can see', parameters: [GH_APP_ID],
+    description: 'Across all installations of that GitHub App. This is the list behind the repository picker once a GitHub app is chosen.',
     responses: { 200: ok('The repositories.', { type: 'object', properties: { repos: { type: 'array', items: ref('GithubRepo') } } }) },
-    errors: { ...github501, 502: 'GitHub could not be asked.' },
+    errors: { ...ghApp404, 502: 'GitHub could not be asked.' },
   })),
-  route('GET', '/api/github/installations', op({
-    tag: GH, summary: 'Where the app is installed', description: 'Asked from GitHub when you press "Check again" after installing the app.',
+  route('GET', '/api/github/apps/{id}/installations', op({
+    tag: GH, summary: 'Where one GitHub App is installed', parameters: [GH_APP_ID],
+    description: 'Asked from GitHub when you press "Check again" after installing the app.',
     responses: { 200: ok('The installations.', { type: 'object', properties: { installations: { type: 'array', items: ref('GithubInstallation') } } }) },
-    errors: { ...github501, 502: 'GitHub could not be asked.' },
+    errors: { ...ghApp404, 502: 'GitHub could not be asked.' },
   })),
   route('GET', '/api/github/branches', op({
     tag: GH, summary: 'The branches of a repository',
-    parameters: [{ ...query('repo', 'The repository, as `owner/name`.'), required: true }],
-    description: 'For the branch pickers in the dashboard. When the GitHub App is installed on the repository the branches are read with a token for that one repository (read-only); otherwise anonymously, which works for **public** repositories, and also when no GitHub App is connected at all. The default branch comes first, the rest alphabetical; at most the first 500 branches are read (`truncated`). Good answers are kept for a minute. A repository that is private and not covered by the app is a 404 `repo_not_found`; a GitHub rate limit is a 502 `rate_limited`.',
+    parameters: [{ ...query('repo', 'The repository, as `owner/name`.'), required: true }, query('app', 'The id of the GitHub App to ask through. Left out: anonymously.')],
+    description: 'For the branch pickers in the dashboard. With `app`, and when that GitHub App is installed on the repository, the branches are read with a token for that one repository (read-only); otherwise (no `app`, or it is not installed there) anonymously, which works for **public** repositories, and also when no GitHub App is connected at all. The default branch comes first, the rest alphabetical; at most the first 500 branches are read (`truncated`). Good answers are kept for a minute, separately for each GitHub app (what an app can see differs). A repository that is private and not covered by the app is a 404 `repo_not_found`; a GitHub rate limit is a 502 `rate_limited`.',
     responses: { 200: ok('The branches.', ref('BranchList')) },
-    errors: { 400: 'Not a repository name (`code: bad_repo`).', 404: 'No such public repository, and the app is not installed on it (`code: repo_not_found`).', 502: 'GitHub could not be reached (`github_unreachable`) or is limiting requests (`rate_limited`).' },
+    errors: { 400: 'Not a repository name (`code: bad_repo`).', 404: 'No such public repository, and the app is not installed on it (`code: repo_not_found`); or the `app` is not a connected GitHub App (`code: github_app_not_found`).', 409: 'That GitHub app\'s credentials cannot be read (`code: cannot_decrypt`).', 502: 'GitHub could not be reached (`github_unreachable`) or is limiting requests (`rate_limited`).' },
   })),
-  route('GET', '/api/github/webhook', op({
-    tag: GH, summary: 'Does GitHub send webhooks to the right address?',
-    description: 'Compares the address GitHub has (read from the app) with the one Shipdok expects (the public address + `/api/webhooks/github`).',
-    responses: { 200: ok('The comparison.', ref('GithubWebhook')) }, errors: { ...github501, 502: 'GitHub could not be asked.' },
+  route('GET', '/api/github/apps/{id}/webhook', op({
+    tag: GH, summary: 'Does GitHub send this app\'s webhooks to the right address?', parameters: [GH_APP_ID],
+    description: 'Compares the address GitHub has (read from that app) with the one Shipdok expects (the public address + `/api/webhooks/github`). Every GitHub app sends to the same Shipdok address; each has its own secret.',
+    responses: { 200: ok('The comparison.', ref('GithubWebhook')) }, errors: { ...ghApp404, 502: 'GitHub could not be asked.' },
   })),
-  route('POST', '/api/github/webhook/sync', op({
-    tag: GH, summary: 'Point GitHub at the right webhook address',
-    description: 'Updates only the address on GitHub (never the secret). The retry for the automatic update that follows a change of the public address.',
+  route('POST', '/api/github/apps/{id}/webhook/sync', op({
+    tag: GH, summary: 'Point one GitHub App at the right webhook address', parameters: [GH_APP_ID],
+    description: 'Updates only the address on GitHub (never the secret), for that app. The retry for the automatic update, which follows a change of the public address and tells every connected app.',
     responses: { 200: ok('Updated.', ref('GithubWebhook')) },
-    errors: { 400: 'No public address is set yet (`code: no_public_address`).', ...github501, 429: 'Too many tries.', 502: 'GitHub could not be reached or did not accept it.' },
+    errors: { 400: 'No public address is set yet (`code: no_public_address`).', ...ghApp404, 429: 'Too many tries.', 502: 'GitHub could not be reached or did not accept it.' },
   })),
 
   // ---------------------------------------------------------------- settings
@@ -147,7 +151,7 @@ export default Object.fromEntries([
   })),
   route('PUT', '/api/settings/public', op({
     tag: SET, summary: 'Change who may reach Shipdok from outside',
-    description: 'Needs the current password; takes effect at once; recorded in the sign-ins list. A value fixed by the environment (`SHIPDOK_PUBLIC`, `PUBLIC_URL`) cannot be changed here. The address is tidied to an origin (`https://host[:port]`, no path, no credentials). A new address is also sent to GitHub when an app is connected; the answer says how that went in `githubWebhook` (the setting is saved either way).',
+    description: 'Needs the current password; takes effect at once; recorded in the sign-ins list. A value fixed by the environment (`SHIPDOK_PUBLIC`, `PUBLIC_URL`) cannot be changed here. The address is tidied to an origin (`https://host[:port]`, no path, no credentials). A new address is also sent to every connected GitHub app; the answer says how that went in `githubWebhook` (`failed` names the apps that did not take it; the setting is saved either way).',
     body: { type: 'object', required: ['password'], properties: { password: { type: 'string' }, mode: { type: 'string', enum: ['local', 'webhook', 'full'] }, publicUrl: { type: 'string', nullable: true } }, description: 'Send `mode`, `publicUrl` or both.' },
     responses: { 200: ok('The settings after the change.', ref('PublicSettings')) },
     errors: { 400: 'No password, nothing to change, a bad mode or a bad address.', 403: 'Wrong password, or the Origin is not allowed.', 409: 'The environment fixes that setting (`code: locked_by_environment`).', 429: 'Too many tries.' },

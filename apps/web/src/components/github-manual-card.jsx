@@ -17,10 +17,10 @@ export function GithubManualCard() {
   const [problem, setProblem] = useState(null)
   const set = (k) => (e) => setF((old) => ({ ...old, [k]: e.target.value }))
   const connect = useMutation({
-    mutationFn: () => api('/github/manual', { method: 'POST', body: { password: f.password, appId: f.appId.trim(), privateKey: f.privateKey, webhookSecret: f.webhookSecret } }),
-    onSuccess: () => {
+    mutationFn: () => api('/github/apps', { method: 'POST', body: { password: f.password, appId: f.appId.trim(), privateKey: f.privateKey, webhookSecret: f.webhookSecret } }),
+    onSuccess: (res) => {
       setF({ appId: '', privateKey: '', webhookSecret: '', password: '' }) // the secrets are not kept in the page
-      toast.success('GitHub connected')
+      toast.success(res.created ? 'GitHub app added' : 'GitHub app updated')
       client.invalidateQueries({ queryKey: ['github'] })
       client.invalidateQueries({ queryKey: ['logins'] })
       client.invalidateQueries({ queryKey: ['repos'] })
@@ -39,7 +39,8 @@ export function GithubManualCard() {
         <CardTitle className="flex items-center gap-2 text-base"><KeyRound className="size-4" aria-hidden="true" />I already have a GitHub App</CardTitle>
         <CardDescription>
           Enter the app's details from its settings page on GitHub: the App ID, a private key you generated there (the .pem file), and the webhook secret you
-          set. Shipdok checks them with GitHub before saving anything, and stores them encrypted. They are never shown again.
+          set. Shipdok checks them with GitHub before saving anything, and stores them encrypted. They are never shown again. Entering an app that is already
+          connected replaces its key and secret.
         </CardDescription>
       </CardHeader>
       <CardContent>

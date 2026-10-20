@@ -1,7 +1,7 @@
 import request from "supertest";
 import { generateKeyPairSync } from "node:crypto";
 import { makeApp, resetDb, closeDb, testPool, PASSWORD } from "./helpers.js";
-import { createGithubProvider, parseMasterKey, saveGithubApp, loadGithubApp } from "@shipdok/shared";
+import { createGithubProvider, parseMasterKey, saveGithubApp, loadGithubApp, listGithubApps } from "@shipdok/shared";
 import { createSettings } from "../src/settings.js";
 
 const KEY = parseMasterKey("a1".repeat(32));
@@ -33,7 +33,6 @@ let cookie;
 let gh;
 async function boot(handlers) {
   await resetDb();
-  await testPool.query("DELETE FROM github_app");
   await testPool.query("DELETE FROM settings");
   gh = fakeGithub(handlers ?? { [`/app-manifests/${CODE}/conversions`]: () => converted() });
   const githubProvider = createGithubProvider(testPool, KEY, { ttlMs: 0, fetch: gh });
@@ -43,7 +42,7 @@ async function boot(handlers) {
 }
 beforeEach(() => boot());
 afterAll(async () => {
-  await testPool.query("DELETE FROM github_app");
+  await resetDb();
   await testPool.query("DELETE FROM settings");
   await closeDb();
 });
@@ -51,7 +50,7 @@ afterAll(async () => {
 const start = (body = {}, headers = { Origin: ORIGIN }, c = cookie) => request(app).post("/api/github/connect/start").set("Cookie", c ?? []).set(headers).send(body);
 const callback = (query, c = cookie) => request(app).get("/api/github/connect/callback").query(query).set("Cookie", c ?? []);
 const stateOf = (res) => new URL(res.body.postUrl).searchParams.get("state");
-const connectedRows = async () => (await testPool.query("SELECT count(*)::int AS n FROM github_app")).rows[0].n;
+const connectedRows = async () => (await testPool.query("SELECT count(*)::int AS n FROM github_apps")).rows[0].n;
 
 describe("starting", () => {
   test("needs a session", async () => {
@@ -129,11 +128,11 @@ describe("starting", () => {
     expect(a).not.toBe(b);
   });
 
-  test("refused while an app is already connected", async () => {
+  test("allowed while other apps are already connected: it adds one more", async () => {
     await saveGithubApp(testPool, KEY, { appId: "1", privateKeyPem: PEM, webhookSecret: "hook-secret-0123456789", source: "manual" });
     const res = await start();
-    expect(res.status).toBe(409);
-    expect(res.body.code).toBe("already_connected");
+    expect(res.status).toBe(200);
+    expect(res.body.postUrl).toMatch(/^https:\/\/github\.com\/settings\/apps\/new\?state=/);
   });
 });
 
@@ -147,11 +146,12 @@ describe("coming back from GitHub", () => {
     const state = await go();
     const res = await callback({ code: CODE, state });
     expect(res.status).toBe(302);
-    expect(res.headers.location).toBe("/github?connected=1");
+    const [only] = await listGithubApps(testPool);
+    expect(res.headers.location).toBe(`/github?connected=${only.id}`);
     expect(res.headers["cache-control"]).toBe("no-store");
-    const saved = await loadGithubApp(testPool, KEY);
+    const saved = await loadGithubApp(testPool, KEY, only.id);
     expect(saved).toMatchObject({ appId: "424242", name: "Shipdok-ab12", slug: "shipdok-ab12", ownerLogin: "tianyu-00", source: "manifest", webhookSecret: "hook-secret-0123456789" });
-    const row = (await testPool.query("SELECT * FROM github_app")).rows[0];
+    const row = (await testPool.query("SELECT * FROM github_apps")).rows[0];
     expect(JSON.stringify(row)).not.toContain("hook-secret-0123456789");
     expect(JSON.stringify(row)).not.toContain("client-secret-value");
     expect(JSON.stringify(row)).not.toContain("BEGIN RSA");
@@ -169,7 +169,7 @@ describe("coming back from GitHub", () => {
     const res = await callback({ code: CODE, state: await go() });
     expect(res.headers.location).not.toMatch(/secret|key|pem|424242/i);
     expect(JSON.stringify(res.headers)).not.toContain("hook-secret-0123456789");
-    expect((await request(app).get("/api/github").set("Cookie", cookie)).body.app).toMatchObject({ appId: "424242", source: "manifest" });
+    expect((await request(app).get("/api/github").set("Cookie", cookie)).body.apps[0]).toMatchObject({ appId: "424242", source: "manifest" });
   });
 
   test("is recorded in the sign-ins list", async () => {
@@ -269,10 +269,12 @@ describe("coming back from GitHub", () => {
     expect(await connectedRows()).toBe(0);
   });
 
-  test("connecting the new app forgets the installations remembered for the old one", async () => {
-    await testPool.query("INSERT INTO apps (name, slug, repo, container_port, host_port, github_installation_id) VALUES ('A','a','o/r',3000,21000,7)");
+  test("connecting a new app leaves the projects of the apps already connected, and their installations, alone", async () => {
+    const old = await saveGithubApp(testPool, KEY, { appId: "1", privateKeyPem: PEM, webhookSecret: "other-secret-0123456789", source: "manual" });
+    await testPool.query("INSERT INTO apps (name, slug, repo, container_port, host_port, github_installation_id, github_app_id) VALUES ('A','a','o/r',3000,21000,7,$1)", [old.id]);
     await callback({ code: CODE, state: await go() });
-    expect((await testPool.query("SELECT github_installation_id FROM apps")).rows[0].github_installation_id).toBeNull();
+    const row = (await testPool.query("SELECT github_installation_id, github_app_id FROM apps")).rows[0];
+    expect([Number(row.github_installation_id), row.github_app_id]).toEqual([7, old.id]);
   });
 
   test("a failed exchange leaves them alone", async () => {
@@ -282,12 +284,12 @@ describe("coming back from GitHub", () => {
     expect(Number((await testPool.query("SELECT github_installation_id FROM apps")).rows[0].github_installation_id)).toBe(7);
   });
 
-  test("an app connected in the meantime is not overwritten", async () => {
+  test("an app connected in the meantime is not touched: the new one is added beside it", async () => {
     const state = await go();
-    await saveGithubApp(testPool, KEY, { appId: "1", privateKeyPem: PEM, webhookSecret: "other-secret-0123456789", source: "manual" });
+    const other = await saveGithubApp(testPool, KEY, { appId: "1", privateKeyPem: PEM, webhookSecret: "other-secret-0123456789", source: "manual" });
     const res = await callback({ code: CODE, state });
-    expect(res.headers.location).toBe("/github?error=already_connected");
-    expect((await loadGithubApp(testPool, KEY)).appId).toBe("1");
-    expect(gh.calls).toHaveLength(0);
+    expect(res.headers.location).toMatch(/^\/github\?connected=[0-9a-f-]{36}$/);
+    expect((await loadGithubApp(testPool, KEY, other.id)).appId).toBe("1");
+    expect((await listGithubApps(testPool)).map((a) => a.appId)).toEqual(["1", "424242"]);
   });
 });

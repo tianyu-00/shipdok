@@ -50,19 +50,31 @@ export function settingsRouter({ db, settings, provider }) {
       await settings.setPublic({ mode: now.modeLocked ? undefined : mode, publicUrl: now.urlLocked ? undefined : url });
       const after = await settings.public();
       await recordAttempt(db, { kind: "settings", username: rows[0].username, address: addressOf(req), success: true });
-      // A new public address means GitHub must be told where to send webhooks. Best effort: the setting is saved either way, and the
-      // GitHub page can retry.
+      // A new public address means GitHub must be told where to send webhooks, for every connected GitHub App. Best effort: the setting is
+      // saved either way, and the GitHub page can retry each app.
       let githubWebhook;
       if (after.publicUrl && after.publicUrl !== now.publicUrl) {
-        const github = await provider.client().catch(() => null);
-        if (github) {
+        const clients = await provider.clients().catch(() => []);
+        const failed = [];
+        let rejected = false;
+        for (const c of clients) {
           try {
-            await github.updateWebhookUrl(`${after.publicUrl}/api/webhooks/github`);
-            githubWebhook = { updated: true };
+            await c.client.updateWebhookUrl(`${after.publicUrl}/api/webhooks/github`);
           } catch (err) {
-            const rejected = err instanceof GithubError && [401, 403, 404].includes(err.status);
-            githubWebhook = { updated: false, error: rejected ? 'GitHub did not accept the new webhook address. Check the app on the GitHub page.' : 'Could not update the webhook address on GitHub. Try again on the GitHub page.' };
+            failed.push(c.name ?? 'a GitHub app');
+            if (err instanceof GithubError && [401, 403, 404].includes(err.status)) rejected = true;
           }
+        }
+        if (clients.length) {
+          githubWebhook = failed.length === 0
+            ? { updated: true }
+            : {
+                updated: false,
+                failed,
+                error: rejected
+                  ? `GitHub did not accept the new webhook address for ${failed.join(', ')}. Check the app on the GitHub page.`
+                  : `Could not update the webhook address on GitHub for ${failed.join(', ')}. Try again on the GitHub page.`,
+              };
         }
       }
       const { visitor } = await accessFor(req, settings);

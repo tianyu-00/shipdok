@@ -30,11 +30,12 @@ below exists to make signing in hard for anyone but you, and to limit the damage
 - Postgres and Redis are not published on the machine, and only the `worker` service gets the Docker socket.
 
 **Secrets**
-- App variables, the GitHub App's private key, webhook secret and client secret are encrypted in the database (AES-256-GCM, each bound to its
-  own name, so a value moved to another field does not decrypt). The key lives in the `shipdok_secrets` volume and is generated on first run.
+- App variables, each GitHub App's private key, webhook secret and client secret are encrypted in the database (AES-256-GCM, each bound to its
+  own name, and a GitHub App's to that app as well, so a value moved to another field or to another GitHub App does not decrypt). The key lives in the `shipdok_secrets` volume and is generated on first run.
 - Variable values are never returned by the API except by an explicit **reveal**, and are masked (`***`) in build and app logs.
 - GitHub webhooks are accepted only with a valid HMAC signature, checked on the exact bytes received, in constant time, and each delivery is
-  processed once.
+  processed once. With several GitHub Apps connected, a delivery is believed if one of their secrets signed it, and then deploys only the apps assigned to
+  that GitHub App: an app cannot cause a deployment of a project that uses another.
 - The GitHub App asks only for **read-only** access to code and metadata. A build gets a token for the one repository it is cloning, handed to
   git through the environment (never on a command line or in a log), and git runs without access to Shipdok's own secrets.
 

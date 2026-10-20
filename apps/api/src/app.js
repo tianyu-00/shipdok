@@ -24,13 +24,14 @@ import { docsGate, docsRouter } from './docs.js';
 import { appVolumesRouter, volumesRouter } from './routes/volumes.js';
 import { buildCacheRouter } from './routes/buildcache.js';
 
-// What the API asks about GitHub: the client, the webhook secret, a status. Normally read from the database (the app is connected in the
-// dashboard); tests can pass a fixed client and secret instead.
+// What the API asks about GitHub: a client per GitHub App, the webhook secrets, a status. Normally read from the database (the apps are
+// connected in the dashboard); tests can pass one fixed client (answering for any app id) and secret instead.
 function fixedGithub({ github = null, webhookSecret = null }) {
   return {
     client: async () => github,
-    webhookSecret: async () => webhookSecret,
-    status: async () => ({ app: null, problem: null }),
+    clients: async () => (github ? [{ id: null, name: null, client: github }] : []),
+    webhookSecrets: async () => (webhookSecret ? [{ id: null, secret: webhookSecret }] : []),
+    status: async () => ({ apps: [] }),
     invalidate() {},
   };
 }
@@ -64,7 +65,7 @@ export function createApp({
 
   // The GitHub webhook is public and signature-protected. It is mounted BEFORE the JSON parser, the session
   // and the origin check: it needs the raw bytes to verify the signature, and it has no cookies or Origin.
-  app.use('/api/webhooks/github', webhookReceiver({ db, queue, secret: () => provider.webhookSecret(), rateLimitPerMinute: webhookRateLimit, logDir, diskUsage }));
+  app.use('/api/webhooks/github', webhookReceiver({ db, queue, secrets: () => provider.webhookSecrets(), rateLimitPerMinute: webhookRateLimit, logDir, diskUsage }));
 
   app.use(express.json({ limit: '100kb' }));
 
@@ -98,7 +99,7 @@ export function createApp({
   app.use('/api/apps/:id/volumes', requireAuth, appVolumesRouter({ db }));
   app.use('/api/volumes', requireAuth, volumesRouter({ db, queue }));
   app.use('/api/build-cache', requireAuth, buildCacheRouter({ db, queue }));
-  app.use('/api/apps', requireAuth, appsRouter({ db, queue, github: () => provider.client(), logDir, diskUsage, portRange }));
+  app.use('/api/apps', requireAuth, appsRouter({ db, queue, github: (id) => provider.client(id), logDir, diskUsage, portRange }));
   app.use('/api/apps', requireAuth, appLogsRouter({ db, logDir }));
   app.use('/api/github/connect', githubConnectRouter({ db, provider, secretsKey, settings, fetch: githubFetch })); // before the router below: the callback is a page navigation and answers with redirects
   app.use('/api/github', requireAuth, githubRouter({ db, provider, secretsKey, fetch: githubFetch, settings }));

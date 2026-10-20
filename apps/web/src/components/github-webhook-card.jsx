@@ -8,13 +8,13 @@ import { api } from '@/lib/api'
 import { useGithubWebhook } from '@/lib/queries'
 import { LoadError } from '@/components/states'
 
-/** Is GitHub sending pushes to the address Shipdok expects (the public address + the webhook path)? Fix it with one click. */
-export function GithubWebhookCard() {
+/** Is this GitHub app sending pushes to the address Shipdok expects (the public address + the webhook path)? Fix it with one click. */
+export function GithubWebhookCard({ app }) {
   const client = useQueryClient()
-  const hook = useGithubWebhook(true)
+  const hook = useGithubWebhook(app.id)
   const sync = useMutation({
-    mutationFn: () => api('/github/webhook/sync', { method: 'POST' }),
-    onSuccess: () => { toast.success('Webhook address updated on GitHub'); client.invalidateQueries({ queryKey: ['github-webhook'] }) },
+    mutationFn: () => api(`/github/apps/${app.id}/webhook/sync`, { method: 'POST' }),
+    onSuccess: () => { toast.success('Webhook address updated on GitHub'); client.invalidateQueries({ queryKey: ['github-webhook', app.id] }) },
     onError: (err) => toast.error(err.message),
   })
   const d = hook.data
@@ -22,7 +22,7 @@ export function GithubWebhookCard() {
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base"><Webhook className="size-4" aria-hidden="true" />Webhook address</CardTitle>
-        <CardDescription>GitHub tells Shipdok about pushes by calling this address. It is your public address followed by the webhook path.</CardDescription>
+        <CardDescription>This GitHub app tells Shipdok about pushes by calling this address. It is your public address followed by the webhook path (the same for every GitHub app; each has its own secret).</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         {hook.isPending && <p className="text-sm text-muted-foreground">Asking GitHub…</p>}
