@@ -613,6 +613,23 @@ Newest work is at the bottom of the Milestone 6 entries. SPEC.md is the target d
   checked at once; a build name rule on the NEW name; a note that the running app keeps the old name until the next deployment; a 409 is shown and the dialog stays open). Mutation-proofed
   (10 API and 7 web mutants; removing the explicit "taken" check was an equivalent mutant, so the redundant check was dropped and the primary key does the work). Not tested: a rename of a
   variable that a running app reads while a deployment is building (the running container is unaffected by design).
+- **Build logs as an inline console (dashboard; looked at in a real browser through Vite with a stubbed API: light, dark, 1200 and 390 px; unit-tested; not yet tried on a real build):**
+  **Administrator's decisions: option A of three (inline expanding row; the alternatives were a bottom drawer and a separate page), a toolbar with a search box. The console was first built always-dark and the administrator said it looked odd on a light page, so it now follows the theme.**
+  The Deployments tab no longer opens the log in a dialog: **pressing anywhere on a deployment row** expands its log directly under it (a pointer cursor and an arrow that turns say so; a press that
+  ended a text selection, such as copying a commit id, is ignored; the actions cell stops the press, so Roll back, Delete and Cancel never also toggle the log), and the Log icon button
+  (`aria-expanded`/`aria-controls`) does the same for the keyboard and screen readers. The actions are icon-only buttons with names and tooltips (a Delete that is not allowed carries its reason as the
+  tooltip). Several logs can be open at
+  once, and **Delete this log** (finished deployments only) closes it. The cell has `max-w-0` so the console cannot widen the table (the first version made the table scroll sideways and
+  clipped the Actions column), and the panel is `sticky left-0` and never wider than the screen, so on a phone it stays in view while the table scrolls. `LogViewer` (also used by the
+  app's Logs tab) is now a console that follows the theme (pale with darker line colours in light mode, dark with brighter ones in dark mode; every tone has a light and a `dark:` colour, tested), a title bar with a status dot (pulsing green "Live" while following, grey "Finished"), the title (commit and age),
+  the line count, a **find** (case-insensitive; every line stays on screen, every match is highlighted and the current one is stronger with a tinted row; "3 of 12" / "No matches"; Enter and Shift+Enter or the arrow buttons step through the matches and wrap round; Escape or the clear button end it; the current match is scrolled to the middle of the console only when the person types or steps, never when new lines arrive, and searching or stepping turns following off so new lines do not pull the view away; **decision: a find rather than a filter, because the lines around a match are usually what explains it**), **copy** (the whole log with its times), **download** (every loaded
+  line in the log file's own format, named `<app>-<commit>-build.log`; only what is loaded in the page, up to 5000 lines), the follow switch and a **Latest** button that appears after
+  scrolling away. **Colours follow the text, not the stream** (`lib/logtone.js`, pure and tested): BuildKit step headers (`#5 [2/4]`) bold blue, `DONE`/`CACHED` quiet green, errors red,
+  warnings amber, Shipdok's own lines cyan with success green and failure red. The old rule painted every stderr line red, which would have made a healthy build look like a failure
+  because `docker build --progress=plain` writes ALL its progress to stderr. Mutation-proofed (27 mutants over the console and the find: stderr always red, steps and warnings and Shipdok failures not recognised, a case
+  sensitive filter, copy and download using the wrong lines, "Latest" not turning following on, the console following the theme, "Finished" shown wrongly, one log at a time, missing
+  `aria-expanded`, deleting not closing the console, delete offered while running). Not tested: a very long live build in the page (the 5000-line cap is old behaviour), the Logs tab in
+  a real browser, other browsers.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Earlier "Next" notes (Milestone 6 build order, as written before the split)

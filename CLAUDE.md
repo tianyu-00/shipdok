@@ -75,7 +75,7 @@ test projects do): `POSTGRES_USER`/`POSTGRES_DB` (default `shipdok`), `API_HOST_
 requests from whatever address it is opened at), `MONITOR_INTERVAL_MS`, `STATS_INTERVAL_MS`, and the four secrets below (your value wins).
 `LOG_DIR` is set by compose to the `shipdok_logs` volume (outside Docker it defaults to `~/.shipdok/logs`). **`DOCKER_GID` is gone.**
 
-Tests: API 1010, worker 626, shared 237, web 685. Worker tests reuse the `_test` database the API tests create and
+Tests: API 1010, worker 626, shared 237, web 736. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` is now needed only for development with npm (`POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY`: 64 hex, losing
 it makes stored secrets unrecoverable) and for the optional settings above. **The GitHub App is NOT configured here any more** (dashboard,
@@ -154,7 +154,9 @@ feature. Below: what exists, the administrator's decisions (do not re-litigate),
 **Dashboard, docs and delivery**
 - **Dashboard:** Vite + React (JavaScript), Tailwind v4, shadcn/ui (copied into `src/components/ui`; the shadcn CLI wrongly installs an unrelated npm package `cn`, remove it), React
   Router, TanStack Query. Same origin: nginx serves the build and forwards `/api`. Pages: login/setup, apps list, create app, app detail (Overview, Deployments, Images, Logs, Variables,
-  Settings), Storage, GitHub, Security, API reference link. Theme Light/Dark/System (dark is near-black, never pure black).
+  Settings), Storage, GitHub, Security, API reference link. **Logs are a console, not a dialog:** pressing a deployment row (or its Log icon) expands its build log right under it (several can be open; the actions are icon-only with tooltips and names; `LogViewer` is shared with the app's
+  Logs tab), follows the theme (a pale console on a light page, a dark one on a dark page; **decision: first built always-dark, which looked out of place on a light page**); lines are coloured by what they SAY (`lib/logtone.js`: BuildKit steps, DONE/CACHED, errors, warnings, Shipdok's own lines), never by stream
+  (docker writes all its normal progress to stderr, so stderr is not red); toolbar: **find** (Ctrl+F style: every line stays visible, matches highlighted, "3 of 12", Enter / Shift+Enter or arrows step through and scroll the current match to the middle; **decision: a find, not a filter**, so the lines around a match stay readable), copy the log, download the loaded lines, follow switch, "Latest". Theme Light/Dark/System (dark is near-black, never pure black).
 - **API reference:** `/api/docs` (Scalar, served locally, signed-in only, `API_DOCS=false` turns it off). Descriptions live in `apps/api/openapi/operations/`; tests fail when a route has
   none or `openapi.json` is stale. Deviation from SPEC.md: swagger-autogen was rejected, `inventory.js` records the real routes instead.
 - **Images and releases:** `.github/workflows/images.yml` builds api, worker, web for amd64 + arm64; a push to `main` or a PR only builds, a push to `publish` also publishes to

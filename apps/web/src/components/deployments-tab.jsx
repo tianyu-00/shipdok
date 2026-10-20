@@ -1,9 +1,8 @@
-import { useEffect, useState } from 'react'
-import { RotateCcw, ScrollText, Trash2, XCircle } from 'lucide-react'
+import { Fragment, useEffect, useState } from 'react'
+import { ChevronRight, RotateCcw, ScrollText, Trash2, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { api } from '@/lib/api'
@@ -24,8 +23,8 @@ const TRIGGER = { manual: 'Manual', webhook: 'Push', rollback: 'Rollback' }
 function DeleteButton({ reason, onClick }) {
   return (
     <span title={reason ?? undefined}>
-      <Button variant="ghost" size="sm" disabled={reason !== null} aria-label={reason ? `Delete (unavailable: ${reason})` : 'Delete'} onClick={onClick}>
-        <Trash2 className="size-4" />Delete
+      <Button variant="ghost" size="icon-sm" disabled={reason !== null} aria-label={reason ? `Delete (unavailable: ${reason})` : 'Delete'} title={reason ?? 'Delete this deployment'} onClick={onClick}>
+        <Trash2 className="size-4" />
       </Button>
     </span>
   )
@@ -40,7 +39,10 @@ export default function DeploymentsTab({ app }) {
   const signature = (deployments.data ?? []).map((d) => `${d.id}:${d.status}`).join()
   const { refetch: refetchImages } = images
   useEffect(() => { if (signature) refetchImages() }, [signature, refetchImages])
-  const [logFor, setLogFor] = useState(null)
+  const [openLogs, setOpenLogs] = useState(() => new Set()) // the deployments whose log is open under their row (several can be)
+  // Pressing anywhere on a row opens or closes its log, unless the press ended a text selection (someone copying a commit id).
+  const toggleLog = (id) => { if (window.getSelection?.()?.toString()) return; setLogOpen(id, !openLogs.has(id)) }
+  const setLogOpen = (id, open) => setOpenLogs((old) => { const next = new Set(old); if (open) next.add(id); else next.delete(id); return next })
   const [rollbackFor, setRollbackFor] = useState(null)
   const [deleteFor, setDeleteFor] = useState(null)
 
@@ -66,9 +68,11 @@ export default function DeploymentsTab({ app }) {
           </TableHeader>
           <TableBody>
             {deployments.data.map((d) => (
-              <TableRow key={d.id}>
+              <Fragment key={d.id}>
+              <TableRow data-state={openLogs.has(d.id) ? 'open' : undefined} className={`cursor-pointer ${openLogs.has(d.id) ? 'border-b-0' : ''}`} onClick={() => toggleLog(d.id)}>
                 <TableCell>
                   <div className="flex items-center gap-2">
+                    <ChevronRight className={`size-4 shrink-0 text-muted-foreground transition-transform ${openLogs.has(d.id) ? 'rotate-90' : ''}`} aria-hidden="true" />
                     <DeploymentStatusBadge status={d.status} />
                     {d.trigger !== 'manual' && <Badge variant="outline">{TRIGGER[d.trigger] ?? d.trigger}</Badge>}
                     {versions.get(d.id) && <VersionBadge state={versions.get(d.id).state} />}
@@ -78,19 +82,38 @@ export default function DeploymentsTab({ app }) {
                 <TableCell className="whitespace-nowrap text-muted-foreground">{timeAgo(d.queued_at)}</TableCell>
                 <TableCell className="whitespace-nowrap text-muted-foreground">{formatDuration(d.started_at, d.finished_at)}</TableCell>
                 <TableCell className="max-w-xs truncate text-muted-foreground" title={deploymentReason(d) ?? undefined}>{deploymentReason(d) ?? ''}</TableCell>
-                <TableCell>
+                {/* The buttons keep their own click: pressing one must not also open or close the log. */}
+                <TableCell onClick={(e) => e.stopPropagation()}>
                   <div className="flex justify-end gap-1">
-                    <Button variant="ghost" size="sm" onClick={() => setLogFor(d)}><ScrollText className="size-4" />Log</Button>
+                    <Button variant="ghost" size="icon-sm" aria-expanded={openLogs.has(d.id)} aria-controls={`log-${d.id}`} aria-label={openLogs.has(d.id) ? 'Hide log' : 'Log'} title={openLogs.has(d.id) ? 'Hide log' : 'Show log'} onClick={() => setLogOpen(d.id, !openLogs.has(d.id))}>
+                      <ScrollText className="size-4" />
+                    </Button>
                     {isActiveDeployment(d.status) && (
-                      <Button variant="ghost" size="sm" disabled={cancel.isPending} onClick={() => cancel.mutate(d.id)}><XCircle className="size-4" />Cancel</Button>
+                      <Button variant="ghost" size="icon-sm" aria-label="Cancel" title="Cancel this deployment" disabled={cancel.isPending} onClick={() => cancel.mutate(d.id)}><XCircle className="size-4" /></Button>
                     )}
                     {versions.get(d.id)?.canRollBackTo && (
-                      <Button variant="ghost" size="sm" onClick={() => setRollbackFor(d)}><RotateCcw className="size-4" />Roll back</Button>
+                      <Button variant="ghost" size="icon-sm" aria-label="Roll back" title="Roll back to this version" onClick={() => setRollbackFor(d)}><RotateCcw className="size-4" /></Button>
                     )}
                     {images.data && !isActiveDeployment(d.status) && <DeleteButton reason={deleteBlockedReason(d, images.data)} onClick={() => setDeleteFor(d)} />}
                   </div>
                 </TableCell>
               </TableRow>
+              {openLogs.has(d.id) && (
+                <TableRow id={`log-${d.id}`} className="bg-muted/30 hover:bg-muted/30">
+                  {/* max-w-0: the console must not make the table wider, it takes the width the other columns already gave it. */}
+                  <TableCell colSpan={6} className="max-w-0 whitespace-normal p-3">
+                    {/* Sticky and never wider than the screen, so on a phone the console stays in view while the table scrolls sideways. */}
+                    <div className="sticky left-0 w-[min(100%,calc(100vw-3.5rem))] space-y-2">
+                      <LogViewer
+                        key={d.id} path={`/deployments/${d.id}/logs`} title={`Build log · ${shortSha(d.commit_sha)} · ${timeAgo(d.queued_at)}`}
+                        filename={`${app.slug}-${shortSha(d.commit_sha)}-build.log`} emptyText="This deployment has no log (it may have been deleted)."
+                      />
+                      {!isActiveDeployment(d.status) && <div className="flex justify-end"><DeleteBuildLog deployment={d} onDeleted={() => setLogOpen(d.id, false)} /></div>}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}
+              </Fragment>
             ))}
           </TableBody>
         </Table>
@@ -98,17 +121,6 @@ export default function DeploymentsTab({ app }) {
 
       {rollbackFor && <RollbackDialog app={app} deployment={rollbackFor} onClose={() => setRollbackFor(null)} />}
       {deleteFor && <DeleteDeploymentDialog app={app} deployment={deleteFor} removesImage={deleteRemovesImage(deleteFor, images.data)} onClose={() => setDeleteFor(null)} />}
-
-      <Dialog open={logFor !== null} onOpenChange={(open) => !open && setLogFor(null)}>
-        <DialogContent className="max-w-4xl">
-          <DialogHeader>
-            <DialogTitle>Build log</DialogTitle>
-            <DialogDescription>{logFor && `${shortSha(logFor.commit_sha)} · ${timeAgo(logFor.queued_at)}`}</DialogDescription>
-          </DialogHeader>
-          {logFor && <LogViewer key={logFor.id} path={`/deployments/${logFor.id}/logs`} emptyText="This deployment has no log (it may have been deleted)." />}
-          {logFor && !isActiveDeployment(logFor.status) && <div className="flex justify-end"><DeleteBuildLog deployment={logFor} onDeleted={() => setLogFor(null)} /></div>}
-        </DialogContent>
-      </Dialog>
     </>
   )
 }

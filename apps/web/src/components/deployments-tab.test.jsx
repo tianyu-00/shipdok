@@ -92,18 +92,59 @@ describe('cancelling', () => {
 })
 
 describe('the build log', () => {
-  test('opens in a window and reads that deployment\'s log', async () => {
+  const LOG = (id, text, over = {}) => ({ [`GET /api/deployments/${id}/logs`]: { text, offset: 0, nextOffset: text.length, size: text.length, complete: true, truncated: false, ...over } })
+  const logRow = (id) => document.getElementById(`log-${id}`)
+
+  test('opens under its own row (not in a window) and reads that deployment\'s log', async () => {
     const api = mockApi({
       [LIST]: [makeDeployment({ id: 'dep-1' }), makeDeployment({ id: 'dep-2', commit_sha: 'c'.repeat(40) })],
-      'GET /api/deployments/dep-2/logs': { text: line(1, 'shipdok', 'Cloning o/r@main'), offset: 0, nextOffset: 60, size: 60, complete: true, truncated: false },
+      ...LOG('dep-2', line(1, 'shipdok', 'Cloning o/r@main')),
     })
     tab()
     const row = await rowOf('ccccccc')
     await userEvent.click(within(row).getByRole('button', { name: /log/i }))
-    const dialog = await screen.findByRole('dialog')
-    expect(await within(dialog).findByText('Cloning o/r@main')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(await within(logRow('dep-2')).findByText('Cloning o/r@main')).toBeInTheDocument()
+    expect(row.nextElementSibling).toBe(logRow('dep-2')) // right under the deployment it belongs to
     expect(api.calls.some((c) => c.bare === '/api/deployments/dep-2/logs')).toBe(true)
     expect(api.calls.some((c) => c.bare === '/api/deployments/dep-1/logs')).toBe(false)
+  })
+
+  test('the console is titled with the commit, and downloads under a name made from the app and commit', async () => {
+    mockApi({ [LIST]: [makeDeployment({ id: 'dep-2', commit_sha: 'c'.repeat(40) })], ...LOG('dep-2', line(1, 'shipdok', 'hello')) })
+    tab()
+    await userEvent.click(await screen.findByRole('button', { name: /log/i }))
+    expect(await within(logRow('dep-2')).findByText(/Build log · ccccccc/)).toBeInTheDocument()
+  })
+
+  test('the button says "Hide log" while it is open and closes it again; the state is on the button', async () => {
+    mockApi({ [LIST]: [makeDeployment({ id: 'dep-1' })], ...LOG('dep-1', line(1, 'shipdok', 'hello')) })
+    tab()
+    const open = await screen.findByRole('button', { name: /^log$/i })
+    expect(open).toHaveAttribute('aria-expanded', 'false')
+    expect(logRow('dep-1')).toBeNull()
+    await userEvent.click(open)
+    const hide = await screen.findByRole('button', { name: /hide log/i })
+    expect(hide).toHaveAttribute('aria-expanded', 'true')
+    expect(hide).toHaveAttribute('aria-controls', 'log-dep-1')
+    await userEvent.click(hide)
+    expect(logRow('dep-1')).toBeNull()
+    expect(await screen.findByRole('button', { name: /^log$/i })).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  test('several logs can be open at once, each under its own row, and closing one leaves the other', async () => {
+    mockApi({
+      [LIST]: [makeDeployment({ id: 'dep-1', commit_sha: 'a'.repeat(40) }), makeDeployment({ id: 'dep-2', commit_sha: 'b'.repeat(40) })],
+      ...LOG('dep-1', line(1, 'shipdok', 'first log')), ...LOG('dep-2', line(1, 'shipdok', 'second log')),
+    })
+    tab()
+    await userEvent.click(within(await rowOf('aaaaaaa')).getByRole('button', { name: /log/i }))
+    await userEvent.click(within(await rowOf('bbbbbbb')).getByRole('button', { name: /log/i }))
+    expect(await screen.findByText('first log')).toBeInTheDocument()
+    expect(await screen.findByText('second log')).toBeInTheDocument()
+    await userEvent.click(within(await rowOf('aaaaaaa')).getByRole('button', { name: /hide log/i }))
+    expect(screen.queryByText('first log')).toBeNull()
+    expect(screen.getByText('second log')).toBeInTheDocument()
   })
 
   test('a deployment whose log was deleted says so', async () => {
@@ -111,5 +152,23 @@ describe('the build log', () => {
     tab()
     await userEvent.click(await screen.findByRole('button', { name: /log/i }))
     expect(await screen.findByText(/may have been deleted/i)).toBeInTheDocument()
+  })
+
+  test('a finished deployment offers to delete its log, which also closes the console', async () => {
+    const api = mockApi({ [LIST]: [makeDeployment({ id: 'dep-1', status: 'successful' })], ...LOG('dep-1', line(1, 'shipdok', 'hello')), 'DELETE /api/deployments/dep-1/logs': { freedBytes: 2048 } })
+    tab()
+    await userEvent.click(await screen.findByRole('button', { name: /log/i }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete this log' }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete log' }))
+    await waitFor(() => expect(api.called('DELETE', '/api/deployments/dep-1/logs')).toHaveLength(1))
+    await waitFor(() => expect(logRow('dep-1')).toBeNull())
+  })
+
+  test('a running deployment cannot have its log deleted', async () => {
+    mockApi({ [LIST]: [makeDeployment({ id: 'dep-1', status: 'building' })], ...LOG('dep-1', line(1, 'shipdok', 'hello'), { complete: false }) })
+    tab()
+    await userEvent.click(await screen.findByRole('button', { name: /log/i }))
+    await screen.findByText('hello')
+    expect(screen.queryByRole('button', { name: 'Delete this log' })).toBeNull()
   })
 })

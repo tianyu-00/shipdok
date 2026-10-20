@@ -176,11 +176,12 @@ describe('deleting a build log', () => {
   const LOG = 'GET /api/deployments/old/logs'
   const logOf = { text: '2026-10-19T12:00:00.000Z shipdok hi\n', offset: 0, nextOffset: 40, size: 40, complete: true, truncated: false }
   const openLog = async (text) => {
-    await userEvent.click(within(await rowOf(text)).getByRole('button', { name: /^log$/i }))
-    return screen.findByRole('dialog')
+    const row = await rowOf(text)
+    await userEvent.click(within(row).getByRole('button', { name: /^log$/i }))
+    return await waitFor(() => { if (!row.nextElementSibling?.id?.startsWith('log-')) throw new Error('the log is not open yet'); return row.nextElementSibling })
   }
 
-  test('asks first, then deletes that deployment\'s log and closes the window', async () => {
+  test('asks first, then deletes that deployment\'s log and closes the console', async () => {
     const api = mockApi({ [LIST]: deployments, [IMAGES]: images, [LOG]: logOf, 'DELETE /api/deployments/old/logs': { freedBytes: 2048 } })
     tab()
     const dialog = await openLog('ccccccc')
@@ -190,16 +191,16 @@ describe('deleting a build log', () => {
     await userEvent.click(within(ask).getByRole('button', { name: 'Delete log' }))
     await waitFor(() => expect(api.called('DELETE', '/api/deployments/old/logs')).toHaveLength(1))
     await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('Log deleted (2.0 KB)'))
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await waitFor(() => expect(document.getElementById('log-old')).toBeNull())
   })
 
-  test('a refusal is shown and the window stays', async () => {
+  test('a refusal is shown and the console stays', async () => {
     mockApi({ [LIST]: deployments, [IMAGES]: images, [LOG]: logOf, 'DELETE /api/deployments/old/logs': answer(500, { error: 'The log files could not be deleted' }) })
     tab()
     await userEvent.click(within(await openLog('ccccccc')).getByRole('button', { name: 'Delete this log' }))
     await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete log' }))
     await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('The log files could not be deleted'))
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(document.getElementById('log-old')).not.toBeNull()
   })
 
   test('is not offered while the deployment is still running', async () => {
@@ -207,5 +208,102 @@ describe('deleting a build log', () => {
     tab()
     const dialog = await openLog('fffffff')
     expect(within(dialog).queryByRole('button', { name: 'Delete this log' })).toBeNull()
+  })
+})
+
+describe('pressing a row', () => {
+  const LOGS = (id) => ({ [`GET /api/deployments/${id}/logs`]: { text: '2026-10-19T12:00:00.000Z shipdok hello\n', offset: 0, nextOffset: 40, size: 40, complete: true, truncated: false } })
+  const logRow = (id) => document.getElementById(`log-${id}`)
+
+  test('anywhere on the row opens its log, and pressing the row again closes it', async () => {
+    mockApi({ [LIST]: deployments, [IMAGES]: images, ...LOGS('prev') })
+    tab()
+    const row = await rowOf('bbbbbbb')
+    await userEvent.click(within(row).getByText('bbbbbbb'))
+    expect(logRow('prev')).not.toBeNull()
+    expect(row.nextElementSibling).toBe(logRow('prev'))
+    await userEvent.click(within(row).getByText('bbbbbbb'))
+    expect(logRow('prev')).toBeNull()
+  })
+
+  test('the row says it can be opened: a pointer, and an arrow that turns when it is open', async () => {
+    mockApi({ [LIST]: deployments, [IMAGES]: images, ...LOGS('prev') })
+    tab()
+    const row = await rowOf('bbbbbbb')
+    expect(row.className).toMatch(/cursor-pointer/)
+    const arrow = row.querySelector('svg.lucide-chevron-right')
+    expect(arrow.getAttribute('class')).not.toMatch(/rotate-90/)
+    await userEvent.click(row)
+    expect(row.querySelector('svg.lucide-chevron-right').getAttribute('class')).toMatch(/rotate-90/)
+  })
+
+  test('the actions are icons only, each with a name and a tooltip', async () => {
+    mockApi({ [LIST]: deployments, [IMAGES]: images })
+    tab()
+    const row = await rowOf('ccccccc') // an old version: it can be rolled back to and deleted
+    for (const [name, title] of [['Log', 'Show log'], ['Roll back', 'Roll back to this version'], ['Delete', 'Delete this deployment']]) {
+      const button = within(row).getByRole('button', { name: new RegExp(`^${name}`) })
+      expect(button).toHaveAttribute('title', title)
+      expect(button.textContent).toBe('') // an icon, no words next to it
+    }
+  })
+
+  test('a Delete that is not allowed says why in its tooltip', async () => {
+    mockApi({ [LIST]: deployments, [IMAGES]: images })
+    tab()
+    const button = within(await rowOf('aaaaaaa')).getByRole('button', { name: /^Delete \(unavailable/ })
+    expect(button).toBeDisabled()
+    expect(button.getAttribute('title')).toMatch(/running version/i)
+  })
+
+  test('the Log button still works on its own, and presses once (it does not also toggle through the row)', async () => {
+    mockApi({ [LIST]: deployments, [IMAGES]: images, ...LOGS('prev') })
+    tab()
+    const row = await rowOf('bbbbbbb')
+    await userEvent.click(within(row).getByRole('button', { name: /^log$/i }))
+    expect(logRow('prev')).not.toBeNull() // opened, not opened-and-closed again
+    await userEvent.click(within(row).getByRole('button', { name: /hide log/i }))
+    expect(logRow('prev')).toBeNull()
+  })
+
+  test('Roll back and Delete do their own thing and leave the log closed', async () => {
+    mockApi({ [LIST]: deployments, [IMAGES]: images, ...LOGS('prev'), ...LOGS('old') })
+    tab()
+    await userEvent.click(within(await rowOf('bbbbbbb')).getByRole('button', { name: 'Roll back' }))
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(logRow('prev')).toBeNull()
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+    await userEvent.click(within(await rowOf('ccccccc')).getByRole('button', { name: 'Delete' }))
+    await screen.findByRole('alertdialog')
+    expect(logRow('old')).toBeNull()
+  })
+
+  test('Cancel of a running deployment cancels it and does not open the log', async () => {
+    const api = mockApi({ [LIST]: deployments, [IMAGES]: images, 'POST /api/deployments/run/cancel': { status: 'building' }, ...LOGS('run') })
+    tab()
+    await userEvent.click(within(await rowOf('fffffff')).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(api.called('POST', '/api/deployments/run/cancel')).toHaveLength(1))
+    expect(logRow('run')).toBeNull()
+  })
+
+  test('pressing a row that ended a text selection (copying the commit id) does not toggle it', async () => {
+    mockApi({ [LIST]: deployments, [IMAGES]: images, ...LOGS('prev') })
+    tab()
+    const spy = vi.spyOn(window, 'getSelection').mockReturnValue({ toString: () => 'bbbbbbb' })
+    await userEvent.click(within(await rowOf('bbbbbbb')).getByText('bbbbbbb'))
+    expect(logRow('prev')).toBeNull()
+    spy.mockReturnValue({ toString: () => '' })
+    await userEvent.click(within(await rowOf('bbbbbbb')).getByText('bbbbbbb'))
+    expect(logRow('prev')).not.toBeNull()
+    spy.mockRestore()
+  })
+
+  test('pressing inside the open console does not close it', async () => {
+    mockApi({ [LIST]: deployments, [IMAGES]: images, ...LOGS('prev') })
+    tab()
+    await userEvent.click(await rowOf('bbbbbbb'))
+    const input = await within(logRow('prev')).findByLabelText('Find in log')
+    await userEvent.type(input, 'hel')
+    expect(logRow('prev')).not.toBeNull()
   })
 })

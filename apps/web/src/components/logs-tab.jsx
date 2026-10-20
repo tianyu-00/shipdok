@@ -23,6 +23,8 @@ export default function LogsTab({ app }) {
         key={which}
         path={`/apps/${app.id}/logs`}
         kind={which}
+        title={which === 'previous' ? 'Previous run' : 'Current run'}
+        filename={`${app.slug ?? 'app'}-${which}.log`}
         emptyText={which === 'previous' ? 'There is no earlier run.' : 'The app has not printed anything yet.'}
       />
     </div>
