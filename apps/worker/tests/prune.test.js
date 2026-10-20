@@ -367,3 +367,17 @@ describe('the job', () => {
     assert.equal((await pool.query('SELECT trigger FROM app_cleanup WHERE app_id = $1', [appId])).rows[0].trigger, 'manual');
   });
 });
+
+describe('persistent storage is never touched by a clean-up', () => {
+  test('an image clean-up (manual or automatic) removes images only: a volume call would blow up, and every volume record is untouched', async () => {
+    const appId = await makeApp();
+    const vs = await versions(appId, 4);
+    await pool.query(`INSERT INTO app_volumes (app_id, app_name, container_path, docker_name, state) VALUES ($1, 'A', '/data', 'shipdok-vol-keepme', 'in_use'), ($1, 'A', '/old', 'shipdok-vol-keepme-2', 'detached')`, [appId]);
+    const eng = fakeDocker({ images: imagesOf(vs), live: vs[3].image });
+    for (const name of ['removeVolumeStrict', 'ensureVolume', 'removeVolume']) eng[name] = () => { throw new Error('a clean-up must never touch a volume'); };
+    await prune(appId, eng, 'auto');
+    await prune(appId, eng, 'manual');
+    assert.ok(eng.removed.length > 0, 'it really cleaned up images');
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM app_volumes')).rows[0].n, 2);
+  });
+});

@@ -10,6 +10,7 @@ import { Field } from '@/components/field'
 import { PendingSettings } from '@/components/pending-settings'
 import { RepoLink } from '@/components/repo-link'
 import { DeleteApp } from '@/components/delete-app'
+import VolumesCard from '@/components/volumes-card'
 
 // Which field a refusal from the server belongs to.
 const SERVER_FIELD = { port_taken: 'host_port', name_taken: 'name' }
@@ -100,6 +101,7 @@ export default function SettingsTab({ app }) {
           <SettingsForm key={app.updated_at} app={app} />
         </CardContent>
       </Card>
+      <VolumesCard app={app} />
       <DeleteApp app={app} />
     </div>
   )

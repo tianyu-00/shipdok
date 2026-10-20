@@ -15,6 +15,16 @@ const box = (label) => screen.getByLabelText(label)
 const save = () => screen.getByRole('button', { name: 'Save' })
 const type = async (label, text) => { await userEvent.clear(box(label)); if (text) await userEvent.type(box(label), text) }
 
+describe('persistent storage on the settings tab', () => {
+  test('has its own card, between the settings and the danger zone', async () => {
+    mockApi({ [`GET /api/apps/${APP_ID}/volumes`]: { volumes: [] } })
+    tab()
+    const card = await screen.findByText('Persistent storage')
+    const del = screen.getByText('Delete this app')
+    expect(card.compareDocumentPosition(del) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+})
+
 describe('the build time limit', () => {
   test('is an empty box when there is no limit, and says what that means', () => {
     tab(makeApp({ build_timeout_minutes: null }))

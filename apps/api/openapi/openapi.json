@@ -27,6 +27,10 @@
       "description": "The Docker images kept for rollback and how they are cleaned up."
     },
     {
+      "name": "Persistent storage",
+      "description": "Docker volumes that keep an app's files across deployments, and the ones kept without being mounted."
+    },
+    {
       "name": "Variables",
       "description": "An app's environment variables, encrypted at rest. Values are never returned except by `reveal`."
     },
@@ -58,7 +62,7 @@
           "Apps"
         ],
         "summary": "Delete an app",
-        "description": "Deletes the app: its containers, images, logs, variables and every deployment record. The API only marks the app and queues the work; the worker does it (so the answer is 202, and the app disappears when the worker has finished; a failure shows as `delete_error`, and sending the delete again retries). **The exact name must be sent as `confirm`.** Refused while a deployment is queued or running.",
+        "description": "Deletes the app: its containers, images, logs, variables and every deployment record. **Its persistent volumes are kept by default**; send `deleteVolumes: true` to remove them and their data too. The API only marks the app and queues the work; the worker does it (so the answer is 202, and the app disappears when the worker has finished; a failure shows as `delete_error`, and sending the delete again retries). **The exact name must be sent as `confirm`.** Refused while a deployment is queued or running.",
         "parameters": [
           {
             "name": "id",
@@ -88,7 +92,7 @@
             }
           },
           "400": {
-            "description": "The confirmation does not match (`code: confirm_mismatch`).",
+            "description": "The confirmation does not match (`code: confirm_mismatch`), or `deleteVolumes` is not true or false.",
             "content": {
               "application/json": {
                 "schema": {
@@ -151,6 +155,11 @@
                   "confirm": {
                     "type": "string",
                     "description": "The app's exact name."
+                  },
+                  "deleteVolumes": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Also delete the app's persistent volumes and their data, permanently. Default `false`: the data is kept (the volumes become orphaned and stay listed under `GET /api/volumes`)."
                   }
                 }
               }
@@ -1134,6 +1143,89 @@
         ]
       }
     },
+    "/api/volumes/{id}": {
+      "delete": {
+        "tags": [
+          "Persistent storage"
+        ],
+        "summary": "Delete a volume and its data, for good",
+        "description": "**Permanent.** Only a volume that is not mounted by an app. The API only queues it; the worker removes the Docker volume (and refuses one that is not Shipdok's or that a container still uses; the reason then shows as `removeError` on the volume).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The volume's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "queued": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such volume.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The volume is mounted by an app (`code: volume_in_use`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The job queue is not available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/_visitor": {
       "get": {
         "tags": [
@@ -1661,6 +1753,150 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/volumes": {
+      "get": {
+        "tags": [
+          "Persistent storage"
+        ],
+        "summary": "An app's persistent storage",
+        "description": "The app's volumes: those mounted (`in_use`) and those whose path was removed but whose data is kept (`detached`).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The volumes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VolumeList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Persistent storage"
+        ],
+        "summary": "Set the container paths to keep",
+        "description": "Replaces the whole list. Each path becomes a Docker named volume that every deployment mounts, so files written there survive redeploys, rollbacks and restarts. A path that is new gets a new volume; a path that was removed earlier gets ITS volume back; a path that is left out is **detached, never deleted**. Takes effect with the next deployment (it is listed in `settings_pending`). The Docker volumes are created by the worker at deployment time, and a new version is first checked with throwaway volumes so the old version's data is not touched while both run.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The volumes after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VolumeList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad path, a duplicate, one path inside another, or more than 10.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The app is being deleted (`code: deleting`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VolumePaths"
               }
             }
           }
@@ -2408,6 +2644,43 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Storage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/volumes": {
+      "get": {
+        "tags": [
+          "Persistent storage"
+        ],
+        "summary": "Volumes that are kept without being mounted",
+        "description": "Detached volumes (a path was removed from an app) and orphaned ones (their app was deleted and its data kept). Volumes that an app mounts are not listed here.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The volumes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VolumeList"
                 }
               }
             }
@@ -4597,7 +4870,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Only on the single-app answers: which edited settings the running version does not have yet (`null`: nothing deployed yet)."
+            "description": "Only on the single-app answers: which edited settings the running version does not have yet, including `volumes` for persistent storage (`null`: nothing deployed yet)."
           },
           "warning": {
             "type": "string",
@@ -4909,6 +5182,100 @@
           "cleanup",
           "prunableBytes",
           "versions"
+        ]
+      },
+      "Volume": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The volume's id."
+          },
+          "path": {
+            "type": "string",
+            "description": "The container path it is mounted at."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "in_use",
+              "detached",
+              "orphaned"
+            ],
+            "description": "in_use: listed for the app and mounted by its deployments. detached: the path was removed from the list; the data is KEPT but not mounted. orphaned: the app was deleted and its data kept."
+          },
+          "dockerName": {
+            "type": "string",
+            "description": "The Docker volume name (`shipdok-vol-<id>`), for example for a manual backup."
+          },
+          "appId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The app, or `null` once it is gone.",
+            "nullable": true
+          },
+          "appName": {
+            "type": "string",
+            "description": "The app's name (remembered after the app is deleted)."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Created."
+          },
+          "stateChangedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the state last changed."
+          },
+          "removeError": {
+            "type": "string",
+            "nullable": true,
+            "description": "Why the last request to delete it did not work."
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "state",
+          "dockerName",
+          "appId",
+          "appName",
+          "createdAt",
+          "stateChangedAt",
+          "removeError"
+        ]
+      },
+      "VolumePaths": {
+        "type": "object",
+        "required": [
+          "paths"
+        ],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "description": "The container paths to keep (absolute; letters, digits, dot, dash, underscore, slash; not `/`, not under `/proc`, `/sys` or `/dev`; no duplicates and none inside another). The whole list: a path that is left out is detached, never deleted."
+          }
+        }
+      },
+      "VolumeList": {
+        "type": "object",
+        "properties": {
+          "volumes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Volume"
+            }
+          }
+        },
+        "required": [
+          "volumes"
         ]
       },
       "EnvList": {

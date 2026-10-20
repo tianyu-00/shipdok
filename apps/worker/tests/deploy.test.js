@@ -607,3 +607,74 @@ describe('the build time limit', () => {
     assert.ok(!eng.events.includes('run docker build'));
   });
 });
+
+describe('persistent storage', () => {
+  const VOLUMES = [{ path: '/app/uploads', name: 'shipdok-vol-aaa' }, { path: '/data', name: 'shipdok-vol-bbb' }];
+  const made = (eng, role) => eng.created.find((c) => c.name.endsWith(`-${role}`));
+
+  test('the live container mounts the real volumes; the candidate only gets throwaway ones at the same paths', async () => {
+    const eng = fakeEngine({ previous: ['old'] });
+    const r = await run({ volumes: VOLUMES }, eng);
+    assert.equal(r.ok, true);
+    assert.deepEqual(made(eng, 'live').volumes, VOLUMES);
+    assert.deepEqual(made(eng, 'candidate').volumes, VOLUMES.map(({ path }) => ({ path })), 'no name: the real data is not touched while the old version still runs');
+  });
+
+  test('the volumes are created (with ownership labels) after the candidate has passed and before the live container exists', async () => {
+    const eng = fakeEngine({ previous: ['old'] });
+    await run({ volumes: VOLUMES }, eng);
+    const at = (needle) => eng.events.findIndex((e) => e.includes(needle));
+    assert.ok(at('health shipdok-my-app-dep-1-candidate') < at('volume shipdok-vol-aaa'));
+    assert.ok(at('volume shipdok-vol-bbb') < at('create shipdok-my-app-dep-1-live'));
+    assert.ok(at('stop old') < at('create shipdok-my-app-dep-1-live'), 'only one container uses the real volumes at a time');
+    assert.deepEqual(eng.volumes.map((v) => v.name), ['shipdok-vol-aaa', 'shipdok-vol-bbb']);
+    assert.equal(eng.volumes[0].labels['shipdok.managed'], 'true');
+    assert.equal(eng.volumes[0].labels['shipdok.app-id'], 'app-1');
+  });
+
+  test('no volumes: no mounts, and no volume is created', async () => {
+    const eng = fakeEngine();
+    await run({}, eng);
+    assert.ok(!eng.events.some((e) => e.startsWith('volume ')));
+    assert.deepEqual(made(eng, 'live').volumes ?? [], []);
+  });
+
+  test('a build that fails creates no volume at all', async () => {
+    const eng = fakeEngine({ onRun: (cmd) => { if (cmd === 'docker') throw new Error('build failed'); } });
+    await run({ volumes: VOLUMES }, eng);
+    assert.ok(!eng.events.some((e) => e.startsWith('volume ')));
+  });
+
+  test('a candidate that is unhealthy touches no real volume, and the running version is untouched', async () => {
+    const eng = fakeEngine({ previous: ['old'], health: { candidate: async () => { throw new Error('not healthy'); } } });
+    const r = await run({ volumes: VOLUMES }, eng);
+    assert.equal(r.ok, false);
+    assert.ok(!eng.events.some((e) => e.startsWith('volume ')));
+    assert.ok(!eng.events.includes('stop old'));
+  });
+
+  test('a swap that fails restores the old version, and the volumes are KEPT (their data is not ours to throw away)', async () => {
+    const eng = fakeEngine({ previous: ['old'], failOn: { 'create live': new Error('boom') } });
+    const r = await run({ volumes: VOLUMES }, eng);
+    assert.equal(r.ok, false);
+    assert.ok(eng.events.includes('start old'), 'the old container is started again');
+    assert.ok(!eng.events.some((e) => /remove.*vol|rmvol/i.test(e)));
+  });
+
+  test('a rollback (an image that already exists) mounts the volumes too', async () => {
+    const OLD = 'shipdok/my-app:0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a';
+    const eng = fakeEngine({ previous: ['old'] });
+    eng.imageInfo = async () => ({ labels: { 'shipdok.managed': 'true', 'shipdok.app-id': 'app-1' } });
+    const r = await run({ reuseImage: OLD, volumes: VOLUMES }, eng);
+    assert.equal(r.ok, true);
+    assert.deepEqual(made(eng, 'live').volumes, VOLUMES);
+  });
+
+  test('a stopped app: the new container is created with its mounts but not started', async () => {
+    const eng = fakeEngine({ previous: ['old'], stopped: ['old'] });
+    const r = await run({ volumes: VOLUMES, beforeSwap: async () => ({ proceed: true, start: false }) }, eng);
+    assert.equal(r.ok, true);
+    assert.deepEqual(made(eng, 'live').volumes, VOLUMES);
+    assert.ok(!eng.events.includes('start shipdok-my-app-dep-1-live'));
+  });
+});

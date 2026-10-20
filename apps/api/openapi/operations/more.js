@@ -1,6 +1,7 @@
-import { op, route, ok, ref, APP_ID, DEPLOYMENT_ID, query } from '../helpers.js';
+import { op, route, ok, ref, APP_ID, DEPLOYMENT_ID, query, idParam } from '../helpers.js';
 
 const ENV = 'Variables';
+const VOL = 'Persistent storage';
 const GH = 'GitHub';
 const SET = 'Settings';
 const LOG = 'Logs and storage';
@@ -41,6 +42,30 @@ export default Object.fromEntries([
     description: 'The **only** place a value leaves the server. It is a POST so it is never prefetched or cached, and the answer says `Cache-Control: no-store`.',
     responses: { 200: ok('The value.', { type: 'object', properties: { key: { type: 'string' }, value: { type: 'string' } } }) },
     errors: { 404: 'No such app or variable.', 500: 'The stored value could not be decrypted (has `APP_SECRETS_KEY` changed?).' },
+  })),
+
+  // ---------------------------------------------------------------- persistent storage
+  route('GET', '/api/apps/{id}/volumes', op({
+    tag: VOL, summary: 'An app\'s persistent storage', parameters: [APP_ID],
+    description: 'The app\'s volumes: those mounted (`in_use`) and those whose path was removed but whose data is kept (`detached`).',
+    responses: { 200: ok('The volumes.', ref('VolumeList')) }, errors: [404],
+  })),
+  route('PUT', '/api/apps/{id}/volumes', op({
+    tag: VOL, summary: 'Set the container paths to keep', parameters: [APP_ID],
+    description: 'Replaces the whole list. Each path becomes a Docker named volume that every deployment mounts, so files written there survive redeploys, rollbacks and restarts. A path that is new gets a new volume; a path that was removed earlier gets ITS volume back; a path that is left out is **detached, never deleted**. Takes effect with the next deployment (it is listed in `settings_pending`). The Docker volumes are created by the worker at deployment time, and a new version is first checked with throwaway volumes so the old version\'s data is not touched while both run.',
+    body: ref('VolumePaths'), responses: { 200: ok('The volumes after the change.', ref('VolumeList')) },
+    errors: { 400: 'A bad path, a duplicate, one path inside another, or more than 10.', 404: 'No such app.', 409: 'The app is being deleted (`code: deleting`).' },
+  })),
+  route('GET', '/api/volumes', op({
+    tag: VOL, summary: 'Volumes that are kept without being mounted',
+    description: 'Detached volumes (a path was removed from an app) and orphaned ones (their app was deleted and its data kept). Volumes that an app mounts are not listed here.',
+    responses: { 200: ok('The volumes.', ref('VolumeList')) },
+  })),
+  route('DELETE', '/api/volumes/{id}', op({
+    tag: VOL, summary: 'Delete a volume and its data, for good', parameters: [idParam('id', 'The volume\'s id.')],
+    description: '**Permanent.** Only a volume that is not mounted by an app. The API only queues it; the worker removes the Docker volume (and refuses one that is not Shipdok\'s or that a container still uses; the reason then shows as `removeError` on the volume).',
+    responses: { 202: ok('Queued.', { type: 'object', properties: { queued: { type: 'boolean' } } }) },
+    errors: { 404: 'No such volume.', 409: 'The volume is mounted by an app (`code: volume_in_use`).', 503: 'The job queue is not available.' },
   })),
 
   // ---------------------------------------------------------------- github

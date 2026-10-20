@@ -34,10 +34,10 @@ export default Object.fromEntries([
   })),
   route('DELETE', '/api/apps/{id}', op({
     tag: TAG, summary: 'Delete an app', parameters: [APP_ID],
-    description: 'Deletes the app: its containers, images, logs, variables and every deployment record. The API only marks the app and queues the work; the worker does it (so the answer is 202, and the app disappears when the worker has finished; a failure shows as `delete_error`, and sending the delete again retries). **The exact name must be sent as `confirm`.** Refused while a deployment is queued or running.',
-    body: { type: 'object', required: ['confirm'], properties: { confirm: { type: 'string', description: 'The app\'s exact name.' } } },
+    description: 'Deletes the app: its containers, images, logs, variables and every deployment record. **Its persistent volumes are kept by default**; send `deleteVolumes: true` to remove them and their data too. The API only marks the app and queues the work; the worker does it (so the answer is 202, and the app disappears when the worker has finished; a failure shows as `delete_error`, and sending the delete again retries). **The exact name must be sent as `confirm`.** Refused while a deployment is queued or running.',
+    body: { type: 'object', required: ['confirm'], properties: { confirm: { type: 'string', description: 'The app\'s exact name.' }, deleteVolumes: { type: 'boolean', default: false, description: 'Also delete the app\'s persistent volumes and their data, permanently. Default `false`: the data is kept (the volumes become orphaned and stay listed under `GET /api/volumes`).' } } },
     responses: { 202: ok('Deletion queued.', { type: 'object', properties: { deleting: { type: 'boolean' } } }) },
-    errors: { 400: 'The confirmation does not match (`code: confirm_mismatch`).', 404: 'No such app.', 409: 'A deployment is still running; cancel it first (`code: deployment_active`).', 503: 'The job queue is not available.' },
+    errors: { 400: 'The confirmation does not match (`code: confirm_mismatch`), or `deleteVolumes` is not true or false.', 404: 'No such app.', 409: 'A deployment is still running; cancel it first (`code: deployment_active`).', 503: 'The job queue is not available.' },
   })),
   route('GET', '/api/apps/{id}/stats', op({
     tag: TAG, summary: 'CPU and memory history', parameters: [APP_ID, query('minutes', 'How far back, 1 to 60 (default 60).', { type: 'integer', minimum: 1, maximum: 60, default: 60 })],

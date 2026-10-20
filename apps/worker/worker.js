@@ -12,6 +12,7 @@ import { processDeployJob } from './src/process-job.js';
 import { processControlJob } from './src/control.js';
 import { processPruneJob } from './src/prune.js';
 import { processDeleteJob } from './src/deleteapp.js';
+import { processRemoveVolumeJob } from './src/removevolume.js';
 import { jobProcessor } from './src/dispatch.js';
 import { createActivity } from './src/activity.js';
 import { createMonitor } from './src/monitor.js';
@@ -58,6 +59,7 @@ const worker = new Worker(
     control: (job) => processControlJob(job),
     prune: (job) => processPruneJob(job),
     deleteApp: (job) => processDeleteJob(job, { collector }),
+    removeVolume: (job) => processRemoveVolumeJob(job),
   }),
   { connection, concurrency: 1, maxStalledCount: 0, autorun: false },
 );

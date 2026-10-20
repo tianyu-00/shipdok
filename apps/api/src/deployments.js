@@ -1,5 +1,6 @@
 // Requesting and cancelling deployments. All the "latest wins" rules live here, in one place, so
 // manual deploys and (later) GitHub webhooks behave identically.
+import { mountedVolumes } from './volumes.js';
 import { withTx } from './db/tx.js';
 
 const ACTIVE = `('building','starting','validating')`;
@@ -29,6 +30,7 @@ export async function requestDeployment({ db, queue }, app, { trigger = 'manual'
     container_port: app.container_port, host_port: app.host_port,
     health_path: app.health_path, memory_mb: app.memory_mb, cpus: Number(app.cpus),
     build_timeout_minutes: app.build_timeout_minutes ?? null, // null = no limit
+    volumes: await mountedVolumes(db, app.id), // persistent storage: { path, name } for each volume the new container mounts
   };
   // Which variable versions this deployment is meant to use (names and numbers only, never values).
   const { rows: envRows } = await db.query(
@@ -72,6 +74,7 @@ export async function requestDeployment({ db, queue }, app, { trigger = 'manual'
       memoryMb: snapshot.memory_mb,
       cpus: snapshot.cpus,
       buildTimeoutMinutes: snapshot.build_timeout_minutes ?? undefined, // left out when there is no limit
+      volumes: snapshot.volumes,
       startAfterDeploy: startAfter || undefined, // the worker applies it only if the deployment succeeds
     });
     await db.query('UPDATE deployments SET job_id = $2 WHERE id = $1', [deploymentId, String(job.id)]);

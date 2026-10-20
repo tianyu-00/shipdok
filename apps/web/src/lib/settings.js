@@ -3,7 +3,7 @@
 export const SETTING_LABELS = {
   name: 'Name', branch: 'Branch', root_dir: 'Root directory', container_port: 'Container port', host_port: 'Host port',
   health_path: 'Health check path', memory_mb: 'Memory limit', cpus: 'CPU limit', max_restarts: 'Automatic restarts',
-  build_timeout_minutes: 'Build time limit',
+  build_timeout_minutes: 'Build time limit', volumes: 'Persistent storage',
 }
 
 /** The form's text values for an app. */

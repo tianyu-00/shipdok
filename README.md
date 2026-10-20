@@ -11,6 +11,7 @@ dashboard.
 - Deploys any repository that has a `Dockerfile`, from GitHub (private repositories too), with a GitHub App that you create from the dashboard in one click.
 - Every push to the tracked branch builds and deploys automatically. The newest push wins.
 - A new version replaces the old one only after it starts and passes its health check. Roll back to the previous version in one click.
+- Persistent storage: keep an app's files across redeploys (Docker volumes), with safe defaults when you delete things.
 - Encrypted environment variables, build and app logs, CPU and memory charts, crash detection with automatic restarts.
 - Runs on **ARM64 (Raspberry Pi 4/5)** and **x86-64**. Ready-made images for both.
 - Nothing is exposed to the internet unless you choose to ([public access](docs/public-access.md)).

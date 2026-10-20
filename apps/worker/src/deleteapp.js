@@ -14,7 +14,7 @@ const TAG_RE = /^shipdok\/[a-z0-9][a-z0-9-]{0,39}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-
 /**
  * @returns {Promise<{ok: true, skipped: true} | {ok: true, containers: number, images: number, logBytes: number}>}
  */
-export async function deleteApp({ appId }, { eng = realEngine, db = store, collector = null, logRoot = defaultLogRoot(), log = console.log } = {}) {
+export async function deleteApp({ appId, deleteVolumes = false }, { eng = realEngine, db = store, collector = null, logRoot = defaultLogRoot(), log = console.log } = {}) {
   const app = await db.getAppForDelete(appId);
   if (!app) {
     log('Skipped: the app is already gone');
@@ -45,6 +45,23 @@ export async function deleteApp({ appId }, { eng = realEngine, db = store, colle
     }
     if (stuck > 0) throw new Error(`${stuck} image(s) are still used by a container Shipdok did not make for this app`);
 
+    // 3b. Its persistent storage. By default the data is KEPT (the volumes become orphaned and stay listed); only when asked are the Docker
+    //     volumes removed (after the containers, which no longer use them), and their records with them.
+    let volumes = 0;
+    if (deleteVolumes) {
+      let stuck = 0;
+      for (const v of await db.listAppVolumes(appId)) {
+        const outcome = await eng.removeVolumeStrict(v.docker_name);
+        if (outcome === 'in-use') { stuck += 1; continue; }
+        await db.deleteVolumeRow(v.id);
+        volumes += 1;
+        log(`Removed volume ${v.container_path}`);
+      }
+      if (stuck > 0) throw new Error(`${stuck} volume(s) are still used by a container Shipdok did not make for this app`);
+    } else {
+      await db.orphanAppVolumes(appId);
+    }
+
     // 4. Its logs: the runtime logs and every deployment's build log.
     const logBytes = await removeAppLogs(logRoot, appId);
 
@@ -62,11 +79,12 @@ export async function deleteApp({ appId }, { eng = realEngine, db = store, colle
 
 /** The BullMQ job 'deleteapp' ({appId}). */
 export async function processDeleteJob(job, deps = {}) {
-  const { appId } = job.data ?? {};
+  const { appId, deleteVolumes } = job.data ?? {};
   if (typeof appId !== 'string' || !UUID_RE.test(appId)) throw new Error('Delete job is missing a valid app id');
   const log = (msg) => {
     console.log(`[job ${job.id}] ${msg}`);
     Promise.resolve(job.log?.(msg)).catch(() => {});
   };
-  return deleteApp({ appId }, { ...deps, log });
+  if (deleteVolumes !== undefined && typeof deleteVolumes !== 'boolean') throw new Error('Delete job: deleteVolumes must be true or false');
+  return deleteApp({ appId, deleteVolumes: deleteVolumes === true }, { ...deps, log });
 }

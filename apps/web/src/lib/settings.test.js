@@ -25,6 +25,7 @@ describe('the build time limit', () => {
     expect(settingsChanges(form({ build_timeout_minutes: '' }), makeApp({ build_timeout_minutes: 45 }))).toEqual({ build_timeout_minutes: null })
   })
   test('has a name for the "waiting for the next deployment" list', () => expect(SETTING_LABELS.build_timeout_minutes).toBe('Build time limit'))
+  test('persistent storage has one too', () => expect(SETTING_LABELS.volumes).toBe('Persistent storage'))
 })
 
 describe('settingsProblems', () => {

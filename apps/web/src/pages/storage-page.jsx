@@ -16,6 +16,7 @@ import { useApps, useStorage } from '@/lib/queries'
 import { formatBytes } from '@/lib/format'
 import { storageRows } from '@/lib/storage'
 import { Empty, ListSkeleton, LoadError } from '@/components/states'
+import KeptVolumes from '@/components/kept-volumes'
 
 const LEVEL = {
   ok: { label: 'Plenty of space', className: 'border-success/40 bg-success/10 text-success' },
@@ -124,6 +125,7 @@ export default function StoragePage() {
               )}
             </CardContent>
           </Card>
+          <KeptVolumes />
         </>
       )}
     </div>

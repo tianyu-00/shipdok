@@ -83,7 +83,7 @@ export const schemas = {
       created_at: time('Created.'), updated_at: time('Last edited.'),
       latest_deployment: ref('DeploymentBrief'), runtime: { ...ref('Runtime'), nullable: true }, cleanup: ref('Cleanup'),
       running_settings: ref('RunningSettings'), stats: ref('Stats'),
-      settings_pending: { type: 'array', nullable: true, items: { type: 'string' }, description: 'Only on the single-app answers: which edited settings the running version does not have yet (`null`: nothing deployed yet).' },
+      settings_pending: { type: 'array', nullable: true, items: { type: 'string' }, description: 'Only on the single-app answers: which edited settings the running version does not have yet, including `volumes` for persistent storage (`null`: nothing deployed yet).' },
       warning: str('Only when creating: for example that the GitHub App is not installed on the repository.'),
     },
   },
@@ -121,6 +121,18 @@ export const schemas = {
     keep_previous_images: int('Earlier versions kept.'), auto_prune: bool('Automatic clean-up.'), cleanup: ref('Cleanup'),
     prunableBytes: int('What a clean-up would free (an upper bound).'), versions: arr(ref('ImageVersion')),
   }),
+
+  // ---- persistent storage
+  Volume: obj({
+    id: uuid('The volume\'s id.'), path: str('The container path it is mounted at.'),
+    state: enumOf(['in_use', 'detached', 'orphaned'], 'in_use: listed for the app and mounted by its deployments. detached: the path was removed from the list; the data is KEPT but not mounted. orphaned: the app was deleted and its data kept.'),
+    dockerName: str('The Docker volume name (`shipdok-vol-<id>`), for example for a manual backup.'),
+    appId: { ...uuid('The app, or `null` once it is gone.'), nullable: true }, appName: str('The app\'s name (remembered after the app is deleted).'),
+    createdAt: time('Created.'), stateChangedAt: time('When the state last changed.'),
+    removeError: nstr('Why the last request to delete it did not work.'),
+  }),
+  VolumePaths: { type: 'object', required: ['paths'], properties: { paths: { type: 'array', maxItems: 10, items: { type: 'string', maxLength: 200 }, description: 'The container paths to keep (absolute; letters, digits, dot, dash, underscore, slash; not `/`, not under `/proc`, `/sys` or `/dev`; no duplicates and none inside another). The whole list: a path that is left out is detached, never deleted.' } } },
+  VolumeList: obj({ volumes: arr(ref('Volume')) }),
 
   // ---- variables
   EnvList: obj({

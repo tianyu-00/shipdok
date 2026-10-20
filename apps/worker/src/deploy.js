@@ -31,6 +31,7 @@ import { checkoutSource, gitEnvironment } from './git.js';
  * @param {string[]} [opts.env=[]]      ['KEY=VALUE', ...] for the container
  * @param {Record<string,string>} [opts.gitEnv]  extra environment for GIT ONLY (a GitHub token). Never given to docker or the container.
  * @param {(container: object) => Promise<void>} [opts.onRetire]  called with each old container after the new one is live, before it is removed (save its output)
+ * @param {{path: string, name: string}[]} [opts.volumes]  persistent storage: Docker named volumes the live container mounts (the candidate gets throwaway ones)
  * @param {number|null} [opts.buildTimeoutMinutes]  stop the clone and the build if they take longer than this; none/null = no limit
  * @param {number} [opts.retireTimeoutMs=10000]  how long to wait for onRetire
  * @param {{write: Function, line: Function}} [opts.logSink]  also receives the output of git and docker build (the deployment's log file)
@@ -51,7 +52,7 @@ const COMMIT_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 const REUSE_TAG_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function deploy(opts, eng = realEngine) {
-  const o = { ref: 'main', dir: '.', memoryMb: 512, cpus: 1, env: [], ...opts };
+  const o = { ref: 'main', dir: '.', memoryMb: 512, cpus: 1, env: [], volumes: [], ...opts };
   const log = o.log ?? ((m) => console.log(`[${new Date().toISOString()}] ${m}`));
   const notify = (fn, ...args) => { try { fn?.(...args); } catch { /* hooks must never break a deploy */ } };
   const deploymentId = o.deploymentId ?? randomBytes(4).toString('hex');
@@ -81,6 +82,8 @@ export async function deploy(opts, eng = realEngine) {
     memoryMb: o.memoryMb,
     cpus: o.cpus,
     env: o.env,
+    // The candidate runs while the old version still does, so it must not touch the real data: it gets throwaway volumes at the same paths.
+    volumes: role === 'live' ? o.volumes : o.volumes.map(({ path }) => ({ path })),
   });
 
   // The old container's output must be saved before the container is removed. Best effort, and never allowed to hold
@@ -203,6 +206,8 @@ export async function deploy(opts, eng = realEngine) {
     const wasRunning = await Promise.all(previous.map((old) => eng.isRunning(old).catch(() => true)));
     for (const old of previous) await old.stop().catch(() => {});
     try {
+      // The old container is stopped, so only this one will use the real volumes. Created now (not earlier): a build that fails never creates one.
+      for (const v of o.volumes) await eng.ensureVolume({ name: v.name, labels: { [LABEL.managed]: 'true', [LABEL.app]: o.appId } });
       finalC = await make('live', o.hostPort);
       if (startAfterSwap) {
         await finalC.start();

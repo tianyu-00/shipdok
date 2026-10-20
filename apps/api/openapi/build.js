@@ -12,6 +12,7 @@ const TAGS = [
   ['Apps', 'Creating, editing, starting, stopping and deleting apps.'],
   ['Deployments', 'Building and releasing a version, cancelling, rolling back, and the history.'],
   ['Images and clean-up', 'The Docker images kept for rollback and how they are cleaned up.'],
+  ['Persistent storage', 'Docker volumes that keep an app\'s files across deployments, and the ones kept without being mounted.'],
   ['Variables', 'An app\'s environment variables, encrypted at rest. Values are never returned except by `reveal`.'],
   ['GitHub', 'The connected GitHub App: connecting it, repositories, installations and the webhook address.'],
   ['Settings', 'Who may reach Shipdok from outside.'],

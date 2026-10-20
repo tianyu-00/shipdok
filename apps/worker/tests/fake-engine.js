@@ -62,7 +62,8 @@ export function fakeEngine(cfg = {}) {
     },
     async capture() { return cfg.head ?? 'abc123def'; },
     async findContainers(filter) { (engine.lookups ??= []).push(filter); return previous; },
-    async createContainer({ name, hostPort }) { failure('create', name); ev(`create ${name} port=${hostPort || 'temp'}`); usingNewImage.add(name); return container(name); },
+    async createContainer(opts) { const { name, hostPort } = opts; failure('create', name); (engine.created ??= []).push(opts); ev(`create ${name} port=${hostPort || 'temp'}`); usingNewImage.add(name); return container(name); },
+    async ensureVolume({ name, labels }) { failure('volume', name); (engine.volumes ??= []).push({ name, labels }); ev(`volume ${name}`); },
     async isRunning(c) { return !(cfg.stopped ?? []).includes(c.name); },
     // The real helpers also accept "already stopped/started" (Docker's 304); the fake containers never raise it.
     async stopContainer(c) { await c.stop(); },

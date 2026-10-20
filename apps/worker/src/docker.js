@@ -79,7 +79,7 @@ export async function findAppContainers(appId) {
   return list.map((c) => docker.getContainer(c.Id));
 }
 
-export function containerSpec({ image, name, labels, containerPort, hostPort, memoryMb, cpus, env }) {
+export function containerSpec({ image, name, labels, containerPort, hostPort, memoryMb, cpus, env, volumes = [] }) {
   const cport = `${containerPort}/tcp`;
   return {
     Image: image,
@@ -101,6 +101,9 @@ export function containerSpec({ image, name, labels, containerPort, hostPort, me
       // Deliberately NOT set (administrator's decision): `no-new-privileges` and a capability drop. A repository may legitimately need to
       // elevate (sudo or setuid programs, low ports, chown in an entrypoint), and Shipdok cannot know that in advance.
       PidsLimit: 512,
+      // Persistent storage: Docker NAMED volumes, never host paths. A volume given with a name is the app's real data; without a name Docker
+      // makes a throwaway (anonymous) one, which is what a candidate gets so that the old version's data is not touched while both run.
+      ...(volumes.length ? { Mounts: volumes.map((v) => ({ Type: "volume", Target: v.path, ...(v.name ? { Source: v.name } : {}) })) } : {}),
     },
   };
 }
@@ -398,7 +401,8 @@ export async function removeContainerStrict(c) {
 
 export async function removeQuietly(c) {
   try {
-    await c.remove({ force: true });
+    // `v` removes the container's ANONYMOUS volumes (the throwaway ones of a candidate). Named volumes are never removed by it.
+    await c.remove({ force: true, v: true });
   } catch {
     /* already gone */
   }
@@ -417,4 +421,32 @@ export function parseEnvFile(text) {
     out.push(`${m[1]}=${v}`);
   }
   return out;
+}
+
+// ---- Volumes (persistent storage). Only ever ones Shipdok made: named shipdok-vol-<id> AND carrying the ownership label. ----
+const VOLUME_NAME_RE = /^shipdok-vol-[A-Za-z0-9-]{1,64}$/;
+
+/** Creates the volume if it does not exist (Docker answers with the existing one otherwise), with the ownership labels. */
+export const ensureVolume = ({ name, labels }, { docker: d = docker } = {}) => d.createVolume({ Name: name, Labels: labels });
+
+/** Removes one volume and its data. 'removed', 'gone' (it was not there) or 'in-use' (a container still uses it); a volume that is not Shipdok's is refused. */
+export async function removeVolumeStrict(name, { docker: d = docker } = {}) {
+  if (!VOLUME_NAME_RE.test(name)) throw new Error('That volume does not belong to Shipdok');
+  const volume = d.getVolume(name);
+  let info;
+  try {
+    info = await volume.inspect();
+  } catch (err) {
+    if (err.statusCode === 404) return 'gone';
+    throw err;
+  }
+  if (info?.Labels?.[LABEL.managed] !== 'true') throw new Error('That volume does not belong to Shipdok');
+  try {
+    await volume.remove();
+    return 'removed';
+  } catch (err) {
+    if (err.statusCode === 404) return 'gone';
+    if (err.statusCode === 409) return 'in-use';
+    throw err;
+  }
 }

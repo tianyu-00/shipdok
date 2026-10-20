@@ -7,6 +7,7 @@ the folder, so a different folder means an empty installation).
 - [Upgrade](#upgrade)
 - [Backup](#backup)
 - [Restore](#restore)
+- [Persistent storage of your apps](#persistent-storage-of-your-apps)
 - [Forgot the password](#forgot-the-password)
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
@@ -119,6 +120,49 @@ machine, so be sure the backup is good:
 ```bash
 docker compose down -v
 ```
+
+## Persistent storage of your apps
+
+An app's files normally disappear when it is redeployed, because a new container replaces the old one. To keep files (uploads, a SQLite
+database), list the folders to keep in the app's **Settings → Persistent storage**. Each becomes a Docker volume that every version of the app
+mounts, so the files survive redeploys, rollbacks, restarts and image clean-ups.
+
+- **It applies from the next deployment.** The first deployment after you add a path creates the volume. Image files that already exist at that
+  path are copied into the new volume once.
+- **A new version is first checked with a throwaway volume**, not your real one, so the old version's data is not touched while both run.
+- **Rolling back does not roll back the data.** Only the image and the settings go back.
+- **Do not persist the folder your app's code lives in** (often `/app` or `/usr/src/app`). The volume keeps an old copy of the code and hides
+  every new deployment's code behind it, so new pushes keep running old code. Use a data folder such as `/data` or `/app/data`. The dashboard
+  warns when you type one of the common code folders (it does not block it).
+- **Permissions:** if your app runs as a non-root user, create the folder in your Dockerfile and give that user ownership
+  (`RUN mkdir -p /data && chown app:app /data`), or the app cannot write to it.
+- **Removing a path never deletes data.** The volume is kept (shown as "kept but not mounted"), and adding the same path again brings it back.
+- **Deleting an app keeps its volumes by default.** They stay listed on the **Storage** page as "Volumes kept without an app". Tick "Also permanently
+  delete its volumes" in the delete dialog to remove them with the app, or delete one later from the Storage page. Deleting is permanent.
+- **Image clean-up and log deletion never touch volumes.**
+
+**Back up a volume.** Shipdok does not back up your apps' volumes. The Docker name of each volume (`shipdok-vol-...`) is shown under its path in
+Settings. Stop the app first if it writes continuously, then, in a folder you control:
+
+```bash
+umask 077
+```
+
+```bash
+docker run --rm -v shipdok-vol-XXXX:/data:ro -v "$PWD":/backup alpine tar czf /backup/my-app-data.tgz -C /data .
+```
+
+```bash
+chmod 600 my-app-data.tgz
+```
+
+**Restore** into an empty volume (for example a new app's, after its first deployment created it):
+
+```bash
+docker run --rm -v shipdok-vol-XXXX:/data -v "$PWD":/backup alpine tar xzf /backup/my-app-data.tgz -C /data
+```
+
+Backups of app data can hold anything your app stores, so keep them private. They are separate from the [platform backup](#backup).
 
 ## Forgot the password
 

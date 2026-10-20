@@ -2,7 +2,7 @@
 // the state you asked for, which is success for us, while every other error must still surface.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { stopContainer, startContainer, restartContainer, isRunning, run } from '../src/docker.js';
+import { stopContainer, startContainer, restartContainer, isRunning, run, removeQuietly, ensureVolume, removeVolumeStrict } from '../src/docker.js';
 
 const dockerError = (statusCode, message = 'boom') => Object.assign(new Error(message), { statusCode });
 
@@ -84,5 +84,42 @@ describe('run() with a log sink', () => {
     const ctl = new AbortController();
     setTimeout(() => ctl.abort(), 100);
     await assert.rejects(run('sleep', ['30'], { sink: collect(), signal: ctl.signal }), (e) => e.name === 'AbortError');
+  });
+});
+
+describe('volumes', () => {
+  test('removing a container also removes ITS anonymous volumes (the throwaway ones of a candidate); named volumes are never named in the call', async () => {
+    let opts;
+    await removeQuietly({ remove: async (o) => { opts = o; } });
+    assert.deepEqual(opts, { force: true, v: true });
+  });
+
+  test('ensureVolume creates it with its name and labels (and is happy if it exists: Docker answers with the existing one)', async () => {
+    let made;
+    await ensureVolume({ name: 'shipdok-vol-abc', labels: { 'shipdok.managed': 'true' } }, { docker: { createVolume: async (o) => { made = o; } } });
+    assert.deepEqual(made, { Name: 'shipdok-vol-abc', Labels: { 'shipdok.managed': 'true' } });
+  });
+
+  const dockerWith = (inspect, remove = async () => {}) => ({ getVolume: () => ({ inspect, remove }) });
+  test('removeVolumeStrict removes only a volume Shipdok made', async () => {
+    let removed = 0;
+    const d = dockerWith(async () => ({ Labels: { 'shipdok.managed': 'true' } }), async () => { removed += 1; });
+    assert.equal(await removeVolumeStrict('shipdok-vol-abc', { docker: d }), 'removed');
+    assert.equal(removed, 1);
+  });
+  test('a volume without the ownership label is refused, and not touched', async () => {
+    let removed = 0;
+    const d = dockerWith(async () => ({ Labels: { other: '1' } }), async () => { removed += 1; });
+    await assert.rejects(removeVolumeStrict('shipdok-vol-nolabel', { docker: d }), /does not belong to Shipdok/);
+    assert.equal(removed, 0);
+  });
+  test('a name that is not one of ours is refused before Docker is asked', async () => {
+    await assert.rejects(removeVolumeStrict('my-database', { docker: dockerWith(async () => { throw new Error('asked'); }) }), /does not belong to Shipdok/);
+  });
+  test('gone (404) and in use (409) are told apart; anything else surfaces', async () => {
+    const err = (code) => Object.assign(new Error('x'), { statusCode: code });
+    assert.equal(await removeVolumeStrict('shipdok-vol-a', { docker: dockerWith(async () => { throw err(404); }) }), 'gone');
+    assert.equal(await removeVolumeStrict('shipdok-vol-a', { docker: dockerWith(async () => ({ Labels: { 'shipdok.managed': 'true' } }), async () => { throw err(409); }) }), 'in-use');
+    await assert.rejects(removeVolumeStrict('shipdok-vol-a', { docker: dockerWith(async () => { throw err(500); }) }));
   });
 });

@@ -75,3 +75,17 @@ test('a deleteapp job goes to its own processor, with the app marked busy', asyn
   assert.deepEqual(calls, [['delete', 'a9']]);
   assert.deepEqual(marks, ['a9']);
 });
+
+test('a removevolume job goes to its own processor (it has no app, so nothing is marked busy)', async () => {
+  const calls = [];
+  const marks = [];
+  const activity = { run: async (id, fn) => { marks.push(id); return fn(); } };
+  const process = jobProcessor({
+    activity,
+    deploy: async () => calls.push('deploy'), control: async () => calls.push('control'), prune: async () => calls.push('prune'), deleteApp: async () => calls.push('delete'),
+    removeVolume: async (job) => { calls.push(['removevolume', job.data.volumeId]); return 'v'; },
+  });
+  assert.equal(await process({ name: 'removevolume', data: { volumeId: 'v1' } }), 'v');
+  assert.deepEqual(calls, [['removevolume', 'v1']]);
+  assert.deepEqual(marks, []);
+});

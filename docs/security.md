@@ -52,6 +52,8 @@ below exists to make signing in hard for anyone but you, and to limit the damage
   repositories you trust. App containers can reach your local network and the internet like any container on the default Docker network.
 - **No build time limit by default.** A build that never finishes blocks the queue until cancelled. Set a **Build time limit** on each app
   (Settings) to have a runaway clone or build stopped.
+- **App data in persistent storage is not backed up or encrypted by Shipdok.** It is plain files in a Docker volume on the host, readable by
+  anyone who controls Docker. Deleting an app keeps its volumes by default, and deleting a volume is permanent.
 - **The disk.** Builds and logs use disk. The dashboard warns at 20% and 10% free and refuses new builds at 10%, but a build can still fill a disk
   quickly; keep an eye on the Storage page.
 - **No audit of who revealed which variable.** Anyone signed in can reveal and change variables (and can deploy code that reads them anyway).

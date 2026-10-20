@@ -111,7 +111,7 @@ describe('deleting an app', () => {
     const res = await del();
     expect(res.status).toBe(202);
     expect(res.body).toEqual({ deleting: true });
-    expect(queue.add).toHaveBeenCalledWith('deleteapp', { appId: id });
+    expect(queue.add).toHaveBeenCalledWith('deleteapp', { appId: id, deleteVolumes: false });
     const r = await row(id);
     expect(r.deleting_at).not.toBeNull();
     expect(r.desired_state).toBe('stopped');
@@ -207,6 +207,7 @@ describe('an app that is being deleted accepts nothing new', () => {
     ['restart', (a) => a.post(`/api/apps/${'ID'}/restart`)],
     ['retention', (a) => a.put(`/api/apps/${'ID'}/retention`).send({ auto_prune: true })],
     ['settings', (a) => a.put(`/api/apps/${'ID'}`).send({ memory_mb: 256 })],
+    ['persistent storage', (a) => a.put(`/api/apps/${'ID'}/volumes`).send({ paths: ['/data'] })],
   ])('%s is refused with a 409', async (_, call) => {
     const withId = { post: (p, ...r) => agent.post(p.replace('ID', id), ...r) };
     void withId;

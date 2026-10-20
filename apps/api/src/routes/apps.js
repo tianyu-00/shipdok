@@ -6,6 +6,7 @@ import { diskStatus, defaultDiskUsage } from '../disk.js';
 import { listVersions, prunableBytes } from '../images.js';
 import { removeDeploymentLogs } from '@shipdok/shared';
 import { nextFreePort, parsePortRange } from '../ports.js';
+import { mountedVolumes } from '../volumes.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (s) => typeof s === 'string' && UUID_RE.test(s);
@@ -194,6 +195,12 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
     a.settings_pending = snap
       ? SNAPSHOT_SETTINGS.filter((k) => k in snap && (k === 'cpus' ? Number(snap[k]) !== Number(a[k]) : (snap[k] ?? null) !== (a[k] ?? null)))
       : null;
+    // Persistent storage is a list in its own table. A record from before it existed has no list, which means nothing was mounted.
+    if (snap) {
+      const wanted = (await mountedVolumes(db, id)).map((v) => v.path).join('\n');
+      const mounted = (snap.volumes ?? []).map((v) => v.path).sort().join('\n');
+      if (wanted !== mounted) a.settings_pending.push('volumes');
+    }
     return a;
   }
 
@@ -419,6 +426,8 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       const { rows } = await db.query('SELECT id, name, desired_state, deleting_at FROM apps WHERE id = $1', [req.params.id]);
       const app = rows[0];
       if (!app) return res.status(404).json({ error: 'App not found' });
+      const deleteVolumes = req.body?.deleteVolumes === undefined ? false : req.body.deleteVolumes;
+      if (typeof deleteVolumes !== 'boolean') return res.status(400).json({ error: 'deleteVolumes must be true or false' });
       if (typeof req.body?.confirm !== 'string' || req.body.confirm !== app.name) {
         return res.status(400).json({ error: 'Send the exact name of the app as "confirm" to delete it', code: 'confirm_mismatch' });
       }
@@ -430,7 +439,7 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       // Stopped at once, so a push cannot start anything new while the worker gets to the job.
       await db.query(`UPDATE apps SET deleting_at = COALESCE(deleting_at, now()), delete_error = NULL, desired_state = 'stopped', updated_at = now() WHERE id = $1`, [app.id]);
       try {
-        await queue.add('deleteapp', { appId: app.id });
+        await queue.add('deleteapp', { appId: app.id, deleteVolumes });
       } catch (err) {
         console.error('Enqueue failed:', err.message);
         if (!app.deleting_at) await db.query(`UPDATE apps SET deleting_at = NULL, desired_state = $2 WHERE id = $1`, [app.id, app.desired_state]);

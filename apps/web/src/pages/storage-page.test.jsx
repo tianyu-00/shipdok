@@ -3,7 +3,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import StoragePage from './storage-page'
 import { mockApi, answer, renderWithProviders } from '@/test/utils'
-import { makeApp, APP_ID } from '@/test/fixtures'
+import { makeApp, makeVolume, APP_ID } from '@/test/fixtures'
 
 const toasts = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
 vi.mock('sonner', () => ({ toast: toasts, Toaster: () => null }))
@@ -16,7 +16,7 @@ const storage = (over = {}) => ({
   disk: { totalBytes: 100 * 1024 * MB, freeBytes: 60 * 1024 * MB, freePercent: 60, level: 'ok' },
   ...over,
 })
-const routes = (over = {}) => ({ 'GET /api/storage': storage(), 'GET /api/apps': [makeApp()], ...over })
+const routes = (over = {}) => ({ 'GET /api/storage': storage(), 'GET /api/apps': [makeApp()], 'GET /api/volumes': { volumes: [] }, ...over })
 const page = () => renderWithProviders(<StoragePage />, { route: '/storage' })
 
 describe('the storage page', () => {
@@ -110,5 +110,55 @@ describe('deleting an app\'s output logs', () => {
     page()
     await screen.findByRole('link', { name: 'My App' })
     expect(screen.queryByRole('button', { name: 'Delete output logs' })).toBeNull()
+  })
+})
+
+describe('volumes kept without being mounted', () => {
+  const kept = [
+    makeVolume({ id: 'v1', path: '/old', state: 'detached', appName: 'My App', dockerName: 'shipdok-vol-1' }),
+    makeVolume({ id: 'v2', path: '/files', state: 'orphaned', appId: null, appName: 'Shop', dockerName: 'shipdok-vol-2' }),
+  ]
+
+  test('says so when there are none', async () => {
+    mockApi(routes())
+    page()
+    expect(await screen.findByText(/no volumes are being kept/i)).toBeInTheDocument()
+  })
+
+  test('lists each with where it came from, in plain words', async () => {
+    mockApi(routes({ 'GET /api/volumes': { volumes: kept } }))
+    page()
+    const row = (await screen.findByText('/old')).closest('tr')
+    expect(within(row).getByText(/removed from my app/i)).toBeInTheDocument()
+    const orphan = screen.getByText('/files').closest('tr')
+    expect(within(orphan).getByText(/left behind by the deleted app shop/i)).toBeInTheDocument()
+    expect(within(orphan).getByText('shipdok-vol-2')).toBeInTheDocument()
+  })
+
+  test('deleting one asks first, says it is permanent, and then asks the API', async () => {
+    const api = mockApi(routes({ 'GET /api/volumes': { volumes: kept }, 'DELETE /api/volumes/v1': answer(202, { queued: true }) }))
+    page()
+    const row = (await screen.findByText('/old')).closest('tr')
+    await userEvent.click(within(row).getByRole('button', { name: /delete/i }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/permanent/i)).toBeInTheDocument()
+    expect(api.called('DELETE', '/api/volumes/v1')).toHaveLength(0)
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete volume' }))
+    await waitFor(() => expect(api.called('DELETE', '/api/volumes/v1')).toHaveLength(1))
+  })
+
+  test('cancelling sends nothing', async () => {
+    const api = mockApi(routes({ 'GET /api/volumes': { volumes: kept } }))
+    page()
+    const row = (await screen.findByText('/old')).closest('tr')
+    await userEvent.click(within(row).getByRole('button', { name: /delete/i }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Cancel' }))
+    expect(api.called('DELETE', '/api/volumes/v1')).toHaveLength(0)
+  })
+
+  test('a failed removal shows its reason', async () => {
+    mockApi(routes({ 'GET /api/volumes': { volumes: [makeVolume({ id: 'v1', path: '/old', state: 'detached', removeError: 'A container still uses this volume, so it was not removed' })] } }))
+    page()
+    expect(await screen.findByText(/a container still uses this volume/i)).toBeInTheDocument()
   })
 })

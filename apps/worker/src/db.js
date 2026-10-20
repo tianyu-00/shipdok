@@ -364,3 +364,14 @@ export const recordCleanup = (appId, { trigger, removed, freedBytes, skipped, er
      ON CONFLICT (app_id) DO UPDATE
        SET last_run_at = now(), trigger = $2, images_removed = $3, freed_bytes = $4, skipped = $5, error = $6`,
     [appId, trigger, removed, freedBytes, skipped, error]);
+
+// ---- Persistent storage (volumes) ----
+export const listAppVolumes = (appId) => pool.query('SELECT id, container_path, docker_name, state FROM app_volumes WHERE app_id = $1', [appId]).then((r) => r.rows);
+
+// The app is going away and its data is kept: every volume becomes orphaned and remembers the app's name (the app_id link ends with the app).
+export const orphanAppVolumes = (appId) => pool.query(
+  `UPDATE app_volumes SET state = 'orphaned', remove_error = NULL, app_name = COALESCE((SELECT name FROM apps WHERE id = $1), app_name), state_changed_at = now() WHERE app_id = $1`, [appId]);
+
+export const getVolume = (id) => pool.query('SELECT id, app_id, docker_name, state FROM app_volumes WHERE id = $1', [id]).then((r) => r.rows[0] ?? null);
+export const deleteVolumeRow = (id) => pool.query('DELETE FROM app_volumes WHERE id = $1', [id]);
+export const setVolumeRemoveError = (id, message) => pool.query('UPDATE app_volumes SET remove_error = $2 WHERE id = $1', [id, String(message).slice(0, 300)]);

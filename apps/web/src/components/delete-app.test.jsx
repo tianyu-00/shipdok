@@ -3,7 +3,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import SettingsTab from './settings-tab'
 import { mockApi, answer, renderWithProviders } from '@/test/utils'
-import { makeApp, APP_ID } from '@/test/fixtures'
+import { makeApp, makeVolume, APP_ID } from '@/test/fixtures'
 
 const toasts = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
 vi.mock('sonner', () => ({ toast: toasts, Toaster: () => null }))
@@ -70,5 +70,46 @@ describe('deleting an app', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'Delete app' }))
     await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('A deployment is still running. Cancel it first.'))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+})
+
+describe('deleting an app that has persistent storage', () => {
+  const VOLUMES = `GET /api/apps/${APP_ID}/volumes`
+  const openWith = async (volumes) => {
+    const api = mockApi({ [VOLUMES]: { volumes }, [DELETE]: answer(202, { deleting: true }) })
+    renderWithProviders(<SettingsTab app={makeApp()} />)
+    await userEvent.click(screen.getByRole('button', { name: /delete app…/i }))
+    return { api, dialog: await screen.findByRole('dialog') }
+  }
+  const confirm = async (dialog) => {
+    await userEvent.type(within(dialog).getByLabelText(/to confirm/i), 'My App')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete app' }))
+  }
+
+  test('says the data is KEPT by default, and nothing extra is sent', async () => {
+    const { api, dialog } = await openWith([makeVolume({ path: '/data' }), makeVolume({ id: 'v2', path: '/uploads', state: 'detached' })])
+    expect(await within(dialog).findByText(/2 volumes/i)).toBeInTheDocument()
+    expect(within(dialog).getByText(/kept/i)).toBeInTheDocument()
+    const box = within(dialog).getByRole('checkbox', { name: /permanently delete/i })
+    expect(box).not.toBeChecked()
+    await confirm(dialog)
+    await waitFor(() => expect(api.called('DELETE', `/api/apps/${APP_ID}`)).toHaveLength(1))
+    expect(api.called('DELETE', `/api/apps/${APP_ID}`)[0].body).toEqual({ confirm: 'My App' })
+  })
+
+  test('ticking the box sends the explicit choice, with a plain warning next to it', async () => {
+    const { api, dialog } = await openWith([makeVolume({ path: '/data' })])
+    const box = await within(dialog).findByRole('checkbox', { name: /permanently delete/i })
+    expect(within(dialog).getByText(/cannot be undone/i)).toBeInTheDocument()
+    await userEvent.click(box)
+    await confirm(dialog)
+    await waitFor(() => expect(api.called('DELETE', `/api/apps/${APP_ID}`)).toHaveLength(1))
+    expect(api.called('DELETE', `/api/apps/${APP_ID}`)[0].body).toEqual({ confirm: 'My App', deleteVolumes: true })
+  })
+
+  test('an app with no storage gets no such question', async () => {
+    const { dialog } = await openWith([])
+    await new Promise((r) => setTimeout(r, 30))
+    expect(within(dialog).queryByRole('checkbox')).toBeNull()
   })
 })

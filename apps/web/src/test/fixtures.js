@@ -27,3 +27,9 @@ export const makeImages = (versions = [makeVersion()], over = {}) => ({
   keep_previous_images: 1, auto_prune: false, cleanup: null,
   prunableBytes: versions.filter((v) => v.state === 'prunable').reduce((a, v) => a + (v.bytes ?? 0), 0), versions, ...over,
 })
+
+export const makeVolume = (over = {}) => ({
+  id: 'vol-1', path: '/data', state: 'in_use', dockerName: 'shipdok-vol-vol-1', appId: ID, appName: 'My App',
+  createdAt: '2026-10-19T10:00:00Z', stateChangedAt: '2026-10-19T10:00:00Z', removeError: null,
+  ...over,
+})

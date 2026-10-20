@@ -121,6 +121,23 @@ describe('deathCause', () => {
   });
 });
 
+describe('persistent storage in a container spec', () => {
+  const base = { image: 'img', name: 'n', labels: {}, containerPort: 3000, hostPort: '', memoryMb: 256, cpus: 1, env: [] };
+  test('named volumes are mounted by name at the app\'s paths (and only volumes: never a host path)', () => {
+    const spec = containerSpec({ ...base, volumes: [{ path: '/data', name: 'shipdok-vol-abc' }] });
+    assert.deepEqual(spec.HostConfig.Mounts, [{ Type: 'volume', Source: 'shipdok-vol-abc', Target: '/data' }]);
+    assert.ok(!spec.HostConfig.Binds);
+  });
+  test('without a name it is a throwaway volume (Docker makes an anonymous one)', () => {
+    const spec = containerSpec({ ...base, volumes: [{ path: '/data' }] });
+    assert.deepEqual(spec.HostConfig.Mounts, [{ Type: 'volume', Target: '/data' }]);
+  });
+  test('no volumes: no mounts at all', () => {
+    assert.ok(!('Mounts' in containerSpec(base).HostConfig));
+    assert.ok(!('Mounts' in containerSpec({ ...base, volumes: [] }).HostConfig));
+  });
+});
+
 describe('what a new container is created with', () => {
   const spec = containerSpec({
     image: 'img', name: 'n', labels: { a: 'b' }, containerPort: 3000, hostPort: 9100, memoryMb: 256, cpus: 0.5, env: ['A=1'],

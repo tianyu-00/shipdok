@@ -21,6 +21,7 @@ import { createGithubProvider, logRoot } from '@shipdok/shared';
 import { deploymentLogsRouter, appLogsRouter, storageRouter } from './routes/logs.js';
 import { defaultDiskUsage } from './disk.js';
 import { docsGate, docsRouter } from './docs.js';
+import { appVolumesRouter, volumesRouter } from './routes/volumes.js';
 
 // What the API asks about GitHub: the client, the webhook secret, a status. Normally read from the database (the app is connected in the
 // dashboard); tests can pass a fixed client and secret instead.
@@ -93,6 +94,8 @@ export function createApp({
   app.use('/api/auth', authRouter(db));
   app.use('/api/auth', recoveryRouter(db));
   app.use('/api/apps/:id/env', requireAuth, envRouter({ db, secretsKey }));
+  app.use('/api/apps/:id/volumes', requireAuth, appVolumesRouter({ db }));
+  app.use('/api/volumes', requireAuth, volumesRouter({ db, queue }));
   app.use('/api/apps', requireAuth, appsRouter({ db, queue, github: () => provider.client(), logDir, diskUsage, portRange }));
   app.use('/api/apps', requireAuth, appLogsRouter({ db, logDir }));
   app.use('/api/github/connect', githubConnectRouter({ db, provider, secretsKey, settings, fetch: githubFetch })); // before the router below: the callback is a page navigation and answers with redirects
