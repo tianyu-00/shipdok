@@ -23,6 +23,17 @@ const RESERVED = new Set([
 ]);
 export const isReservedEnvName = (name) => RESERVED.has(name) || name.startsWith('SHIPDOK_');
 
+// Where a variable is available. Must match the CHECK constraint in migration 023.
+export const ENV_SCOPES = ['runtime', 'build', 'both'];
+export const reachesBuild = (scope) => scope === 'build' || scope === 'both';
+export const reachesRuntime = (scope) => scope === 'runtime' || scope === 'both';
+
+// A build variable is handed to `docker build --build-arg NAME`, which reads the value from the environment of the docker command itself.
+// So a name must not be one that changes how that command (or the BuildKit client) behaves.
+const BUILD_RESERVED = new Set(['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'TERM', 'PWD', 'LANG', 'TZ']);
+const BUILD_RESERVED_PREFIXES = ['LD_', 'DOCKER_', 'BUILDKIT_', 'BUILDX_', 'COMPOSE_', 'XDG_', 'LC_'];
+export const isReservedBuildName = (name) => BUILD_RESERVED.has(name) || BUILD_RESERVED_PREFIXES.some((p) => name.startsWith(p));
+
 // A GitHub "owner/repo". Dots are legal inside names, but `.` and `..` alone are path segments: left in, a name
 // like `o/..` or `../x` would be normalised away inside a URL. Rejected here, once, for everything that uses it.
 export const REPO_FULL_NAME_RE = /^(?!\.{1,2}\/)[A-Za-z0-9_.-]+\/(?!\.{1,2}$)[A-Za-z0-9_.-]+$/;

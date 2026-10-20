@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseEnvText, isReservedEnvName } from '../src/index.js';
+import { parseEnvText, isReservedEnvName, isReservedBuildName, reachesBuild, reachesRuntime, ENV_SCOPES } from '../src/index.js';
 
 const parse = (t) => parseEnvText(t);
 const asObject = (r) => Object.fromEntries(r.vars.map((v) => [v.key, v.value]));
@@ -99,5 +99,24 @@ describe('isReservedEnvName', () => {
   });
   test('allows ordinary names', () => {
     for (const n of ['DATABASE_URL', 'PORT', 'NODE_ENV', 'API_KEY', 'path', 'SHIPDOKX']) assert.ok(!isReservedEnvName(n), n);
+  });
+});
+
+describe('where a variable is available', () => {
+  test('the scopes are runtime, build and both', () => assert.deepEqual(ENV_SCOPES, ['runtime', 'build', 'both']));
+  test('runtime reaches the container only, build the build only, both reaches both', () => {
+    assert.deepEqual(ENV_SCOPES.map((s) => [reachesRuntime(s), reachesBuild(s)]), [[true, false], [false, true], [true, true]]);
+  });
+  test('anything else reaches nowhere (never by accident)', () => {
+    for (const s of [undefined, null, '', 'Build', 'all']) assert.deepEqual([reachesRuntime(s), reachesBuild(s)], [false, false], String(s));
+  });
+});
+
+describe('isReservedBuildName', () => {
+  test('names that change how docker build runs are reserved', () => {
+    for (const n of ['PATH', 'HOME', 'USER', 'TMPDIR', 'LD_PRELOAD', 'DOCKER_HOST', 'DOCKER_CONFIG', 'BUILDKIT_PROGRESS', 'BUILDX_BUILDER', 'COMPOSE_FILE', 'XDG_CONFIG_HOME', 'LC_ALL', 'LANG']) assert.ok(isReservedBuildName(n), n);
+  });
+  test('ordinary build variables are not', () => {
+    for (const n of ['VITE_API_URL', 'NEXT_PUBLIC_KEY', 'NODE_ENV', 'NPM_TOKEN', 'HTTP_PROXY', 'APP_VERSION', 'MYDOCKER_X']) assert.ok(!isReservedBuildName(n), n);
   });
 });

@@ -7,6 +7,32 @@ before(ready);
 beforeEach(reset);
 after(() => pool.end());
 
+describe('loadAppEnv: where a variable is available', () => {
+  test('runtime goes to the container only, build to docker build only, both to both', async () => {
+    const id = await makeApp();
+    await addVar(id, 'RUN_ONLY', 'r', KEY, 'runtime');
+    await addVar(id, 'BUILD_ONLY', 'b', KEY, 'build');
+    await addVar(id, 'BOTH', 'x', KEY, 'both');
+    const { env, buildEnv, versions } = await loadAppEnv(pool, id, KEY);
+    assert.deepEqual(env, ['BOTH=x', 'RUN_ONLY=r']);
+    assert.deepEqual(buildEnv, ['BOTH=x', 'BUILD_ONLY=b']);
+    assert.deepEqual(Object.keys(versions), ['BOTH', 'BUILD_ONLY', 'RUN_ONLY']); // every variable has a version, whatever its scope
+  });
+
+  test('a variable added without a scope (every one from before this existed) is runtime-only', async () => {
+    const id = await makeApp();
+    await pool.query('INSERT INTO app_env_vars (app_id, key, value_encrypted) VALUES ($1, $2, $3)', [id, 'OLD', (await import('@shipdok/shared')).encryptSecret('v', KEY, (await import('@shipdok/shared')).envVarContext(id, 'OLD'))]);
+    const { env, buildEnv } = await loadAppEnv(pool, id, KEY);
+    assert.deepEqual([env, buildEnv], [['OLD=v'], []]);
+  });
+
+  test('a build-only variable that cannot be decrypted still fails the deployment with its name, never its value', async () => {
+    const id = await makeApp();
+    await addVar(id, 'TOKEN', SECRET, OTHER_KEY, 'build');
+    await assert.rejects(loadAppEnv(pool, id, KEY), (err) => err instanceof EnvDecryptError && err.message.includes('TOKEN') && !err.message.includes(SECRET));
+  });
+});
+
 describe('loadAppEnv', () => {
   test('returns KEY=value pairs ready for Docker, sorted by name, with their versions', async () => {
     const id = await makeApp();
@@ -28,7 +54,7 @@ describe('loadAppEnv', () => {
 
   test('an app with no variables gives empty results', async () => {
     const id = await makeApp();
-    assert.deepEqual(await loadAppEnv(pool, id, KEY), { env: [], versions: {} });
+    assert.deepEqual(await loadAppEnv(pool, id, KEY), { env: [], buildEnv: [], versions: {} });
   });
 
   test('only returns the requested app\'s variables', async () => {

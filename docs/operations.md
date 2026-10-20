@@ -9,6 +9,7 @@ the folder, so a different folder means an empty installation).
 - [Restore](#restore)
 - [Persistent storage of your apps](#persistent-storage-of-your-apps)
 - [Build cache](#build-cache)
+- [Build-time variables](#build-time-variables)
 - [Forgot the password](#forgot-the-password)
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
@@ -184,6 +185,39 @@ only: **no images, containers, volumes or logs**.
 next to **Deploy** on the app page and choose **Deploy without cache…**. That one deployment runs every build step again (`docker build --no-cache`).
 The base image is not downloaded again if it is already on the machine, and the next deployment, or a push, uses the cache as usual. It is not
 available for webhook pushes or rollbacks (a rollback builds nothing).
+
+## Build-time variables
+
+Most variables are for the running app. Some frameworks need a value while the app is **built**: Vite reads `VITE_*` and Next.js reads
+`NEXT_PUBLIC_*` when they bundle the code, and a build may need a token to install private packages. Each variable on the app's **Variables** tab shows a badge
+saying where it is available, and the **Available in** choice is in the pencil (edit) view and on the add form:
+
+- **Runtime** (the default, and what every existing variable is): the running container only.
+- **Build only**: passed to `docker build` as a build argument. The container never sees it.
+- **Build and runtime**: both.
+
+For the build to receive a value, **the Dockerfile must declare it**:
+
+```dockerfile
+ARG VITE_API_URL
+RUN npm run build
+```
+
+A variable the Dockerfile does not declare is simply ignored (Docker may print a warning). The value is available to the `RUN` steps after its `ARG` line.
+
+- **A build variable is baked into the image if the Dockerfile uses it.** `docker history` on the image shows it, and so does anyone who can read the
+  image. Use build variables for public settings such as an API address, not for secrets. Docker itself warns about `ARG` names such as `TOKEN` and
+  `PASSWORD`. (Passing real secrets without baking them in needs BuildKit secrets, which Shipdok does not offer yet.)
+- Values never appear on a command line: they travel in the environment of the `docker build` command, which has only what it needs, none of the
+  worker's own secrets. They are masked (`***`) in the build log, like other variables.
+- Names that change how the build itself runs cannot be build variables (`PATH`, `HOME`, `LANG`, `DOCKER_*`, `BUILDKIT_*`, `LD_*` and a few more); they can
+  still be runtime variables. The dashboard tells you before you save.
+- Changing a variable or its setting applies from the next deployment, like any variable. A changed build variable also makes Docker rebuild from the step
+  that first uses it.
+- You can rename a variable in its edit dialog: the value is kept (it is re-encrypted for the new name on the server), the running app keeps the old name
+  until the next deployment, and a name another variable already has is refused.
+- A pasted **.env** import adds runtime variables, and never changes the setting of a variable that already exists. Rollbacks build nothing, so they ignore
+  build variables.
 
 ## Forgot the password
 

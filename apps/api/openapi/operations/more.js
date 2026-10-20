@@ -15,7 +15,7 @@ export default Object.fromEntries([
   // ---------------------------------------------------------------- variables
   route('GET', '/api/apps/{id}/env', op({
     tag: ENV, summary: 'List an app\'s variables', parameters: [APP_ID],
-    description: 'The names, **never the values** (they are always `********`), and which changes wait for the next deployment.',
+    description: 'The names, where each is available (`scope`), **never the values** (they are always `********`), and which changes wait for the next deployment.',
     responses: { 200: ok('The variables.', ref('EnvList')) }, errors: [404],
   })),
   route('POST', '/api/apps/{id}/env/import', op({
@@ -27,10 +27,10 @@ export default Object.fromEntries([
   })),
   route('PUT', '/api/apps/{id}/env/{key}', op({
     tag: ENV, summary: 'Create or change a variable', parameters: [APP_ID, KEY],
-    description: 'Stores the value encrypted (AES-256-GCM, bound to the app and the name). The running app keeps its old value until the next deployment.',
-    body: { type: 'object', required: ['value'], properties: { value: { type: 'string', description: 'The value; at most 64 KB, no null characters.' } } },
-    responses: { 200: ok('Changed.', { type: 'object', properties: { key: { type: 'string' }, created: { type: 'boolean' }, updated_at: { type: 'string', format: 'date-time' } } }), 201: ok('Created.', { type: 'object', properties: { key: { type: 'string' }, created: { type: 'boolean' }, updated_at: { type: 'string', format: 'date-time' } } }) },
-    errors: { 400: 'A bad name or value, a reserved name, or too many variables.', 404: 'No such app.' },
+    description: 'Stores the value encrypted (AES-256-GCM, bound to the app and the name). The running app keeps its old value until the next deployment. `scope` says where the variable is available: `runtime` (the container; the default for a new variable), `build` (only `docker build --build-arg`; the container never sees it) or `both`. Send a `value`, a `scope`, a `newKey`, or any of them together: a value alone keeps the scope; a scope alone changes where an existing variable is available and keeps its value (404 if there is no such variable). `newKey` renames an existing variable (the value is encrypted for its name, so the server decrypts and encrypts it again, in the same transaction as the rest of the request; the value never leaves the server). The new name follows the same rules as any name, 409 `name_taken` if another variable has it, and the answer says `previous_key`. Until the next deployment the old name counts as removed and the new one as added. A build variable is baked into the image if the Dockerfile uses it (`ARG NAME`), so use it for public configuration, not secrets; some names (`PATH`, `HOME`, `DOCKER_*`, `BUILDKIT_*`, `LD_*`...) cannot be used at build time.',
+    body: { type: 'object', properties: { value: { type: 'string', description: 'The value; at most 64 KB, no null characters. Leave it out to change only the scope.' }, scope: { type: 'string', enum: ['runtime', 'build', 'both'], description: 'Where the variable is available. Default for a new variable: `runtime`; an existing variable keeps its scope when this is left out.' }, newKey: { type: 'string', description: 'Rename the variable to this name (it must already exist, and the new name must be free).' } }, additionalProperties: false },
+    responses: { 200: ok('Changed.', { type: 'object', properties: { key: { type: 'string' }, created: { type: 'boolean' }, scope: { type: 'string', enum: ['runtime', 'build', 'both'] }, previous_key: { type: 'string', description: 'Only after a rename: the name it had.' }, updated_at: { type: 'string', format: 'date-time' } } }), 201: ok('Created.', { type: 'object', properties: { key: { type: 'string' }, created: { type: 'boolean' }, scope: { type: 'string', enum: ['runtime', 'build', 'both'] }, updated_at: { type: 'string', format: 'date-time' } } }) },
+    errors: { 400: 'A bad name, value or scope, a reserved name, a name that cannot be used at build time, nothing to set, or too many variables.', 404: 'No such app, or (with a scope only, or a rename) no such variable.', 409: 'A rename to a name another variable already has (`code: name_taken`).', 500: 'A rename of a stored value that cannot be decrypted (has `APP_SECRETS_KEY` changed?); send a new value with it.' },
   })),
   route('DELETE', '/api/apps/{id}/env/{key}', op({
     tag: ENV, summary: 'Delete a variable', parameters: [APP_ID, KEY],

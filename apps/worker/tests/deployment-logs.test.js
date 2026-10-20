@@ -149,6 +149,25 @@ describe('secrets', () => {
     assert.match(t, /leaked \*\*\* in output/);
   });
 
+  test('a build-time variable\'s value is masked in the file too, and never reaches the container\'s environment', async () => {
+    const appId = await makeApp();
+    await addVar(appId, 'NPM_TOKEN', SECRET, KEY, 'build');
+    await addVar(appId, 'PUBLIC_URL_X', 'https://shop.example.com', KEY, 'both');
+    const depId = await makeDeployment(appId);
+    let given;
+    await processDeployJob(jobFor(appId, depId), deps(async (opts) => {
+      given = opts;
+      opts.log(`npm login with ${SECRET}`);
+      opts.logSink.write('stderr', `#7 RUN echo ${SECRET} https://shop.example.com\n`);
+      return done(opts);
+    }));
+    const t = text(appId, depId);
+    assert.ok(!t.includes(SECRET) && !t.includes('shop.example.com'));
+    assert.ok(t.includes('***'));
+    assert.deepEqual(given.buildEnv, ['NPM_TOKEN=' + SECRET, 'PUBLIC_URL_X=https://shop.example.com']);
+    assert.deepEqual(given.env, ['PUBLIC_URL_X=https://shop.example.com']); // the build-only variable is not in the container
+  });
+
   test('the GitHub installation token is masked, in both forms git may print it', async () => {
     const appId = await makeApp();
     const depId = await makeDeployment(appId);

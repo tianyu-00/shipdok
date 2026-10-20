@@ -359,6 +359,66 @@ describe('the deployment log', () => {
   });
 });
 
+describe('build-time variables', () => {
+  const buildOf = (eng) => eng.runs.find((r) => r.cmd === 'docker' && r.args[0] === 'build');
+
+  test('each one is a --build-arg NAME with no value, and the value is only in docker\'s environment', async () => {
+    const eng = fakeEngine({ previous: [] });
+    await run({ buildEnv: ['VITE_API=https://api.example.com', 'NPM_TOKEN=s3cr3t-token'] }, eng);
+    const b = buildOf(eng);
+    const i = b.args.indexOf('--build-arg');
+    assert.deepEqual(b.args.slice(i, i + 4), ['--build-arg', 'VITE_API', '--build-arg', 'NPM_TOKEN']);
+    assert.ok(!b.args.join(' ').includes('s3cr3t-token') && !b.args.join(' ').includes('api.example.com'), 'no value on the command line');
+    assert.equal(b.opts.env.NPM_TOKEN, 's3cr3t-token');
+    assert.equal(b.opts.env.VITE_API, 'https://api.example.com');
+  });
+
+  test('they are NOT given to the containers', async () => {
+    const eng = fakeEngine({ previous: [] });
+    await run({ env: ['RUN=1'], buildEnv: ['BUILD_ONLY=2'] }, eng);
+    for (const c of eng.created) assert.deepEqual(c.env, ['RUN=1'], c.name);
+  });
+
+  test('docker\'s environment is the short one: no APP_SECRETS_KEY from the worker', async () => {
+    const eng = fakeEngine({ previous: [] });
+    process.env.APP_SECRETS_KEY ??= 'a'.repeat(64);
+    await run({ buildEnv: ['A=1'] }, eng);
+    assert.ok(!('APP_SECRETS_KEY' in buildOf(eng).opts.env));
+    assert.equal(buildOf(eng).opts.env.DOCKER_BUILDKIT, '1');
+  });
+
+  test('the log names them (never a value) and says the Dockerfile must declare them', async () => {
+    const eng = fakeEngine({ previous: [] });
+    const lines = [];
+    await run({ buildEnv: ['TOKEN=topsecretvalue'], log: (m) => lines.push(m) }, eng);
+    const line = lines.find((l) => /build arguments/.test(l));
+    assert.ok(line && line.includes('TOKEN') && /ARG/.test(line) && !line.includes('topsecretvalue'));
+  });
+
+  test('none: no --build-arg and no extra line', async () => {
+    const eng = fakeEngine({ previous: [] });
+    const lines = [];
+    await run({ log: (m) => lines.push(m) }, eng);
+    assert.ok(!buildOf(eng).args.includes('--build-arg'));
+    assert.ok(!lines.some((l) => /build arguments/.test(l)));
+  });
+
+  test('a name that cannot be used fails the deployment before anything is built, naming it', async () => {
+    const eng = fakeEngine({ previous: ['old'] });
+    const r = await run({ buildEnv: ['DOCKER_HOST=tcp://evil:2375'] }, eng);
+    assert.equal(r.ok, false);
+    assert.match(r.error ?? '', /DOCKER_HOST/);
+    assert.ok(!buildOf(eng), 'docker build never ran');
+  });
+
+  test('a rollback builds nothing, so build variables are not looked at', async () => {
+    const eng = fakeEngine({ appId: 'app-1', previous: [] });
+    const r = await run({ reuseImage: 'shipdok/my-app:11111111-1111-4111-8111-111111111111', buildEnv: ['DOCKER_HOST=x'] }, eng);
+    assert.equal(r.ok, true);
+    assert.ok(!buildOf(eng));
+  });
+});
+
 describe('building without the cache', () => {
   const buildOf = (eng) => eng.runs.find((r) => r.cmd === 'docker' && r.args[0] === 'build');
 

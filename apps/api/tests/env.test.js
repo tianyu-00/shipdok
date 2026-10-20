@@ -376,3 +376,245 @@ describe("pending changes", () => {
     expect((await list()).body.pending).toMatchObject({ deployed: true, pending: true, added: ["A"] });
   });
 });
+
+describe("where a variable is available (scope)", () => {
+  const putScoped = (k, body) => agent.put(`/api/apps/${appId}/env/${k}`).send(body).then(track);
+  const scopeOf = async (k) => (await testPool.query("SELECT scope FROM app_env_vars WHERE key = $1", [k])).rows[0]?.scope;
+  const versionOf = async (k) => (await testPool.query("SELECT version::text AS v FROM app_env_vars WHERE key = $1", [k])).rows[0].v;
+  const valueOf = async (k) => (await reveal(k)).body.value;
+
+  test("a new variable is runtime-only unless it says otherwise, and the list shows the scope", async () => {
+    await put("PLAIN", "1");
+    await putScoped("VITE_X", { value: "2", scope: "build" });
+    await putScoped("BOTH_ONE", { value: "3", scope: "both" });
+    const res = await list();
+    expect(res.body.variables.map((v) => [v.key, v.scope])).toEqual([["BOTH_ONE", "both"], ["PLAIN", "runtime"], ["VITE_X", "build"]]);
+    expect(res.body.variables.every((v) => v.value === "********")).toBe(true);
+  });
+
+  test("the answer carries the scope", async () => {
+    const res = await putScoped("A", { value: "1", scope: "both" });
+    expect([res.status, res.body.scope, res.body.created]).toEqual([201, "both", true]);
+  });
+
+  test("a new value keeps the scope the variable has", async () => {
+    await putScoped("A", { value: "1", scope: "build" });
+    await put("A", "2");
+    expect(await scopeOf("A")).toBe("build");
+    expect(await valueOf("A")).toBe("2");
+  });
+
+  test("a scope alone changes where it is available, keeps the value, and gets a new version", async () => {
+    await put("A", "keep-me");
+    const before = await versionOf("A");
+    const res = await putScoped("A", { scope: "both" });
+    expect([res.status, res.body.scope, res.body.created]).toEqual([200, "both", false]);
+    expect(await scopeOf("A")).toBe("both");
+    expect(await valueOf("A")).toBe("keep-me");
+    expect(await versionOf("A")).not.toBe(before);
+  });
+
+  test("the same scope again changes nothing, not even the version", async () => {
+    await putScoped("A", { value: "1", scope: "build" });
+    const before = await versionOf("A");
+    expect((await putScoped("A", { scope: "build" })).status).toBe(200);
+    expect(await versionOf("A")).toBe(before);
+  });
+
+  test("a scope change is a pending change (it applies from the next deployment)", async () => {
+    await put("A", "1");
+    await deployOk();
+    expect((await list()).body.pending.pending).toBe(false);
+    await putScoped("A", { scope: "build" });
+    expect((await list()).body.pending).toMatchObject({ pending: true, changed: ["A"] });
+  });
+
+  test("a scope for a variable that does not exist is a 404, not a new empty variable", async () => {
+    expect((await putScoped("NOPE", { scope: "build" })).status).toBe(404);
+    expect(await scopeOf("NOPE")).toBeUndefined();
+  });
+
+  test("nothing at all to set is refused", async () => {
+    expect((await putScoped("A", {})).status).toBe(400);
+  });
+
+  test("an unknown scope is refused and changes nothing", async () => {
+    await put("A", "1");
+    for (const scope of ["Build", "all", "", null, 1]) expect((await putScoped("A", { scope })).status).toBe(400);
+    expect(await scopeOf("A")).toBe("runtime");
+  });
+
+  test.each(["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "BUILDKIT_PROGRESS", "LD_PRELOAD", "XDG_CONFIG_HOME", "LANG"])(
+    "%s may not be used at build time, whether new or existing",
+    async (name) => {
+      const res = await putScoped(name, { value: "x", scope: "build" });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/reserved|cannot be used at build time/);
+      expect((await putScoped(name, { value: "x", scope: "both" })).status).toBe(400);
+    },
+  );
+
+  test("a name that is only reserved at build time is still fine as a runtime variable", async () => {
+    expect((await put("LANG", "en_US.UTF-8")).status).toBe(201);
+    expect((await putScoped("LANG", { scope: "build" })).status).toBe(400); // an existing runtime variable cannot be moved to build either
+    expect(await scopeOf("LANG")).toBe("runtime");
+  });
+
+  test("a name that is reserved everywhere stays refused, whatever the scope", async () => {
+    expect((await putScoped("SHIPDOK_X", { value: "1", scope: "build" })).status).toBe(400);
+    expect((await put("NODE_OPTIONS", "1")).status).toBe(400);
+  });
+
+  test("an import never changes the scope of a variable that exists, and new ones start as runtime", async () => {
+    await putScoped("VITE_X", { value: "old", scope: "build" });
+    const res = await importText("VITE_X=new\nPLAIN=1\n");
+    expect(res.status).toBe(200);
+    expect(await scopeOf("VITE_X")).toBe("build");
+    expect(await scopeOf("PLAIN")).toBe("runtime");
+    expect(await valueOf("VITE_X")).toBe("new");
+  });
+
+  test("the value of a build variable is encrypted and never listed, like any other", async () => {
+    await putScoped("NPM_TOKEN", { value: SECRET, scope: "build" });
+    const row = (await rows()).find((r) => r.key === "NPM_TOKEN");
+    expect(row.value_encrypted).not.toContain(SECRET);
+    expect(decryptSecret(row.value_encrypted, KEY, envVarContext(appId, "NPM_TOKEN"))).toBe(SECRET);
+    await list();
+    expect(seen.join("\n")).not.toContain(SECRET.slice(0, 12));
+  });
+
+  test("a deployment job never carries a value, only the snapshot's version numbers", async () => {
+    await putScoped("NPM_TOKEN", { value: SECRET, scope: "build" });
+    const dep = (await agent.post(`/api/apps/${appId}/deployments`)).body;
+    expect(JSON.stringify(queue.add.mock.calls.at(-1)[1])).not.toContain(SECRET);
+    expect(JSON.stringify(dep)).not.toContain(SECRET);
+    expect(Object.keys(dep.config_snapshot.env)).toContain("NPM_TOKEN");
+  });
+});
+
+describe("renaming a variable", () => {
+  const edit = (k, body) => agent.put(`/api/apps/${appId}/env/${k}`).send(body).then(track);
+  const keys = async () => (await testPool.query("SELECT key FROM app_env_vars ORDER BY key")).rows.map((r) => r.key);
+  const row = async (k) => (await testPool.query("SELECT scope, value_encrypted, version::text AS version FROM app_env_vars WHERE key = $1", [k])).rows[0];
+  const valueOf = async (k) => (await reveal(k)).body.value;
+
+  test("renames, keeping the value and the scope, and says what it was called", async () => {
+    await edit("OLD_NAME", { value: "keep-me", scope: "build" });
+    const res = await edit("OLD_NAME", { newKey: "NEW_NAME" });
+    expect([res.status, res.body.key, res.body.previous_key, res.body.scope, res.body.created]).toEqual([200, "NEW_NAME", "OLD_NAME", "build", false]);
+    expect(await keys()).toEqual(["NEW_NAME"]);
+    expect(await valueOf("NEW_NAME")).toBe("keep-me");
+    expect((await row("NEW_NAME")).scope).toBe("build");
+  });
+
+  test("the value is encrypted again for the new name (it only decrypts under it), and never shown", async () => {
+    await put("OLD_NAME", SECRET);
+    await edit("OLD_NAME", { newKey: "NEW_NAME" });
+    const token = (await row("NEW_NAME")).value_encrypted;
+    expect(decryptSecret(token, KEY, envVarContext(appId, "NEW_NAME"))).toBe(SECRET);
+    expect(() => decryptSecret(token, KEY, envVarContext(appId, "OLD_NAME"))).toThrow();
+    expect(seen.join("\n")).not.toContain(SECRET);
+  });
+
+  test("a new name can come with a new value and a new scope in the same request", async () => {
+    await edit("A", { value: "old", scope: "runtime" });
+    const res = await edit("A", { newKey: "B", value: "fresh", scope: "both" });
+    expect([res.status, res.body.key, res.body.scope]).toEqual([200, "B", "both"]);
+    expect(await keys()).toEqual(["B"]);
+    expect(await valueOf("B")).toBe("fresh");
+    expect((await row("B")).scope).toBe("both");
+  });
+
+  test("the version changes, so it is a pending change", async () => {
+    await put("A", "1");
+    const before = (await row("A")).version;
+    await edit("A", { newKey: "B" });
+    expect((await row("B")).version).not.toBe(before);
+  });
+
+  test("after a deployment the old name shows as removed and the new one as added", async () => {
+    await put("A", "1");
+    await deployOk();
+    await edit("A", { newKey: "B" });
+    expect((await list()).body.pending).toMatchObject({ pending: true, added: ["B"], removed: ["A"], changed: [] });
+  });
+
+  test("a name that is already taken is a 409 and nothing changes, not even the other variable", async () => {
+    await put("A", "a-value");
+    await put("B", "b-value");
+    const res = await edit("A", { newKey: "B", value: "overwrite?" });
+    expect([res.status, res.body.code]).toEqual([409, "name_taken"]);
+    expect(await keys()).toEqual(["A", "B"]);
+    expect(await valueOf("A")).toBe("a-value");
+    expect(await valueOf("B")).toBe("b-value");
+  });
+
+  test("renaming a variable that does not exist is a 404, and creates nothing", async () => {
+    expect((await edit("NOPE", { newKey: "OTHER" })).status).toBe(404);
+    expect((await edit("NOPE", { newKey: "OTHER", value: "x" })).status).toBe(404); // a rename never makes a new variable
+    expect(await keys()).toEqual([]);
+  });
+
+  test("the new name follows the same rules as any name", async () => {
+    await put("A", "1");
+    for (const newKey of ["1BAD", "has-dash", "", "PATH", "NODE_OPTIONS", "SHIPDOK_X", "x".repeat(129)]) {
+      expect((await edit("A", { newKey })).status).toBe(400);
+    }
+    expect((await edit("A", { newKey: 5 })).status).toBe(400);
+    expect(await keys()).toEqual(["A"]);
+  });
+
+  test("a name that cannot be used at build time is refused when the variable reaches the build, and fine for runtime", async () => {
+    await edit("BUILD_ONE", { value: "1", scope: "build" });
+    const refused = await edit("BUILD_ONE", { newKey: "LANG" });
+    expect([refused.status, refused.body.error]).toEqual([400, expect.stringMatching(/cannot be used at build time/)]);
+    expect((await edit("BUILD_ONE", { newKey: "LANG", scope: "both" })).status).toBe(400);
+    expect(await keys()).toEqual(["BUILD_ONE"]);
+    // moving it to runtime in the same request is fine
+    expect((await edit("BUILD_ONE", { newKey: "LANG", scope: "runtime" })).status).toBe(200);
+    // and a runtime variable may take such a name
+    await put("PLAIN", "1");
+    expect((await edit("PLAIN", { newKey: "TZ" })).status).toBe(200);
+  });
+
+  test("renaming to its own name is an ordinary edit, not a conflict", async () => {
+    await put("A", "1");
+    const res = await edit("A", { newKey: "A", value: "2" });
+    expect([res.status, res.body.key, res.body.previous_key]).toEqual([200, "A", undefined]);
+    expect(await valueOf("A")).toBe("2");
+    expect((await edit("A", { newKey: "A" })).status).toBe(400); // nothing to change
+  });
+
+  test("two requests renaming to the same name: exactly one wins", async () => {
+    await put("A", "a");
+    await put("B", "b");
+    const results = await Promise.all([edit("A", { newKey: "C" }), edit("B", { newKey: "C" })]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect((await keys()).filter((k) => k === "C")).toHaveLength(1);
+    expect(await keys()).toHaveLength(2);
+  });
+
+  test("a value that cannot be decrypted cannot be carried over, but a new value renames it fine; neither leaks anything", async () => {
+    jest.spyOn(console, "error").mockImplementation(() => {}); // the route logs (without any name or value) that it could not decrypt
+    await testPool.query("INSERT INTO app_env_vars (app_id, key, value_encrypted) VALUES ($1, 'BROKEN', 'v1:aaaa:bbbb:cccc')", [appId]);
+    const refused = await edit("BROKEN", { newKey: "FIXED" });
+    expect(refused.status).toBe(500);
+    expect(refused.text).toMatch(/APP_SECRETS_KEY/);
+    expect(await keys()).toEqual(["BROKEN"]); // nothing changed
+    const ok = await edit("BROKEN", { newKey: "FIXED", value: SECRET });
+    expect(ok.status).toBe(200);
+    expect(await valueOf("FIXED")).toBe(SECRET);
+  });
+
+  test("it needs the same session as everything else", async () => {
+    await put("A", "1");
+    const res = await request(app).put(`/api/apps/${appId}/env/A`).send({ newKey: "B" });
+    expect(res.status).toBe(401);
+    expect(await keys()).toEqual(["A"]);
+  });
+
+  test("a request with nothing in it is still refused", async () => {
+    await put("A", "1");
+    expect((await edit("A", {})).status).toBe(400);
+  });
+});

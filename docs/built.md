@@ -575,6 +575,44 @@ Newest work is at the bottom of the Milestone 6 entries. SPEC.md is the target d
   with the same options), a build running WHILE a clean-up is requested (the queue serialises them; BuildKit also protects entries a running build holds), and the card at phone
   width. Known limits: the measurement is up to 5 minutes old, and a clean-up done outside Shipdok shows only at the next look; "Deploy without cache" does not also offer
   "and start" for a stopped app (it stays stopped, like Deploy); no per-app cache.
+- **Build-time variables (verified with the real worker engine and a real `docker build` against a throwaway Docker-in-Docker daemon, and in unit tests; the variables dialog was also looked at in a real browser):**
+  **Administrator's decisions (all "your suggestions"): build ARGUMENTS only (BuildKit secrets are a possible later step); a scope on each existing variable (Runtime / Build only /
+  Build and runtime) instead of a separate list; names that change how the build runs are refused for Build and Both; a pasted `.env` import stays runtime-only.** Column
+  `app_env_vars.scope` (migration 023, CHECK runtime/build/both, default `runtime`, so every existing variable is unchanged); a scope change gets a new version number like a change
+  of value, so "pending changes" shows it. `packages/shared` constants: `ENV_SCOPES`, `reachesBuild`, `reachesRuntime`, `isReservedBuildName` (`PATH HOME USER LOGNAME SHELL TMPDIR
+  TERM PWD LANG TZ` and the prefixes `LD_ DOCKER_ BUILDKIT_ BUILDX_ COMPOSE_ XDG_ LC_`; names reserved for every scope, like `NODE_OPTIONS`, keep their older message). API:
+  `PUT /api/apps/:id/env/:key` takes `{value?, scope?}` (a value alone keeps the scope and a new variable starts `runtime`; a scope alone changes where an EXISTING variable is
+  available and keeps its value, 404 if it does not exist, no version bump when the scope is the same; unknown scope or a reserved build name = 400); `GET` lists `scope`; an import
+  never changes the scope of a variable that exists. Worker: `loadAppEnv` returns `env` (runtime/both, for the container), `buildEnv` (build/both) and `versions` for every
+  variable; `buildenv.js` `dockerBuildEnvironment` turns `buildEnv` into `--build-arg NAME` (NO value on the command line, so nothing shows in `ps`) and an environment for the
+  docker command made from a short list (PATH, HOME, DOCKER_*, BUILDKIT_*, BUILDX_*, XDG_*, proxies, locale...) plus the build variables, so the worker's own secrets
+  (`APP_SECRETS_KEY`, database and Redis passwords) never reach it; `DOCKER_BUILDKIT=1` is always set; a bad name fails the deployment before anything is built, naming the
+  variable and never its value; the build log says which names were passed and that the Dockerfile must declare them with `ARG`; build values are masked `***` in the log like
+  runtime ones; a rollback builds nothing and ignores them. Dashboard: Variables tab has an "Available in" choice on the add form (always sent, so adding an existing name sets
+  the scope you chose), a badge beside each name (Runtime muted; Build and Build + runtime highlighted, since both reach the build), the scope choice shown only in the Edit dialog (pencil) next to the value, drawn like the other dialogs (an earlier inline edit panel inside the table looked cramped and was cut off on a phone; checked in headless Chromium, light and dark, at 1200 and 390 px) - only what changed is sent (a value alone, a scope alone, or both), nothing can be saved until something changes, a reserved name cannot be moved to the build, and the "baked into the image" note is an amber notice (`role=note`) like the pending-changes bar, a note (shown for Build and Both) that a used build argument is baked into the image
+  and readable from its history, an immediate refusal of the reserved names, and the note that an imported `.env` is added as runtime variables (`lib/env-scope.js`, mirrors the
+  API rules). Docs: `docs/operations.md` "Build-time variables" (with the `ARG` example), `docs/security.md`. **Checked for real:** a Dockerfile with `ARG VITE_API`,
+  `ARG NPM_TOKEN`, `ARG NEVER_USED` built through the worker's own `run` with the arguments and environment `dockerBuildEnvironment` produced: both used values reached a `RUN`
+  step (`api=https://api.example.com`, token length 33); over 176 looks at the process list the value never appeared in any command line; `APP_SECRETS_KEY` set in the
+  "worker" was not in docker's environment; the container started from the image had none of the build variables in its environment; `docker history` DID contain the token (the
+  baked-in caveat the dashboard states; Docker itself warns about `ARG NPM_TOKEN` as "sensitive data"). Mutation-proofed in all three layers (23 mutants: build variable also given to
+  the container, never reaching the build, value on the command line, the worker's whole environment passed, reserved names unchecked, build values unmasked, `buildEnv` not handed
+  on, BUILDKIT not forced, value-only PUT resetting the scope, an import changing it, scope change without a new version, a same-scope change bumping it, reserved build names
+  allowed, unknown scope allowed, scope missing from the list, a scope-only PUT creating a variable, and the form sending or hiding the wrong things). **Not tested:** a real
+  push-triggered deployment that uses a build variable (the deploy step is covered with a fake engine and the build step by hand with the same arguments), a real browser pass of the
+  new controls (jsdom only), the Pi, BuildKit secrets (not built). Known limits: Docker only passes an argument the Dockerfile declares (an undeclared one is ignored, with
+  Docker's own warning); the same name cannot be both a build and a runtime variable with DIFFERENT values (one variable, one value: use "Build and runtime" for the same value); a
+  build variable changes the image, so a deployment with a changed one rebuilds from the step that uses it.
+ **Rename (added after the first version; verified in tests with a real database and in a real browser):** `PUT /api/apps/:id/env/:key` also takes `newKey`. The name is part of what the value is
+  encrypted for (`env:<appId>:<name>`), so the server decrypts the stored value and encrypts it again for the new name, in the SAME transaction as any value or scope sent with it (all or
+  nothing, one request, no half-renamed variable); the value never leaves the server. The new name follows the usual rules (shape, names reserved everywhere, and the build-reserved names
+  when the resulting scope reaches the build); a name another variable has is a 409 `name_taken` (the primary key decides, so two requests racing for one name let exactly one in); a
+  variable that does not exist is a 404 (a rename never creates one); a stored value that cannot be decrypted (APP_SECRETS_KEY changed) cannot be carried over, 500 with a plain message
+  and nothing changed, but renaming WITH a new value works; the version is bumped, so until the next deployment the old name shows as removed and the new as added (accurate: the
+  running app still has the old name); the answer carries `previous_key`. Dashboard: a Name field at the top of the Edit dialog (trimmed; nothing to save until something changes; shape
+  checked at once; a build name rule on the NEW name; a note that the running app keeps the old name until the next deployment; a 409 is shown and the dialog stays open). Mutation-proofed
+  (10 API and 7 web mutants; removing the explicit "taken" check was an equivalent mutant, so the redundant check was dropped and the primary key does the work). Not tested: a rename of a
+  variable that a running app reads while a deployment is building (the running container is unaffected by design).
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Earlier "Next" notes (Milestone 6 build order, as written before the split)

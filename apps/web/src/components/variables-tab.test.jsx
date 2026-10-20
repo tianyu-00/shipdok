@@ -93,7 +93,7 @@ describe('changing variables', () => {
     await userEvent.type(screen.getByLabelText('Value'), 'v@lue')
     await userEvent.click(screen.getByRole('button', { name: 'Add or update' }))
     expect(await screen.findByText('NEW_KEY')).toBeInTheDocument()
-    expect(api.called('PUT', `/api/apps/${APP_ID}/env/NEW_KEY`)[0].body).toEqual({ value: 'v@lue' })
+    expect(api.called('PUT', `/api/apps/${APP_ID}/env/NEW_KEY`)[0].body).toEqual({ value: 'v@lue', scope: 'runtime' })
     expect(screen.getByLabelText('Name')).toHaveValue('')
     expect(screen.getByLabelText('Value')).toHaveValue('')
   })
@@ -197,5 +197,319 @@ describe('importing a .env file', () => {
     tab()
     await open()
     expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled()
+  })
+})
+
+describe('where a variable is available', () => {
+  const scoped = (...pairs) => pairs.map(([key, scope]) => ({ key, scope, value: '********', updated_at: '2026-10-19T11:00:00Z' }))
+  const PUT = (k) => `PUT /api/apps/${APP_ID}/env/${k}`
+  const BASE = (k) => `/api/apps/${APP_ID}/env/${k}`
+  const badge = (key) => within(screen.getByText(key).closest('td')).getByTestId('scope-badge')
+  const edit = async (key) => userEvent.click(await screen.findByLabelText(`Edit ${key}`))
+  const save = () => userEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+  test('a badge beside each name says where it is available; a variable from before scopes existed is runtime', async () => {
+    mockApi({ [ENV]: { variables: [...scoped(['VITE_X', 'build'], ['BOTH_ONE', 'both'], ['RUN_ONE', 'runtime']), ...vars('OLD')], pending: idle } })
+    tab()
+    await screen.findByText('VITE_X')
+    expect([badge('VITE_X'), badge('BOTH_ONE'), badge('RUN_ONE'), badge('OLD')].map((b) => b.textContent)).toEqual(['Build', 'Build + runtime', 'Runtime', 'Runtime'])
+    expect(badge('VITE_X').className).toMatch(/text-primary/)
+    expect(badge('BOTH_ONE').className).toMatch(/text-primary/)
+    expect(badge('RUN_ONE').className).toMatch(/text-muted-foreground/)
+  })
+
+  test('the row itself has no scope dropdown and the table no "Available in" column: that is only in the edit view', async () => {
+    mockApi({ [ENV]: { variables: scoped(['A', 'build']), pending: idle } })
+    tab()
+    await screen.findByText('A')
+    expect(screen.queryByLabelText('Where A is available')).toBeNull()
+    expect(screen.queryByRole('columnheader', { name: 'Available in' })).toBeNull()
+    await edit('A')
+    expect(screen.getByLabelText('Where A is available')).toHaveValue('build')
+  })
+
+  test('editing starts from the current scope and nothing can be saved until something changes', async () => {
+    mockApi({ [ENV]: { variables: scoped(['A', 'both']), pending: idle } })
+    tab()
+    await edit('A')
+    expect(screen.getByLabelText('Where A is available')).toHaveValue('both')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    await userEvent.selectOptions(screen.getByLabelText('Where A is available'), 'runtime')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+    await userEvent.selectOptions(screen.getByLabelText('Where A is available'), 'both')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled() // back to what it was
+  })
+
+  test('changing only the scope sends the scope alone: the value is never needed', async () => {
+    const api = mockApi({ [ENV]: { variables: scoped(['A', 'runtime']), pending: idle }, [PUT('A')]: { key: 'A', scope: 'both' } })
+    tab()
+    await edit('A')
+    await userEvent.selectOptions(screen.getByLabelText('Where A is available'), 'both')
+    await save()
+    await waitFor(() => expect(api.called('PUT', BASE('A'))).toHaveLength(1))
+    expect(api.called('PUT', BASE('A'))[0].body).toEqual({ scope: 'both' })
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('A saved'))
+  })
+
+  test('changing only the value sends the value alone: the scope is kept', async () => {
+    const api = mockApi({ [ENV]: { variables: scoped(['A', 'build']), pending: idle }, [PUT('A')]: { key: 'A', created: false, scope: 'build' } })
+    tab()
+    await edit('A')
+    await userEvent.type(screen.getByLabelText('New value for A'), 'new')
+    await save()
+    await waitFor(() => expect(api.called('PUT', BASE('A'))).toHaveLength(1))
+    expect(api.called('PUT', BASE('A'))[0].body).toEqual({ value: 'new' })
+  })
+
+  test('changing both sends both', async () => {
+    const api = mockApi({ [ENV]: { variables: scoped(['A', 'runtime']), pending: idle }, [PUT('A')]: { key: 'A', created: false, scope: 'build' } })
+    tab()
+    await edit('A')
+    await userEvent.type(screen.getByLabelText('New value for A'), 'new')
+    await userEvent.selectOptions(screen.getByLabelText('Where A is available'), 'build')
+    await save()
+    await waitFor(() => expect(api.called('PUT', BASE('A'))).toHaveLength(1))
+    expect(api.called('PUT', BASE('A'))[0].body).toEqual({ value: 'new', scope: 'build' })
+  })
+
+  test('a value that was typed and then cleared is an empty value, not "unchanged"', async () => {
+    const api = mockApi({ [ENV]: { variables: scoped(['A', 'runtime']), pending: idle }, [PUT('A')]: { key: 'A', created: false, scope: 'runtime' } })
+    tab()
+    await edit('A')
+    await userEvent.type(screen.getByLabelText('New value for A'), 'x')
+    await userEvent.clear(screen.getByLabelText('New value for A'))
+    await save()
+    await waitFor(() => expect(api.called('PUT', BASE('A'))).toHaveLength(1))
+    expect(api.called('PUT', BASE('A'))[0].body).toEqual({ value: '' })
+  })
+
+  test('cancel discards the changes, and editing again starts from the saved state', async () => {
+    const api = mockApi({ [ENV]: { variables: scoped(['A', 'runtime']), pending: idle } })
+    tab()
+    await edit('A')
+    await userEvent.type(screen.getByLabelText('New value for A'), 'typed')
+    await userEvent.selectOptions(screen.getByLabelText('Where A is available'), 'build')
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByLabelText('New value for A')).toBeNull()
+    expect(api.called('PUT', BASE('A'))).toHaveLength(0)
+    await edit('A')
+    expect(screen.getByLabelText('New value for A')).toHaveValue('')
+    expect(screen.getByLabelText('Where A is available')).toHaveValue('runtime')
+  })
+
+  test('a refusal from the API is shown and the edit stays open', async () => {
+    mockApi({ [ENV]: { variables: scoped(['A', 'runtime']), pending: idle }, [PUT('A')]: answer(400, { error: 'A cannot be used at build time' }) })
+    tab()
+    await edit('A')
+    await userEvent.selectOptions(screen.getByLabelText('Where A is available'), 'build')
+    await save()
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('A cannot be used at build time'))
+    expect(screen.getByLabelText('Where A is available')).toBeInTheDocument()
+  })
+
+  test('moving a variable to the build explains that it is baked into the image; runtime does not', async () => {
+    mockApi({ [ENV]: { variables: scoped(['A', 'runtime']), pending: idle } })
+    tab()
+    await edit('A')
+    expect(screen.queryByText(/baked into the image/)).toBeNull()
+    await userEvent.selectOptions(screen.getByLabelText('Where A is available'), 'build')
+    expect(screen.getByText(/baked into the image/)).toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByLabelText('Where A is available'), 'runtime')
+    expect(screen.queryByText(/baked into the image/)).toBeNull()
+  })
+
+  test('a runtime variable whose name cannot be used at build time cannot be moved there, but can still be edited', async () => {
+    const api = mockApi({ [ENV]: { variables: scoped(['LANG', 'runtime']), pending: idle }, [PUT('LANG')]: { key: 'LANG', created: false, scope: 'runtime' } })
+    tab()
+    await edit('LANG')
+    await userEvent.selectOptions(screen.getByLabelText('Where LANG is available'), 'build')
+    expect(screen.getByRole('alert')).toHaveTextContent(/LANG cannot be used at build time/)
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    await userEvent.selectOptions(screen.getByLabelText('Where LANG is available'), 'runtime')
+    await userEvent.type(screen.getByLabelText('New value for LANG'), 'C.UTF-8')
+    expect(screen.queryByRole('alert')).toBeNull()
+    await save()
+    await waitFor(() => expect(api.called('PUT', BASE('LANG'))).toHaveLength(1))
+    expect(api.called('PUT', BASE('LANG'))[0].body).toEqual({ value: 'C.UTF-8' })
+  })
+
+  test('a new variable is runtime-only by default, and the scope chosen in the form is sent', async () => {
+    const api = mockApi({ [ENV]: { variables: [], pending: idle }, [PUT('VITE_API_URL')]: answer(201, { key: 'VITE_API_URL', created: true, scope: 'build' }) })
+    tab()
+    expect(await screen.findByLabelText('Available in')).toHaveValue('runtime')
+    await userEvent.type(screen.getByLabelText('Name'), 'VITE_API_URL')
+    await userEvent.type(screen.getByLabelText('Value'), 'https://api.example.com')
+    await userEvent.selectOptions(screen.getByLabelText('Available in'), 'build')
+    await userEvent.click(screen.getByRole('button', { name: 'Add or update' }))
+    await waitFor(() => expect(api.called('PUT', BASE('VITE_API_URL'))).toHaveLength(1))
+    expect(api.called('PUT', BASE('VITE_API_URL'))[0].body).toEqual({ value: 'https://api.example.com', scope: 'build' })
+  })
+
+  test('on the add form too, build or both explains the baking; runtime does not', async () => {
+    mockApi({ [ENV]: { variables: [], pending: idle } })
+    tab()
+    const select = await screen.findByLabelText('Available in')
+    expect(screen.queryByText(/baked into the image/)).toBeNull()
+    await userEvent.selectOptions(select, 'both')
+    expect(screen.getByText(/declare it with ARG NAME/)).toBeInTheDocument()
+    await userEvent.selectOptions(select, 'runtime')
+    expect(screen.queryByText(/baked into the image/)).toBeNull()
+  })
+
+  test('on the add form a name that cannot be used at build time is refused before any request, and fine for runtime', async () => {
+    const api = mockApi({ [ENV]: { variables: [], pending: idle } })
+    tab()
+    await userEvent.type(await screen.findByLabelText('Name'), 'LANG')
+    await userEvent.selectOptions(screen.getByLabelText('Available in'), 'build')
+    expect(screen.getByRole('alert')).toHaveTextContent(/LANG cannot be used at build time/)
+    expect(screen.getByRole('button', { name: 'Add or update' })).toBeDisabled()
+    await userEvent.selectOptions(screen.getByLabelText('Available in'), 'runtime')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Add or update' })).toBeEnabled()
+    expect(api.called('PUT', BASE('LANG'))).toHaveLength(0)
+  })
+
+  test('the badge follows a change of scope', async () => {
+    let scope = 'runtime'
+    mockApi({ [ENV]: () => ({ variables: scoped(['A', scope]), pending: idle }), [PUT('A')]: () => { scope = 'build'; return { key: 'A', scope } } })
+    tab()
+    await screen.findByText('A')
+    expect(badge('A')).toHaveTextContent('Runtime')
+    await edit('A')
+    await userEvent.selectOptions(screen.getByLabelText('Where A is available'), 'build')
+    await save()
+    await waitFor(() => expect(badge('A')).toHaveTextContent('Build'))
+  })
+
+  test('the page says an imported file is added as runtime variables', async () => {
+    mockApi({ [ENV]: { variables: [], pending: idle } })
+    tab()
+    expect(await screen.findByText(/imported \.env file is added as runtime variables/)).toBeInTheDocument()
+  })
+})
+
+describe('renaming a variable', () => {
+  const scoped = (...pairs) => pairs.map(([key, scope]) => ({ key, scope, value: '********', updated_at: '2026-10-19T11:00:00Z' }))
+  const PUT = (k) => `PUT /api/apps/${APP_ID}/env/${k}`
+  const BASE = (k) => `/api/apps/${APP_ID}/env/${k}`
+  const edit = async (key) => userEvent.click(await screen.findByLabelText(`Edit ${key}`))
+  const nameField = (key) => screen.getByLabelText(`Name of ${key}`)
+  const save = () => userEvent.click(screen.getByRole('button', { name: 'Save' }))
+  const rename = async (key, to) => { await userEvent.clear(nameField(key)); await userEvent.type(nameField(key), to) }
+
+  test('the dialog starts with the current name, and nothing can be saved until something changes', async () => {
+    mockApi({ [ENV]: { variables: scoped(['OLD_NAME', 'runtime']), pending: idle } })
+    tab()
+    await edit('OLD_NAME')
+    expect(nameField('OLD_NAME')).toHaveValue('OLD_NAME')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  test('a new name alone sends the new name alone: the server keeps the value and the scope', async () => {
+    const api = mockApi({ [ENV]: { variables: scoped(['OLD_NAME', 'build']), pending: idle }, [PUT('OLD_NAME')]: { key: 'NEW_NAME', previous_key: 'OLD_NAME', created: false, scope: 'build' } })
+    tab()
+    await edit('OLD_NAME')
+    await rename('OLD_NAME', 'NEW_NAME')
+    await save()
+    await waitFor(() => expect(api.called('PUT', BASE('OLD_NAME'))).toHaveLength(1))
+    expect(api.called('PUT', BASE('OLD_NAME'))[0].body).toEqual({ newKey: 'NEW_NAME' })
+  })
+
+  test('a name, a value and a scope together are one request', async () => {
+    const api = mockApi({ [ENV]: { variables: scoped(['A', 'runtime']), pending: idle }, [PUT('A')]: { key: 'B', previous_key: 'A', created: false, scope: 'both' } })
+    tab()
+    await edit('A')
+    await rename('A', 'B')
+    await userEvent.type(screen.getByLabelText('New value for A'), 'fresh')
+    await userEvent.selectOptions(screen.getByLabelText('Where A is available'), 'both')
+    await save()
+    await waitFor(() => expect(api.called('PUT', BASE('A'))).toHaveLength(1))
+    expect(api.called('PUT', BASE('A'))[0].body).toEqual({ newKey: 'B', value: 'fresh', scope: 'both' })
+  })
+
+  test('spaces around the name are ignored: only spaces added means nothing changed', async () => {
+    mockApi({ [ENV]: { variables: scoped(['A', 'runtime']), pending: idle } })
+    tab()
+    await edit('A')
+    await userEvent.type(nameField('A'), '   ')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  test('the new name is sent trimmed', async () => {
+    const api = mockApi({ [ENV]: { variables: scoped(['A', 'runtime']), pending: idle }, [PUT('A')]: { key: 'B', created: false, scope: 'runtime' } })
+    tab()
+    await edit('A')
+    await rename('A', '  B  ')
+    await save()
+    await waitFor(() => expect(api.called('PUT', BASE('A'))).toHaveLength(1))
+    expect(api.called('PUT', BASE('A'))[0].body).toEqual({ newKey: 'B' })
+  })
+
+  test('says the running app keeps the old name until the next deployment', async () => {
+    mockApi({ [ENV]: { variables: scoped(['A', 'runtime']), pending: idle } })
+    tab()
+    await edit('A')
+    expect(screen.queryByText(/keeps the old name/)).toBeNull()
+    await rename('A', 'B')
+    expect(screen.getByText(/keeps the old name until the next deployment/)).toBeInTheDocument()
+  })
+
+  test.each([['1BAD'], ['has-dash'], ['has space'], ['']])('the name "%s" is refused before any request', async (bad) => {
+    const api = mockApi({ [ENV]: { variables: scoped(['A', 'runtime']), pending: idle } })
+    tab()
+    await edit('A')
+    await userEvent.clear(nameField('A'))
+    if (bad) await userEvent.type(nameField('A'), bad)
+    expect(screen.getByRole('alert')).toHaveTextContent(/letters, digits and underscore/)
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(api.called('PUT', BASE('A'))).toHaveLength(0)
+  })
+
+  test('a build variable cannot be renamed to a name the build cannot use, a runtime one can', async () => {
+    mockApi({ [ENV]: { variables: scoped(['BUILD_ONE', 'build'], ['RUN_ONE', 'runtime']), pending: idle } })
+    tab()
+    await edit('BUILD_ONE')
+    await rename('BUILD_ONE', 'LANG')
+    expect(screen.getByRole('alert')).toHaveTextContent(/LANG cannot be used at build time/)
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    await userEvent.selectOptions(screen.getByLabelText('Where BUILD_ONE is available'), 'runtime')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await edit('RUN_ONE')
+    await rename('RUN_ONE', 'TZ')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+  })
+
+  test('a name that is taken is refused by the API, shown, and the dialog stays open with what was typed', async () => {
+    mockApi({ [ENV]: { variables: scoped(['A', 'runtime'], ['B', 'runtime']), pending: idle }, [PUT('A')]: answer(409, { error: 'A variable named B already exists', code: 'name_taken' }) })
+    tab()
+    await edit('A')
+    await rename('A', 'B')
+    await save()
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('A variable named B already exists'))
+    expect(nameField('A')).toHaveValue('B')
+  })
+
+  test('cancel puts the name back, and editing again starts from the saved name', async () => {
+    mockApi({ [ENV]: { variables: scoped(['A', 'runtime']), pending: idle } })
+    tab()
+    await edit('A')
+    await rename('A', 'ELSE')
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await edit('A')
+    expect(nameField('A')).toHaveValue('A')
+  })
+
+  test('after a rename the list shows the new name', async () => {
+    let name = 'OLD_NAME'
+    mockApi({ [ENV]: () => ({ variables: scoped([name, 'runtime']), pending: idle }), [PUT('OLD_NAME')]: () => { name = 'NEW_NAME'; return { key: 'NEW_NAME', previous_key: 'OLD_NAME', created: false, scope: 'runtime' } } })
+    tab()
+    await edit('OLD_NAME')
+    await rename('OLD_NAME', 'NEW_NAME')
+    await save()
+    expect(await screen.findByText('NEW_NAME')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('OLD_NAME')).toBeNull())
   })
 })

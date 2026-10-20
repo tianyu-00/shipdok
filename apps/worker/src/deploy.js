@@ -12,6 +12,7 @@ import { assertRelativeDir, resolveBuildDir } from './paths.js';
 import * as realEngine from './docker.js';
 import { LABEL } from '@shipdok/shared';
 import { checkoutSource, gitEnvironment } from './git.js';
+import { dockerBuildEnvironment } from './buildenv.js';
 
 /**
  * @param {object} opts
@@ -30,6 +31,7 @@ import { checkoutSource, gitEnvironment } from './git.js';
  * @param {number} [opts.memoryMb=512]
  * @param {number} [opts.cpus=1]
  * @param {string[]} [opts.env=[]]      ['KEY=VALUE', ...] for the container
+ * @param {string[]} [opts.buildEnv=[]]  ['KEY=VALUE', ...] for `docker build --build-arg` ONLY (values travel in docker's environment, never on its command line, never in the container)
  * @param {Record<string,string>} [opts.gitEnv]  extra environment for GIT ONLY (a GitHub token). Never given to docker or the container.
  * @param {(container: object) => Promise<void>} [opts.onRetire]  called with each old container after the new one is live, before it is removed (save its output)
  * @param {{path: string, name: string}[]} [opts.volumes]  persistent storage: Docker named volumes the live container mounts (the candidate gets throwaway ones)
@@ -53,7 +55,7 @@ const COMMIT_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 const REUSE_TAG_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function deploy(opts, eng = realEngine) {
-  const o = { ref: 'main', dir: '.', memoryMb: 512, cpus: 1, env: [], volumes: [], ...opts };
+  const o = { ref: 'main', dir: '.', memoryMb: 512, cpus: 1, env: [], buildEnv: [], volumes: [], ...opts };
   const log = o.log ?? ((m) => console.log(`[${new Date().toISOString()}] ${m}`));
   const notify = (fn, ...args) => { try { fn?.(...args); } catch { /* hooks must never break a deploy */ } };
   const deploymentId = o.deploymentId ?? randomBytes(4).toString('hex');
@@ -162,6 +164,8 @@ export async function deploy(opts, eng = realEngine) {
         // Resolve symlinks AFTER cloning: the API validates the string, but only the real path is trustworthy.
         const buildDir = await resolveBuildDir(workDir, o.dir);
 
+        const build = dockerBuildEnvironment(o.buildEnv); // throws, naming the variable, if a name cannot be used
+        if (build.args.length) log(`Build variables passed as build arguments: ${build.args.filter((a) => a !== '--build-arg').join(', ')} (the Dockerfile must declare them with ARG)`);
         log(o.noCache === true ? `Building ${image} without the build cache` : `Building ${image}`);
         await eng.run('docker', [
           'build', '--progress=plain', '-t', image, // plain: readable in a file, no terminal redrawing
@@ -169,8 +173,9 @@ export async function deploy(opts, eng = realEngine) {
           '--label', 'shipdok.managed=true',
           '--label', `shipdok.app-id=${o.appId}`,
           '--label', `shipdok.deployment-id=${deploymentId}`,
+          ...build.args,
           buildDir,
-        ], { env: { ...process.env, DOCKER_BUILDKIT: '1' }, signal: buildSignal, sink: o.logSink });
+        ], { env: build.env, signal: buildSignal, sink: o.logSink });
       } finally {
         stopLimit();
       }
