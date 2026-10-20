@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import DeploymentsTab from './deployments-tab'
 import { mockApi, answer, renderWithProviders } from '@/test/utils'
@@ -296,6 +296,25 @@ describe('pressing a row', () => {
     await userEvent.click(within(await rowOf('bbbbbbb')).getByText('bbbbbbb'))
     expect(logRow('prev')).not.toBeNull()
     spy.mockRestore()
+  })
+
+  test('pressing a row twice quickly does not select a word, but a single press can still start a text selection', async () => {
+    mockApi({ [LIST]: deployments, [IMAGES]: images })
+    tab()
+    const cell = within(await rowOf('bbbbbbb')).getByText('bbbbbbb')
+    expect(fireEvent.mouseDown(cell, { detail: 2 })).toBe(false) // false: the default (selecting the word) was prevented
+    expect(fireEvent.mouseDown(cell, { detail: 3 })).toBe(false)
+    expect(fireEvent.mouseDown(cell, { detail: 1 })).toBe(true) // a drag to select text is still allowed
+  })
+
+  test('two quick presses open the log and close it again, whatever is selected afterwards', async () => {
+    mockApi({ [LIST]: deployments, [IMAGES]: images, ...LOGS('prev') })
+    tab()
+    const row = await rowOf('bbbbbbb')
+    await userEvent.dblClick(within(row).getByText('bbbbbbb'))
+    expect(logRow('prev')).toBeNull() // opened by the first press, closed by the second
+    await userEvent.click(within(row).getByText('bbbbbbb'))
+    expect(logRow('prev')).not.toBeNull()
   })
 
   test('pressing inside the open console does not close it', async () => {

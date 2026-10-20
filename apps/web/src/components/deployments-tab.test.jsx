@@ -22,16 +22,49 @@ describe('the deployment history', () => {
     expect(within(row).getByText('1m 30s')).toBeInTheDocument()
   })
 
-  test('explains why a deployment did not succeed', async () => {
+  test('there is no "Why" column: the reason is in the log row', async () => {
+    mockApi({ [LIST]: [makeDeployment({ id: '1', status: 'failed', error_summary: 'docker exited 1' })], 'GET /api/deployments/1/logs': answer(404, { error: 'none' }) })
+    tab()
+    expect(await screen.findByText('Failed')).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'Why' })).toBeNull()
+    expect(screen.queryByText('docker exited 1')).toBeNull() // not in the row itself
+  })
+
+  test('opening a deployment that did not succeed says why, above its log, in the tone of its status', async () => {
     mockApi({ [LIST]: [
-      makeDeployment({ id: '1', status: 'failed', error_summary: 'docker exited 1' }),
-      makeDeployment({ id: '2', status: 'superseded', error_summary: null }),
-      makeDeployment({ id: '3', status: 'interrupted', error_summary: 'The worker stopped while this deployment was in progress' }),
+      makeDeployment({ id: '1', status: 'failed', error_summary: 'docker exited 1', commit_sha: 'a'.repeat(40) }),
+      makeDeployment({ id: '2', status: 'superseded', error_summary: null, commit_sha: 'b'.repeat(40) }),
+      makeDeployment({ id: '3', status: 'interrupted', error_summary: 'The worker stopped while this deployment was in progress', commit_sha: 'c'.repeat(40) }),
+      makeDeployment({ id: '4', status: 'cancelled', error_summary: null, commit_sha: 'd'.repeat(40) }),
     ] })
     tab()
-    expect(await screen.findByText('docker exited 1')).toBeInTheDocument()
-    expect(screen.getByText('Replaced by a newer deployment')).toBeInTheDocument()
-    expect(screen.getByText(/worker stopped/)).toBeInTheDocument()
+    const open = async (sha) => { await userEvent.click(within(await rowOf(sha)).getByText(sha)); return (await rowOf(sha)).nextElementSibling }
+    const failed = await open('aaaaaaa')
+    expect(within(failed).getByTestId('deployment-reason')).toHaveTextContent('Failed: docker exited 1')
+    expect(within(failed).getByTestId('deployment-reason').className).toMatch(/text-destructive/)
+    const superseded = await open('bbbbbbb')
+    expect(within(superseded).getByTestId('deployment-reason')).toHaveTextContent('Superseded: Replaced by a newer deployment')
+    expect(within(superseded).getByTestId('deployment-reason').className).toMatch(/text-muted-foreground/)
+    const interrupted = await open('ccccccc')
+    expect(within(interrupted).getByTestId('deployment-reason')).toHaveTextContent(/Interrupted: The worker stopped/)
+    expect(within(interrupted).getByTestId('deployment-reason').className).toMatch(/text-warning/)
+    expect(within(await open('ddddddd')).getByTestId('deployment-reason')).toHaveTextContent(/^Cancelled$/) // the status already says it: no "Cancelled: Cancelled"
+  })
+
+  test('the reason is still shown when the log itself has been deleted', async () => {
+    mockApi({ [LIST]: [makeDeployment({ id: '1', status: 'failed', error_summary: 'git exited 128' })], 'GET /api/deployments/1/logs': answer(404, { error: 'No log for this deployment' }) })
+    tab()
+    await userEvent.click(await screen.findByRole('button', { name: /^log$/i }))
+    expect(await screen.findByText(/may have been deleted/i)).toBeInTheDocument()
+    expect(screen.getByTestId('deployment-reason')).toHaveTextContent('Failed: git exited 128')
+  })
+
+  test('a deployment that succeeded has no reason line', async () => {
+    mockApi({ [LIST]: [makeDeployment({ id: '1', status: 'successful' })], 'GET /api/deployments/1/logs': answer(404, { error: 'none' }) })
+    tab()
+    await userEvent.click(await screen.findByRole('button', { name: /^log$/i }))
+    await screen.findByText(/may have been deleted/i)
+    expect(screen.queryByTestId('deployment-reason')).toBeNull()
   })
 
   test('pushes and rollbacks are marked, manual ones are not', async () => {
