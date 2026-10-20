@@ -359,6 +359,26 @@ describe('the deployment log', () => {
   });
 });
 
+describe('building without the cache', () => {
+  const buildOf = (eng) => eng.runs.find((r) => r.cmd === 'docker' && r.args[0] === 'build');
+
+  test('noCache adds --no-cache to the build, and the log line says so', async () => {
+    const eng = fakeEngine({ previous: [] });
+    const lines = [];
+    await run({ noCache: true, log: (m) => lines.push(m) }, eng);
+    assert.ok(buildOf(eng).args.includes('--no-cache'));
+    assert.ok(lines.some((l) => /without the build cache/.test(l)));
+  });
+
+  test('by default, and for anything but true, the cache is used', async () => {
+    for (const noCache of [undefined, false, 'true', 1]) {
+      const eng = fakeEngine({ previous: [] });
+      await run({ noCache }, eng);
+      assert.ok(!buildOf(eng).args.includes('--no-cache'), `noCache=${String(noCache)}`);
+    }
+  });
+});
+
 describe('saving the old version\'s output before it is removed', () => {
   const OLD = 'old';
   test('the old container is handed over AFTER the new one is live and BEFORE it is removed', async () => {

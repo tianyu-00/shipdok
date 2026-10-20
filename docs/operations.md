@@ -8,6 +8,7 @@ the folder, so a different folder means an empty installation).
 - [Backup](#backup)
 - [Restore](#restore)
 - [Persistent storage of your apps](#persistent-storage-of-your-apps)
+- [Build cache](#build-cache)
 - [Forgot the password](#forgot-the-password)
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
@@ -164,6 +165,26 @@ docker run --rm -v shipdok-vol-XXXX:/data -v "$PWD":/backup alpine tar xzf /back
 
 Backups of app data can hold anything your app stores, so keep them private. They are separate from the [platform backup](#backup).
 
+## Build cache
+
+Docker keeps the steps of every build so the next build is faster. All apps share this cache, so it belongs to no app, it grows with every
+build, and the per-app image clean-up does not remove it. On a small disk (a Raspberry Pi's SD card) it can become the biggest thing Shipdok leaves
+behind.
+
+The **Storage** page has a **Build cache** card with its size (measured every few minutes, so the figure says how old it is) and two buttons:
+
+- **Clean unused cache** removes cache that no build has used for the last 24 hours. Apps you deploy often keep their cache and stay fast.
+- **Clean everything unused** removes all cache that no build is using right now. The next build of each app starts from nothing, runs every step
+  again and downloads packages again, which can take several minutes on a Pi.
+
+A clean-up waits its turn on the same queue as deployments, so it never runs during a build, and only one runs at a time. It removes build cache
+only: **no images, containers, volumes or logs**.
+
+**Deploy without cache.** If a build keeps an old result it should not (a layer that never refreshes, a dependency that was cached), open the menu
+next to **Deploy** on the app page and choose **Deploy without cache…**. That one deployment runs every build step again (`docker build --no-cache`).
+The base image is not downloaded again if it is already on the machine, and the next deployment, or a push, uses the cache as usual. It is not
+available for webhook pushes or rollbacks (a rollback builds nothing).
+
 ## Forgot the password
 
 Use a **recovery code** on the login screen: *Lost your password? Use a recovery code.* Each code works once.
@@ -209,7 +230,7 @@ build stopped automatically, set a **Build time limit** (minutes) in the app's *
 limit applies from the next deployment and covers the clone and the build; the running version is never touched.
 
 **The disk is filling up.** The **Storage** page shows where. Old images are cleaned up from each app's **Images** tab (or turn on
-automatic clean-up), and old logs from the Storage page.
+automatic clean-up), old logs from the Storage page, and the shared [build cache](#build-cache) from its card there.
 
 **My data seems empty after restarting.** Compose was probably run from a different folder, which starts a new installation. List the storage
 with `docker volume ls` (names end in `_shipdok_pgdata`) and go back to the original folder.

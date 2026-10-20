@@ -23,6 +23,7 @@ import { checkoutSource, gitEnvironment } from './git.js';
  * @param {string} [opts.slug]          readable name for image tags and container names
  * @param {string} [opts.ref='main']
  * @param {string} [opts.commit]       exact commit to build (a webhook push). Without it, the branch head at clone time.
+ * @param {boolean} [opts.noCache]     build with `docker build --no-cache` (this deployment only; the base image is not re-pulled)
  * @param {string} [opts.reuseImage]   a rollback: an existing image of this app to run instead of cloning and building. It is never deleted by this function.
  * @param {string} [opts.dir='.']       app root inside the repo
  * @param {string} [opts.health]        HTTP health path, e.g. /health
@@ -161,9 +162,10 @@ export async function deploy(opts, eng = realEngine) {
         // Resolve symlinks AFTER cloning: the API validates the string, but only the real path is trustworthy.
         const buildDir = await resolveBuildDir(workDir, o.dir);
 
-        log(`Building ${image}`);
+        log(o.noCache === true ? `Building ${image} without the build cache` : `Building ${image}`);
         await eng.run('docker', [
           'build', '--progress=plain', '-t', image, // plain: readable in a file, no terminal redrawing
+          ...(o.noCache === true ? ['--no-cache'] : []), // asked for with this one deployment: every step is run again
           '--label', 'shipdok.managed=true',
           '--label', `shipdok.app-id=${o.appId}`,
           '--label', `shipdok.deployment-id=${deploymentId}`,

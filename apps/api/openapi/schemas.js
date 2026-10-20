@@ -34,7 +34,7 @@ export const schemas = {
   AppUpdate: { ...fromZod(updateSchema), description: 'Settings to change; send only the ones you want to change. The repository and the slug cannot be changed.' },
   Retention: { ...fromZod(retentionSchema), description: 'How many earlier versions\' images to keep, and whether to clean up automatically.' },
   RollbackRequest: { ...fromZod(rollbackSchema), description: '`deploymentId`: the version to go back to (default: the newest earlier version that still has an image). `start`: also start the app if it is stopped.' },
-  DeployRequest: { ...fromZod(deploySchema), description: '`start`: start the app after deploying if it is stopped. `ignoreDiskWarning`: deploy although the disk is almost full.' },
+  DeployRequest: { ...fromZod(deploySchema), description: '`start`: start the app after deploying if it is stopped. `ignoreDiskWarning`: deploy although the disk is almost full. `noCache`: build this one deployment without Docker\'s build cache (every step runs again; slower).' },
   Runtime: obj({
     state: enumOf(['running', 'stopped', 'unhealthy', 'restarting', 'crashed', 'missing'], 'What the worker last saw. `missing`: the container was removed outside Shipdok.'),
     last_action: { ...nstr('The last thing the worker did.'), enum: ['deploy', 'start', 'stop', 'restart', 'auto_restart', 'recover', null] },
@@ -133,6 +133,16 @@ export const schemas = {
   }),
   VolumePaths: { type: 'object', required: ['paths'], properties: { paths: { type: 'array', maxItems: 10, items: { type: 'string', maxLength: 200 }, description: 'The container paths to keep (absolute; letters, digits, dot, dash, underscore, slash; not `/`, not under `/proc`, `/sys` or `/dev`; no duplicates and none inside another). The whole list: a path that is left out is detached, never deleted.' } } },
   VolumeList: obj({ volumes: arr(ref('Volume')) }),
+
+  // ---- build cache
+  BuildCache: obj({
+    totalBytes: nint('Size of Docker\'s build cache when the worker last measured it (`null` until it has, or if this Docker cannot say).'),
+    reclaimableBytes: nint('The part no build is using, which a clean-up can remove.'),
+    sampledAt: { ...nstr('When it was measured.'), format: 'date-time' },
+    cleaning: bool('A clean-up was asked for and has not reported back yet.'),
+    last: { ...obj({ at: time('When the last clean-up finished.'), all: bool('It removed every unused entry (otherwise only those unused for a day).'), freedBytes: int('What Docker says it freed.'), error: nstr('Why it failed, if it did.') }), nullable: true, description: 'The most recent clean-up, or `null`.' },
+  }),
+  CleanCacheRequest: { type: 'object', properties: { all: { type: 'boolean', default: false, description: '`true`: remove every unused entry, so the next builds start from nothing. Default `false`: only cache no build has used for 24 hours.' } }, additionalProperties: false },
 
   // ---- variables
   EnvList: obj({

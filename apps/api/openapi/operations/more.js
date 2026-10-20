@@ -68,6 +68,19 @@ export default Object.fromEntries([
     errors: { 404: 'No such volume.', 409: 'The volume is mounted by an app (`code: volume_in_use`).', 503: 'The job queue is not available.' },
   })),
 
+  // ---------------------------------------------------------------- build cache
+  route('GET', '/api/build-cache', op({
+    tag: LOG, summary: 'Size of Docker\'s build cache',
+    description: 'Every build leaves layers in a cache that all apps share, so it belongs to no app and image clean-up does not touch it. The worker measures it every few minutes (the API never asks Docker), so `sampledAt` says how old the figure is. `last` is the most recent clean-up.',
+    responses: { 200: ok('The figures.', ref('BuildCache')) },
+  })),
+  route('POST', '/api/build-cache/clean', op({
+    tag: LOG, summary: 'Clean the build cache', body: ref('CleanCacheRequest'), bodyRequired: false,
+    description: 'Queues the clean-up on the same queue as deployments, so it never runs during a build. It removes build cache only: no images, containers, volumes or logs. By default it keeps what a build used in the last 24 hours; `all: true` removes every unused entry and the next builds start from nothing (slow). Only one clean-up at a time.',
+    responses: { 202: ok('Queued.', { type: 'object', properties: { queued: { type: 'boolean' } } }) },
+    errors: { 400: 'Invalid body.', 409: 'One is already waiting or running (`code: already_queued`).', 503: 'The job queue is not available.' },
+  })),
+
   // ---------------------------------------------------------------- github
   route('GET', '/api/github', op({
     tag: GH, summary: 'Is GitHub connected?', description: 'The connected GitHub App\'s details, never a secret. `problem: cannot_decrypt` means the stored credentials do not fit the platform key.',

@@ -224,6 +224,44 @@ describe('Deploy', () => {
     await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('Deployment queued'))
   })
 
+  test('"Deploy without cache" is in the menu, asks first, and sends noCache for that one deployment', async () => {
+    const api = mockApi(base({ [`POST /api/apps/${APP_ID}/deployments`]: answer(202, makeDeployment({ status: 'queued' })) }))
+    page()
+    await userEvent.click(await screen.findByRole('button', { name: 'More ways to deploy' }))
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Deploy without cache/ }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/next push uses the cache again/)).toBeInTheDocument()
+    expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)).toHaveLength(0) // only the question so far
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Deploy without cache' }))
+    await waitFor(() => expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)).toHaveLength(1))
+    expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)[0].body).toEqual({ noCache: true })
+    await userEvent.click(await screen.findByRole('button', { name: 'Deploy' }))
+    await waitFor(() => expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)).toHaveLength(2))
+    expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)[1].body).toEqual({}) // the plain button is still plain
+  })
+
+  test('cancelling the "without cache" question deploys nothing', async () => {
+    const api = mockApi(base({}))
+    page()
+    await userEvent.click(await screen.findByRole('button', { name: 'More ways to deploy' }))
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Deploy without cache/ }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Cancel' }))
+    expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)).toHaveLength(0)
+  })
+
+  test('the "disk almost full" question keeps the no-cache choice', async () => {
+    let n = 0
+    const critical = answer(409, { error: 'The disk is almost full', code: 'disk_critical', disk: { freePercent: 5 } })
+    const api = mockApi(base({ [`POST /api/apps/${APP_ID}/deployments`]: () => { n += 1; return n === 1 ? critical : answer(202, makeDeployment()) } }))
+    page()
+    await userEvent.click(await screen.findByRole('button', { name: 'More ways to deploy' }))
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Deploy without cache/ }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Deploy without cache' }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Deploy anyway' }))
+    await waitFor(() => expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)).toHaveLength(2))
+    expect(api.called('POST', `/api/apps/${APP_ID}/deployments`)[1].body).toEqual({ ignoreDiskWarning: true, noCache: true })
+  })
+
   test('a warning from the API (the disk is getting full) is shown as a warning', async () => {
     mockApi(base({ [`POST /api/apps/${APP_ID}/deployments`]: answer(202, { ...makeDeployment(), warning: 'The disk is getting full (15% free).' }) }))
     page()
@@ -348,7 +386,7 @@ describe('Start, Stop and Restart', () => {
     expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
-    expect(screen.getByRole('button', { name: /deploy/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Deploy' })).toBeInTheDocument()
   })
 
   test('a crashed app offers Start and Restart (it stays down until you decide)', async () => {

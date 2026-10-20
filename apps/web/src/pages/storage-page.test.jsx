@@ -16,7 +16,7 @@ const storage = (over = {}) => ({
   disk: { totalBytes: 100 * 1024 * MB, freeBytes: 60 * 1024 * MB, freePercent: 60, level: 'ok' },
   ...over,
 })
-const routes = (over = {}) => ({ 'GET /api/storage': storage(), 'GET /api/apps': [makeApp()], 'GET /api/volumes': { volumes: [] }, ...over })
+const routes = (over = {}) => ({ 'GET /api/storage': storage(), 'GET /api/apps': [makeApp()], 'GET /api/volumes': { volumes: [] }, 'GET /api/build-cache': { totalBytes: null, reclaimableBytes: null, sampledAt: null, cleaning: false, last: null }, ...over })
 const page = () => renderWithProviders(<StoragePage />, { route: '/storage' })
 
 describe('the storage page', () => {
@@ -31,6 +31,13 @@ describe('the storage page', () => {
     expect(within(row).getByText(/100 MB/)).toBeInTheDocument()
     expect(within(row).getByText(/2 images/)).toBeInTheDocument()
     expect(within(row).getByText('103 MB')).toBeInTheDocument()
+  })
+
+  test('the build cache card is on the page', async () => {
+    mockApi(routes())
+    page()
+    expect(await screen.findByText('Build cache')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Clean unused cache' })).toBeInTheDocument()
   })
 
   test('the bar shows how much is used, and turns red when the disk is almost full', async () => {

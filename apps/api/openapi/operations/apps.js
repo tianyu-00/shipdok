@@ -76,7 +76,7 @@ export default Object.fromEntries([
   })),
   route('POST', '/api/apps/{id}/deployments', op({
     tag: DEP, summary: 'Deploy now', parameters: [APP_ID],
-    description: 'Queues a build and deployment of the branch\'s latest commit. Older queued or running deployments of the app are superseded (the newest wins). Answers 202 at once; follow the deployment with `GET /api/deployments/{id}`. Under 10% free disk the request is refused (409 `disk_critical`) unless the body says `ignoreDiskWarning: true`; under 20% it goes ahead and the answer carries a `warning`.',
+    description: 'Queues a build and deployment of the branch\'s latest commit. Older queued or running deployments of the app are superseded (the newest wins). Answers 202 at once; follow the deployment with `GET /api/deployments/{id}`. Send `noCache: true` to build this one deployment without Docker\'s build cache. Under 10% free disk the request is refused (409 `disk_critical`) unless the body says `ignoreDiskWarning: true`; under 20% it goes ahead and the answer carries a `warning`.',
     body: ref('DeployRequest'), bodyRequired: false,
     responses: { 202: ok('Queued.', ref('Deployment')) },
     errors: { 400: 'Invalid body.', 404: 'No such app.', 409: 'The app is being deleted, or the disk is almost full (`code: disk_critical`).', 503: 'The job queue is not available.' },

@@ -1476,7 +1476,7 @@
           "Deployments"
         ],
         "summary": "Deploy now",
-        "description": "Queues a build and deployment of the branch's latest commit. Older queued or running deployments of the app are superseded (the newest wins). Answers 202 at once; follow the deployment with `GET /api/deployments/{id}`. Under 10% free disk the request is refused (409 `disk_critical`) unless the body says `ignoreDiskWarning: true`; under 20% it goes ahead and the answer carries a `warning`.",
+        "description": "Queues a build and deployment of the branch's latest commit. Older queued or running deployments of the app are superseded (the newest wins). Answers 202 at once; follow the deployment with `GET /api/deployments/{id}`. Send `noCache: true` to build this one deployment without Docker's build cache. Under 10% free disk the request is refused (409 `disk_critical`) unless the body says `ignoreDiskWarning: true`; under 20% it goes ahead and the answer carries a `warning`.",
         "parameters": [
           {
             "name": "id",
@@ -2150,6 +2150,43 @@
           }
         },
         "security": []
+      }
+    },
+    "/api/build-cache": {
+      "get": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Size of Docker's build cache",
+        "description": "Every build leaves layers in a cache that all apps share, so it belongs to no app and image clean-up does not touch it. The worker measures it every few minutes (the API never asks Docker), so `sampledAt` says how old the figure is. `last` is the most recent clean-up.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The figures.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BuildCache"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
       }
     },
     "/api/docs": {
@@ -3821,6 +3858,88 @@
         "security": []
       }
     },
+    "/api/build-cache/clean": {
+      "post": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Clean the build cache",
+        "description": "Queues the clean-up on the same queue as deployments, so it never runs during a build. It removes build cache only: no images, containers, volumes or logs. By default it keeps what a build used in the last 24 hours; `all: true` removes every unused entry and the next builds start from nothing (slow). Only one clean-up at a time.",
+        "parameters": [],
+        "responses": {
+          "202": {
+            "description": "Queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "queued": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "One is already waiting or running (`code: already_queued`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The job queue is not available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CleanCacheRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/deployments/{id}/cancel": {
       "post": {
         "tags": [
@@ -4574,10 +4693,13 @@
           },
           "ignoreDiskWarning": {
             "type": "boolean"
+          },
+          "noCache": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false,
-        "description": "`start`: start the app after deploying if it is stopped. `ignoreDiskWarning`: deploy although the disk is almost full."
+        "description": "`start`: start the app after deploying if it is stopped. `ignoreDiskWarning`: deploy although the disk is almost full. `noCache`: build this one deployment without Docker's build cache (every step runs again; slower)."
       },
       "Runtime": {
         "type": "object",
@@ -5277,6 +5399,80 @@
         "required": [
           "volumes"
         ]
+      },
+      "BuildCache": {
+        "type": "object",
+        "properties": {
+          "totalBytes": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Size of Docker's build cache when the worker last measured it (`null` until it has, or if this Docker cannot say)."
+          },
+          "reclaimableBytes": {
+            "type": "integer",
+            "nullable": true,
+            "description": "The part no build is using, which a clean-up can remove."
+          },
+          "sampledAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "When it was measured.",
+            "format": "date-time"
+          },
+          "cleaning": {
+            "type": "boolean",
+            "description": "A clean-up was asked for and has not reported back yet."
+          },
+          "last": {
+            "type": "object",
+            "properties": {
+              "at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the last clean-up finished."
+              },
+              "all": {
+                "type": "boolean",
+                "description": "It removed every unused entry (otherwise only those unused for a day)."
+              },
+              "freedBytes": {
+                "type": "integer",
+                "description": "What Docker says it freed."
+              },
+              "error": {
+                "type": "string",
+                "nullable": true,
+                "description": "Why it failed, if it did."
+              }
+            },
+            "required": [
+              "at",
+              "all",
+              "freedBytes",
+              "error"
+            ],
+            "nullable": true,
+            "description": "The most recent clean-up, or `null`."
+          }
+        },
+        "required": [
+          "totalBytes",
+          "reclaimableBytes",
+          "sampledAt",
+          "cleaning",
+          "last"
+        ]
+      },
+      "CleanCacheRequest": {
+        "type": "object",
+        "properties": {
+          "all": {
+            "type": "boolean",
+            "default": false,
+            "description": "`true`: remove every unused entry, so the next builds start from nothing. Default `false`: only cache no build has used for 24 hours."
+          }
+        },
+        "additionalProperties": false
       },
       "EnvList": {
         "type": "object",

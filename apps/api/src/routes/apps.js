@@ -110,7 +110,8 @@ const CLEANUP = `(SELECT row_to_json(c) FROM (
       FROM app_cleanup WHERE app_id = a.id) c)`;
 
 // ignoreDiskWarning: the administrator has seen the "disk is nearly full" answer and wants to build anyway.
-export const deploySchema = z.object({ start: z.boolean().optional(), ignoreDiskWarning: z.boolean().optional() }).strict();
+// noCache: build this one deployment from scratch (docker build --no-cache). Webhook pushes and rollbacks never use it.
+export const deploySchema = z.object({ start: z.boolean().optional(), ignoreDiskWarning: z.boolean().optional(), noCache: z.boolean().optional() }).strict();
 
 export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = defaultDiskUsage, portRange = parsePortRange() }) {
   const r = Router();
@@ -317,7 +318,7 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       }
 
       // A stopped app stays stopped after a deployment unless the administrator asks for { "start": true }.
-      const result = await requestDeployment({ db, queue }, app, { startAfter: body.data.start === true });
+      const result = await requestDeployment({ db, queue }, app, { startAfter: body.data.start === true, noCache: body.data.noCache === true });
       if (!result.ok) {
         return res.status(503).json({ error: 'Could not enqueue the deployment job', deploymentId: result.deploymentId });
       }

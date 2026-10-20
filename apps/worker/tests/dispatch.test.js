@@ -89,3 +89,12 @@ test('a removevolume job goes to its own processor (it has no app, so nothing is
   assert.deepEqual(calls, [['removevolume', 'v1']]);
   assert.deepEqual(marks, []);
 });
+
+test('a clean-up of the build cache goes to its own processor, never to deploy', async () => {
+  const calls = [];
+  const process = jobProcessor({
+    deploy: async () => { calls.push('deploy'); }, control: async () => {}, cleanCache: async (job) => { calls.push(['cleanCache', job.data.all]); return 'k'; },
+  });
+  assert.equal(await process({ name: 'cleancache', data: { all: true } }), 'k');
+  assert.deepEqual(calls, [['cleanCache', true]]);
+});

@@ -375,3 +375,15 @@ export const orphanAppVolumes = (appId) => pool.query(
 export const getVolume = (id) => pool.query('SELECT id, app_id, docker_name, state FROM app_volumes WHERE id = $1', [id]).then((r) => r.rows[0] ?? null);
 export const deleteVolumeRow = (id) => pool.query('DELETE FROM app_volumes WHERE id = $1', [id]);
 export const setVolumeRemoveError = (id, message) => pool.query('UPDATE app_volumes SET remove_error = $2 WHERE id = $1', [id, String(message).slice(0, 300)]);
+
+// ---- Build cache (one row, id = 1; migration 022) ----
+export const recordCacheSample = ({ totalBytes, reclaimableBytes }) => pool.query(
+  `INSERT INTO build_cache (id, total_bytes, reclaimable_bytes, sampled_at) VALUES (1, $1, $2, now())
+   ON CONFLICT (id) DO UPDATE SET total_bytes = $1, reclaimable_bytes = $2, sampled_at = now()`,
+  [totalBytes, reclaimableBytes]);
+
+// The result of a clean-up. It also ends the "queued" state the API set when the administrator asked.
+export const recordCacheClean = ({ all, freedBytes, error = null }) => pool.query(
+  `INSERT INTO build_cache (id, last_run_at, last_all, last_freed_bytes, last_error) VALUES (1, now(), $1, $2, $3)
+   ON CONFLICT (id) DO UPDATE SET last_run_at = now(), last_all = $1, last_freed_bytes = $2, last_error = $3, requested_at = NULL, requested_all = NULL`,
+  [all, freedBytes, error]);

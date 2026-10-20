@@ -450,3 +450,34 @@ export async function removeVolumeStrict(name, { docker: d = docker } = {}) {
     throw err;
   }
 }
+
+// ---- Build cache ----
+// BuildKit's cache is shared by every build on the host (no per-app owner), so it is looked at and cleaned as a whole.
+
+/** { totalBytes, reclaimableBytes } of the build cache, or null if this Docker does not report it. "Reclaimable" = not used by a build right now. */
+export async function buildCacheUsage({ docker: d = docker } = {}) {
+  const records = (await d.df()).BuildCache;
+  if (!Array.isArray(records)) return null;
+  let totalBytes = 0;
+  let reclaimableBytes = 0;
+  for (const r of records) {
+    const size = Number(r.Size) || 0;
+    totalBytes += size;
+    if (!r.InUse) reclaimableBytes += size;
+  }
+  return { totalBytes, reclaimableBytes };
+}
+
+/**
+ * Removes build cache that no build is using. `olderThanHours` keeps what was used more recently than that (null = everything unused).
+ * Docker never removes cache a running build holds. Returns the bytes Docker says it freed.
+ */
+export async function pruneBuildCache({ olderThanHours = null } = {}, { docker: d = docker } = {}) {
+  if (olderThanHours !== null && !(Number.isInteger(olderThanHours) && olderThanHours > 0)) throw new Error('olderThanHours must be a whole number of hours');
+  const query = { all: 1 }; // all: also the intermediate steps, not only the dangling records
+  if (olderThanHours !== null) query.filters = JSON.stringify({ until: [`${olderThanHours}h`] });
+  const result = await new Promise((resolve, reject) => {
+    d.modem.dial({ path: '/build/prune?', method: 'POST', options: query, statusCodes: { 200: true, 500: 'server error' } }, (err, data) => (err ? reject(err) : resolve(data)));
+  });
+  return { freedBytes: Number(result?.SpaceReclaimed) || 0 };
+}

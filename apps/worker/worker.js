@@ -13,6 +13,7 @@ import { processControlJob } from './src/control.js';
 import { processPruneJob } from './src/prune.js';
 import { processDeleteJob } from './src/deleteapp.js';
 import { processRemoveVolumeJob } from './src/removevolume.js';
+import { processCleanCacheJob, createCacheSampler } from './src/buildcache.js';
 import { jobProcessor } from './src/dispatch.js';
 import { createActivity } from './src/activity.js';
 import { createMonitor } from './src/monitor.js';
@@ -51,6 +52,8 @@ const monitor = createMonitor({ activity, collector, intervalMs: Number(process.
 
 const sampler = createSampler({ intervalMs: Number(process.env.STATS_INTERVAL_MS) || 15_000 }); // CPU and memory of running apps
 
+const cacheSampler = createCacheSampler(); // size of Docker's build cache
+
 const worker = new Worker(
   DEPLOY_QUEUE,
   jobProcessor({
@@ -60,6 +63,7 @@ const worker = new Worker(
     prune: (job) => processPruneJob(job),
     deleteApp: (job) => processDeleteJob(job, { collector }),
     removeVolume: (job) => processRemoveVolumeJob(job),
+    cleanCache: (job) => processCleanCacheJob(job),
   }),
   { connection, concurrency: 1, maxStalledCount: 0, autorun: false },
 );
@@ -85,6 +89,7 @@ async function shutdown(signal) {
   console.log(`${signal}: letting the current job finish, then exiting`);
   await monitor.stop();
   await sampler.stop();
+  await cacheSampler.stop();
   await collector.stopAll(); // close every runtime log and record its size
   await worker.close();
   await connection.quit();
@@ -96,6 +101,7 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 await reconcile();
 sampler.start();
+cacheSampler.start();
 monitor.start(); // crashes, health, and recovery after a host or Docker restart
 worker.run().catch((err) => {
   console.error('Worker crashed:', err);

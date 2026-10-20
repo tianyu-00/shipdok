@@ -20,10 +20,11 @@ async function removeJobs(queue, jobIds) {
  * @param {string} [opts.commit]      exact commit to build (a webhook push); otherwise the branch head at build time
  * @param {string} [opts.deliveryId]  the GitHub delivery that caused this; at most one deployment per (delivery, app)
  * @param {boolean} [opts.startAfter] start the app after this deployment even though it is stopped (explicit request only)
+ * @param {boolean} [opts.noCache]    build this deployment without Docker's build cache (ignored for a rollback, which builds nothing)
  * @param {{id: string, image: string, commit: string|null}} [opts.rollbackOf]  a rollback: run this earlier version's existing image instead of building
  * @returns {{ ok: true, deploymentId: string, duplicate?: boolean } | { ok: false, deploymentId: string }}
  */
-export async function requestDeployment({ db, queue }, app, { trigger = 'manual', commit = null, deliveryId = null, startAfter = false, rollbackOf = null } = {}) {
+export async function requestDeployment({ db, queue }, app, { trigger = 'manual', commit = null, deliveryId = null, startAfter = false, rollbackOf = null, noCache = false } = {}) {
   // The settings THIS deployment will use. No secret values belong here.
   const snapshot = {
     repo: app.repo, branch: app.branch, root_dir: app.root_dir,
@@ -75,6 +76,7 @@ export async function requestDeployment({ db, queue }, app, { trigger = 'manual'
       cpus: snapshot.cpus,
       buildTimeoutMinutes: snapshot.build_timeout_minutes ?? undefined, // left out when there is no limit
       volumes: snapshot.volumes,
+      noCache: (noCache && !rollbackOf) || undefined, // only this deployment; left out when not asked
       startAfterDeploy: startAfter || undefined, // the worker applies it only if the deployment succeeds
     });
     await db.query('UPDATE deployments SET job_id = $2 WHERE id = $1', [deploymentId, String(job.id)]);

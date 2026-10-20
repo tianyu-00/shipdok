@@ -27,6 +27,9 @@ export const useDeployments = (id) => useQuery({
 export const useAppVolumes = (id) => useQuery({ queryKey: ['volumes', id], queryFn: () => api(`/apps/${id}/volumes`), retry: false })
 export const useKeptVolumes = () => useQuery({ queryKey: ['kept-volumes'], queryFn: () => api('/volumes'), refetchInterval: 5000 })
 
+// Docker's build cache: shared by every app. Checked often while a clean-up is waiting or running, rarely otherwise.
+export const useBuildCache = () => useQuery({ queryKey: ['build-cache'], queryFn: () => api('/build-cache'), refetchInterval: (q) => (q.state.data?.cleaning ? 3000 : 30_000) })
+
 export const useCrashes = (id) => useQuery({ queryKey: ['crashes', id], queryFn: () => api(`/apps/${id}/crashes`), refetchInterval: 15_000 })
 
 // 501 means no GitHub App is configured: that is an answer, not a failure, so the create form falls back to typing the repo.

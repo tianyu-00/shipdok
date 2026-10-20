@@ -31,12 +31,12 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 021_app_volumes
-  src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), recovery.js (recovery codes), resetpassword.js (host-side reset), authutil.js, settings.js + publicurl.js (public-access settings), visitor.js (local or outside), middleware/ (originCheck, publicAccess, requireAuth), routes/ (auth, recovery, settings, apps, env, webhooks, github, logs)
+  migrations/    001_init ... 022_build_cache
+  src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), recovery.js (recovery codes), resetpassword.js (host-side reset), authutil.js, settings.js + publicurl.js (public-access settings), visitor.js (local or outside), middleware/ (originCheck, publicAccess, requireAuth), routes/ (auth, recovery, settings, apps, env, webhooks, github, logs, volumes, buildcache)
   openapi/       API documentation: operations/*.js (one description per route), schemas.js, build.js, inventory.js (real routes), generate.js, openapi.json (generated, committed)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`), reset-password.js (host-side password reset; `npm run reset-password`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
-  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), deleteapp.js (removing an app), stats.js (CPU and memory samples), monitor.js, activity.js, buildlog.js (the log sink), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
+  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), deleteapp.js (removing an app), stats.js (CPU and memory samples), monitor.js, activity.js, buildlog.js (the log sink), buildcache.js (Docker's build cache: size and clean-up), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
   worker.js      entry point; cli.js: manual deploy
 apps/web/        Vite + React (JavaScript) dashboard, Tailwind v4 + shadcn/ui (copied into src/components/ui); Vitest + Testing Library
   src/           App.jsx, pages/ (auth, apps list, create app, app detail), components/ (tabs, log viewer, actions), lib/ (api client, queries, format)
@@ -74,7 +74,7 @@ test projects do): `POSTGRES_USER`/`POSTGRES_DB` (default `shipdok`), `API_HOST_
 requests from whatever address it is opened at), `MONITOR_INTERVAL_MS`, `STATS_INTERVAL_MS`, and the four secrets below (your value wins).
 `LOG_DIR` is set by compose to the `shipdok_logs` volume (outside Docker it defaults to `~/.shipdok/logs`). **`DOCKER_GID` is gone.**
 
-Tests: API 956, worker 577, shared 232, web 603. Worker tests reuse the `_test` database the API tests create and
+Tests: API 974, worker 594, shared 232, web 618. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` is now needed only for development with npm (`POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY`: 64 hex, losing
 it makes stored secrets unrecoverable) and for the optional settings above. **The GitHub App is NOT configured here any more** (dashboard,
@@ -426,7 +426,7 @@ GitHub page; see "Connect GitHub").
   with a clear message, the running version untouched). Not tested: the disk warning on a really full disk (only simulated with a
   fake measurement), a build that fills the disk, ARM64, a real push-triggered build after this change (the build step itself was
   only re-indented; unit tests cover it). Known limits: the layer-usage measure also counts anything else Docker does during the
-  clean-up; dangling build cache is not cleaned (no per-app ownership; a separate "clean build cache" action is later work).
+  clean-up; the build cache is cleaned separately (see "Build cache clean-up" below).
 - **Dashboard (slice 1, verified in a real browser against the full Docker stack):** `apps/web` is Vite + React in plain JavaScript,
   Tailwind v4, shadcn/ui components (JavaScript mode; the CLI wrongly installed an unrelated npm package `cn`, removed: components import
   `@/lib/utils`), React Router, TanStack Query (polling). **Same origin**: in development Vite forwards `/api`; in Docker the `web`
@@ -626,6 +626,33 @@ GitHub page; see "Connect GitHub").
   the API does not talk to Docker; deferred, the plan had said "on demand"); a retry of a failed app delete uses the safe default (keep) unless the box is ticked again; a volume is
   initialised from the image folder, so a non-root app needs the folder created and owned in its Dockerfile (documented); an app deployed before this has no volumes until paths are
   added; adopting an orphaned volume into another app is not possible. Not tested: the Pi, an SD card under write load, a real browser pass of the new cards.
+- **Build cache clean-up and "Deploy without cache" (verified with the real worker against a throwaway Docker-in-Docker daemon, through the real queue, and in a real
+  browser; no new environment setting):** **Administrator's decisions (all "your suggestions" plus one addition): "unused" means not used for 24 hours; the worker measures the
+  size in the background (every 5 minutes, hard-coded); no automatic clean-up after deployments; both buttons ("Clean unused cache" and "Clean everything unused"); plus a
+  per-deployment "Deploy without cache".** Docker's BuildKit cache is shared by every build, so it has no owner and image clean-up never touched it. Table `build_cache`
+  (migration 022, ONE row, `id = 1`: total/reclaimable bytes and `sampled_at` from the worker's last look; `requested_at`/`requested_all` while a clean-up is waiting; `last_*` =
+  the most recent clean-up with `last_error`). Worker (`buildcache.js`, `docker.js`): `buildCacheUsage` (sums `df().BuildCache`, `InUse` entries are not reclaimable; null when this
+  Docker does not report it) and `pruneBuildCache({olderThanHours})` (`POST /build/prune?all=1` through dockerode's modem, with an `until` filter for the default; dockerode has no
+  call for it), the `cleancache` job (same queue as deployments, one at a time, so never during a build; dispatch routes it explicitly, an unknown name would otherwise become a
+  deployment), and a sampler loop. A failed clean-up is recorded with its reason and the job fails; a failed measurement afterwards never fails a good clean-up. Only build
+  cache is touched: no images, containers, volumes or logs. API: `GET /api/build-cache` ({totalBytes, reclaimableBytes, sampledAt, cleaning, last}; `cleaning` stops being true
+  30 minutes after a request that was never reported back, so a dead worker does not block for ever) and `POST /api/build-cache/clean` ({all?: boolean}, strict; 202, 409
+  `already_queued` decided by ONE upsert so parallel requests queue exactly one, the request is undone if the queue is down); `POST /api/apps/:id/deployments` accepts
+  `noCache: true` (job field `noCache`, only when asked; NOT in the settings snapshot, not for webhooks, ignored for a rollback), and the worker adds `docker build --no-cache`
+  and logs "Building ... without the build cache" (only the exact value `true` counts; the base image is not re-pulled). Dashboard: Storage page **Build cache** card (size,
+  reclaimable, "measured N min ago", the last result or its error, "Cleaning..." with both buttons off, a confirmation for each button, the "everything" one warning that the next
+  builds start from nothing), and a menu arrow beside **Deploy** with **Deploy without cache...** (confirmation; the disk-almost-full question keeps the choice). Docs:
+  `docs/operations.md` "Build cache". **Checked for real:** a real `docker build` three times (second fully cached, `--no-cache` reran both RUN steps; the only CACHED line is the
+  base image, which is what the dialog says); the "unused for 24 h" clean-up freed 0 on a minutes-old cache; "everything" freed 221 MB (cache 211.6 MB to 0), while the images, a
+  running container and a labelled volume were untouched; the real worker container (its `DOCKER_HOST` pointed at the throwaway daemon, so this machine's Docker was never used)
+  measured the cache, accepted the API's request through Redis, freed 312 MB and the API then showed the result; a second request while one was waiting was a 409; in headless Chromium
+  the menu, both dialogs, the request bodies (`{"noCache":true}` and `{}`), the card and its "Cleaning..." state, no console errors. Mutation-proofed (worker, API and web: flag
+  dropped, truthy instead of `true`, default age dropped, `all` not sent, in-use counted as reclaimable, request never ended, unknown job name, error not recorded, duplicate guard,
+  stale window, strict body, queue-failure undo, plain Deploy sending noCache, disk question forgetting the choice, buttons not disabled, confirmation skipped). **Not tested:** the
+  Pi (BuildKit on ARM64, how long `df` takes with a very large cache), a real push-triggered build with the button (the arguments are unit-tested and the flag was run by hand
+  with the same options), a build running WHILE a clean-up is requested (the queue serialises them; BuildKit also protects entries a running build holds), and the card at phone
+  width. Known limits: the measurement is up to 5 minutes old, and a clean-up done outside Shipdok shows only at the next look; "Deploy without cache" does not also offer
+  "and start" for a stopped app (it stays stopped, like Deploy); no per-app cache.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
@@ -658,5 +685,5 @@ accounts so a stranger's installation does not show up in the repository picker.
 one row, the webhook receiver finds the secret from the app id header GitHub sends, each Shipdok app records its GitHub app, a client per app in the
 worker, a merged repository picker, webhook sync per app). Do A first if repositories live on more than one unrelated account; B only for isolation.
 
-Known gaps (persistent volumes are built; see above): old `shipdok/*` images pile up until the administrator prunes (or turns on `auto_prune`); no "clean build cache" action; build-time env vars; Railpack; DB backup docs.
+Known gaps (persistent volumes are built; see above): old `shipdok/*` images pile up until the administrator prunes (or turns on `auto_prune`); build-time env vars; Railpack; DB backup docs.
 The portfolio backend (`tianyu-00/TianYuSiteV2`, `backend/`, port 9090) is not yet deployed through the platform.
