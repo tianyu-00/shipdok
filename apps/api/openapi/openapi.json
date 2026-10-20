@@ -379,7 +379,7 @@
           "Variables"
         ],
         "summary": "Create or change a variable",
-        "description": "Stores the value encrypted (AES-256-GCM, bound to the app and the name). The running app keeps its old value until the next deployment. `scope` says where the variable is available: `runtime` (the container; the default for a new variable), `build` (only `docker build --build-arg`; the container never sees it) or `both`. Send a `value`, a `scope`, a `newKey`, or any of them together: a value alone keeps the scope; a scope alone changes where an existing variable is available and keeps its value (404 if there is no such variable). `newKey` renames an existing variable (the value is encrypted for its name, so the server decrypts and encrypts it again, in the same transaction as the rest of the request; the value never leaves the server). The new name follows the same rules as any name, 409 `name_taken` if another variable has it, and the answer says `previous_key`. Until the next deployment the old name counts as removed and the new one as added. A build variable is baked into the image if the Dockerfile uses it (`ARG NAME`), so use it for public configuration, not secrets; some names (`PATH`, `HOME`, `DOCKER_*`, `BUILDKIT_*`, `LD_*`...) cannot be used at build time.",
+        "description": "Stores the value encrypted (AES-256-GCM, bound to the app and the name). The running app keeps its old value until the next deployment. `scope` says where the variable is available: `runtime` (the container; the default for a new variable), `build` (only `docker build --build-arg`; the container never sees it) or `both`. `buildAs` says how a variable that reaches the build is given to `docker build`: `arg` (a build argument, the default; the Dockerfile declares it with `ARG NAME`, and if it uses it the value is stored in the image) or `secret` (a BuildKit secret, `--secret id=NAME,env=NAME`; the Dockerfile asks for it with `RUN --mount=type=secret,id=NAME,env=NAME ...`; the value is mounted for that step only and never stored in the image, and a changed secret does not re-run a cached step). Send a `value`, a `scope`, a `buildAs`, a `newKey`, or any of them together: a value alone keeps the scope and `buildAs`; a scope or `buildAs` alone changes an existing variable and keeps its value (404 if there is no such variable). `newKey` renames an existing variable (the value is encrypted for its name, so the server decrypts and encrypts it again, in the same transaction as the rest of the request; the value never leaves the server). The new name follows the same rules as any name, 409 `name_taken` if another variable has it, and the answer says `previous_key`. Until the next deployment the old name counts as removed and the new one as added. A build variable is baked into the image if the Dockerfile uses it (`ARG NAME`), so use it for public configuration, not secrets; some names (`PATH`, `HOME`, `DOCKER_*`, `BUILDKIT_*`, `LD_*`...) cannot be used at build time.",
         "parameters": [
           {
             "name": "id",
@@ -423,6 +423,13 @@
                         "both"
                       ]
                     },
+                    "build_as": {
+                      "type": "string",
+                      "enum": [
+                        "arg",
+                        "secret"
+                      ]
+                    },
                     "previous_key": {
                       "type": "string",
                       "description": "Only after a rename: the name it had."
@@ -457,6 +464,13 @@
                         "both"
                       ]
                     },
+                    "build_as": {
+                      "type": "string",
+                      "enum": [
+                        "arg",
+                        "secret"
+                      ]
+                    },
                     "updated_at": {
                       "type": "string",
                       "format": "date-time"
@@ -467,7 +481,7 @@
             }
           },
           "400": {
-            "description": "A bad name, value or scope, a reserved name, a name that cannot be used at build time, nothing to set, or too many variables.",
+            "description": "A bad name, value, scope or `buildAs`, a reserved name, a name that cannot be used at build time, nothing to set, or too many variables.",
             "content": {
               "application/json": {
                 "schema": {
@@ -526,7 +540,7 @@
                 "properties": {
                   "value": {
                     "type": "string",
-                    "description": "The value; at most 64 KB, no null characters. Leave it out to change only the scope."
+                    "description": "The value; at most 64 KB, no null characters. Leave it out to change only the scope or `buildAs`."
                   },
                   "scope": {
                     "type": "string",
@@ -536,6 +550,14 @@
                       "both"
                     ],
                     "description": "Where the variable is available. Default for a new variable: `runtime`; an existing variable keeps its scope when this is left out."
+                  },
+                  "buildAs": {
+                    "type": "string",
+                    "enum": [
+                      "arg",
+                      "secret"
+                    ],
+                    "description": "How a variable that reaches the build is given to `docker build`. Default for a new variable: `arg`; an existing variable keeps what it has when this is left out."
                   },
                   "newKey": {
                     "type": "string",
@@ -1625,7 +1647,7 @@
           "Variables"
         ],
         "summary": "List an app's variables",
-        "description": "The names, where each is available (`scope`), **never the values** (they are always `********`), and which changes wait for the next deployment.",
+        "description": "The names, where each is available (`scope`) and how it reaches the build (`build_as`), **never the values** (they are always `********`), and which changes wait for the next deployment.",
         "parameters": [
           {
             "name": "id",
@@ -5653,6 +5675,14 @@
                   ],
                   "description": "Where it is available: the running container, `docker build` only, or both."
                 },
+                "build_as": {
+                  "type": "string",
+                  "enum": [
+                    "arg",
+                    "secret"
+                  ],
+                  "description": "How a variable that reaches the build is given to `docker build`: a build argument (`arg`) or a BuildKit secret (`secret`). Means nothing for `runtime`."
+                },
                 "updated_at": {
                   "type": "string",
                   "format": "date-time",
@@ -5663,6 +5693,7 @@
                 "key",
                 "value",
                 "scope",
+                "build_as",
                 "updated_at"
               ]
             }

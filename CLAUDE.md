@@ -32,7 +32,7 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 023_env_scope
+  migrations/    001_init ... 024_env_build_as
   src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), recovery.js (recovery codes), resetpassword.js (host-side reset), authutil.js, settings.js + publicurl.js (public-access settings), visitor.js (local or outside), middleware/ (originCheck, publicAccess, requireAuth), routes/ (auth, recovery, settings, apps, env, webhooks, github, logs, volumes, buildcache)
   openapi/       API documentation: operations/*.js (one description per route), schemas.js, build.js, inventory.js (real routes), generate.js, openapi.json (generated, committed)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`), reset-password.js (host-side password reset; `npm run reset-password`)
@@ -75,7 +75,7 @@ test projects do): `POSTGRES_USER`/`POSTGRES_DB` (default `shipdok`), `API_HOST_
 requests from whatever address it is opened at), `MONITOR_INTERVAL_MS`, `STATS_INTERVAL_MS`, and the four secrets below (your value wins).
 `LOG_DIR` is set by compose to the `shipdok_logs` volume (outside Docker it defaults to `~/.shipdok/logs`). **`DOCKER_GID` is gone.**
 
-Tests: API 1033, worker 626, shared 252, web 911. Worker tests reuse the `_test` database the API tests create and
+Tests: API 1043, worker 635, shared 252, web 925. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` is now needed only for development with npm (`POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY`: 64 hex, losing
 it makes stored secrets unrecoverable) and for the optional settings above. **The GitHub App is NOT configured here any more** (dashboard,
@@ -133,7 +133,9 @@ feature. Below: what exists, the administrator's decisions (do not re-litigate),
   `scope`: `runtime` (default), `build` (only `docker build --build-arg NAME`, value in docker's own environment never on the command line, which holds none of the worker's
   secrets) or `both`; the Dockerfile must declare `ARG NAME`; a used build argument is baked into the image (documented; public settings only). Names that change how the build
   runs (`PATH`, `HOME`, `DOCKER_*`, `BUILDKIT_*`, `LD_*`...) are refused for build. A variable can be renamed (`PUT /env/:key` with `newKey`: the server decrypts and
-  encrypts again for the new name in one transaction, 409 `name_taken`; the value never leaves the server). **Decisions: build arguments only (no BuildKit secrets yet); an import is runtime-only.**
+  encrypts again for the new name in one transaction, 409 `name_taken`; the value never leaves the server). A variable that reaches the build is passed either as a build argument (`build_as` `arg`, the default) or as a **BuildKit secret** (`secret`: `--secret id=NAME,env=NAME`, value again only in docker's environment, never stored in the
+  image; the Dockerfile asks with `RUN --mount=type=secret,id=NAME,env=NAME`; BuildKit does not put a secret in the cache key, so a changed one does not re-run a cached step: documented, use Deploy without cache).
+  **Decisions: both ways exist (a second "Passed to the build as" choice, shown only when the variable reaches the build); an import is runtime-only and never changes either choice.**
 - **Start / stop / restart:** intent saved first (`desired_state`), then a `control` job; a stopped app stays stopped when deployed unless `start: true`.
 - **Crash handling:** the monitor (15 s) compares `desired_state` with Docker (pure rules in `supervisor.js`): crash restarts with back-off, `max_restarts` in 10 min = `crashed`,
   3 failed health checks = `unhealthy` (left running), a stop from outside Shipdok is NOT restarted, a removed container is `missing` (**decision: show it, do not recreate it**).
@@ -184,7 +186,7 @@ account, no two-factor login (strong password policy, lockout, recent logins, re
 
 Candidates (the administrator picks):
 - Caddy compose profile (optional).
-- BuildKit secrets for build-time values that must not be baked into the image; Railpack / custom build commands (deploy repos without a Dockerfile; needs a design discussion first).
+- Railpack / custom build commands (deploy repos without a Dockerfile; needs a design discussion first).
 - Volume sizes on the Storage page (Docker measures slowly, so on demand only).
 - Several GitHub accounts or organisations. Option A (small): a checkbox on Connect GitHub that makes the app public so one app can be installed on any account the administrator
   controls, plus an allow-list so a stranger's installation does not show in the repository picker. Option B (large): several separate GitHub Apps (a table, the webhook receiver finds

@@ -1,5 +1,5 @@
 export {
-  DEPLOY_QUEUE, LABEL, ENV_KEY_RE, MAX_ENV_VARS, MAX_ENV_VALUE_BYTES, isReservedEnvName, ENV_SCOPES, reachesBuild, reachesRuntime, isReservedBuildName, REPO_FULL_NAME_RE,
+  DEPLOY_QUEUE, LABEL, ENV_KEY_RE, MAX_ENV_VARS, MAX_ENV_VALUE_BYTES, isReservedEnvName, ENV_SCOPES, BUILD_PASSES, reachesBuild, reachesRuntime, isReservedBuildName, REPO_FULL_NAME_RE,
 } from './constants.js';
 export { parseMasterKey, envVarContext, encryptSecret, decryptSecret } from './crypto.js';
 export { parseEnvText } from './envfile.js';

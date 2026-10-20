@@ -153,7 +153,7 @@ export const schemas = {
 
   // ---- variables
   EnvList: obj({
-    variables: arr(obj({ key: str('The name.'), value: str('Always `********`: values are never returned here.'), scope: enumOf(['runtime', 'build', 'both'], 'Where it is available: the running container, `docker build` only, or both.'), updated_at: time('Last changed.') })),
+    variables: arr(obj({ key: str('The name.'), value: str('Always `********`: values are never returned here.'), scope: enumOf(['runtime', 'build', 'both'], 'Where it is available: the running container, `docker build` only, or both.'), build_as: enumOf(['arg', 'secret'], 'How a variable that reaches the build is given to `docker build`: a build argument (`arg`) or a BuildKit secret (`secret`). Means nothing for `runtime`.'), updated_at: time('Last changed.') })),
     pending: obj({
       deployed: bool('Whether the app has been deployed.'), pending: bool('Whether any change waits for the next deployment.'),
       added: arr(str('Name.')), changed: arr(str('Name.')), removed: arr(str('Name.')),

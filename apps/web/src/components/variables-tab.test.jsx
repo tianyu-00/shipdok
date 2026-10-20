@@ -105,6 +105,24 @@ describe('changing variables', () => {
     expect(screen.getByLabelText('Value')).toHaveAttribute('type', 'password')
   })
 
+  test('the name and value fields tell browsers and password managers they are not a login, on the add form and in the edit dialog', async () => {
+    mockApi({ [ENV]: { variables: vars('A'), pending: idle } })
+    tab()
+    const checks = (name, value) => {
+      expect(name).toHaveAttribute('autocomplete', 'off')
+      expect(value).toHaveAttribute('autocomplete', 'new-password') // the saved sign-in is never offered for a new value
+      for (const el of [name, value]) {
+        expect(el).toHaveAttribute('data-1p-ignore')
+        expect(el).toHaveAttribute('data-lpignore', 'true')
+        expect(el).toHaveAttribute('data-bwignore', 'true')
+      }
+      expect(value).toHaveAttribute('type', 'password')
+    }
+    checks(await screen.findByLabelText('Name'), screen.getByLabelText('Value'))
+    await userEvent.click(screen.getByLabelText('Edit A'))
+    checks(screen.getByLabelText('Name of A'), screen.getByLabelText('New value for A'))
+  })
+
   test('nothing can be added without a name', async () => {
     mockApi({ [ENV]: { variables: [], pending: idle } })
     tab()
@@ -342,7 +360,7 @@ describe('where a variable is available', () => {
     await userEvent.selectOptions(screen.getByLabelText('Available in'), 'build')
     await userEvent.click(screen.getByRole('button', { name: 'Add or update' }))
     await waitFor(() => expect(api.called('PUT', BASE('VITE_API_URL'))).toHaveLength(1))
-    expect(api.called('PUT', BASE('VITE_API_URL'))[0].body).toEqual({ value: 'https://api.example.com', scope: 'build' })
+    expect(api.called('PUT', BASE('VITE_API_URL'))[0].body).toEqual({ value: 'https://api.example.com', scope: 'build', buildAs: 'arg' })
   })
 
   test('on the add form too, build or both explains the baking; runtime does not', async () => {
@@ -385,6 +403,130 @@ describe('where a variable is available', () => {
     mockApi({ [ENV]: { variables: [], pending: idle } })
     tab()
     expect(await screen.findByText(/imported \.env file is added as runtime variables/)).toBeInTheDocument()
+  })
+})
+
+describe('how a build variable is passed (argument or secret)', () => {
+  const as = (key, scope, build_as) => ({ key, scope, build_as, value: '********', updated_at: '2026-10-19T11:00:00Z' })
+  const PUT = (k) => `PUT /api/apps/${APP_ID}/env/${k}`
+  const BASE = (k) => `/api/apps/${APP_ID}/env/${k}`
+  const badge = (key) => within(screen.getByText(key).closest('td')).getByTestId('scope-badge')
+  const edit = async (key) => userEvent.click(await screen.findByLabelText(`Edit ${key}`))
+  const save = () => userEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+  test('the badge names a secret; an argument, and a variable from before this existed, keep the short labels', async () => {
+    mockApi({ [ENV]: { variables: [as('S', 'build', 'secret'), as('SB', 'both', 'secret'), as('A', 'build', 'arg'), as('R', 'runtime', 'secret'), ...vars('OLD')], pending: idle } })
+    tab()
+    await screen.findByText('S')
+    expect(['S', 'SB', 'A', 'R', 'OLD'].map((k) => badge(k).textContent)).toEqual(['Build secret', 'Build secret + runtime', 'Build', 'Runtime', 'Runtime'])
+  })
+
+  test('the choice is only offered when the variable reaches the build', async () => {
+    mockApi({ [ENV]: { variables: [as('A', 'runtime', 'arg')], pending: idle } })
+    tab()
+    await edit('A')
+    expect(screen.queryByLabelText('How A is passed to the build')).toBeNull()
+    await userEvent.selectOptions(screen.getByLabelText('Where A is available'), 'both')
+    expect(screen.getByLabelText('How A is passed to the build')).toHaveValue('arg')
+    await userEvent.selectOptions(screen.getByLabelText('Where A is available'), 'runtime')
+    expect(screen.queryByLabelText('How A is passed to the build')).toBeNull()
+  })
+
+  test('changing only how it is passed sends buildAs alone', async () => {
+    const api = mockApi({ [ENV]: { variables: [as('NPM_TOKEN', 'build', 'arg')], pending: idle }, [PUT('NPM_TOKEN')]: { key: 'NPM_TOKEN', build_as: 'secret' } })
+    tab()
+    await edit('NPM_TOKEN')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    await userEvent.selectOptions(screen.getByLabelText('How NPM_TOKEN is passed to the build'), 'secret')
+    await save()
+    await waitFor(() => expect(api.called('PUT', BASE('NPM_TOKEN'))).toHaveLength(1))
+    expect(api.called('PUT', BASE('NPM_TOKEN'))[0].body).toEqual({ buildAs: 'secret' })
+  })
+
+  test('changing it and then changing it back is no change', async () => {
+    mockApi({ [ENV]: { variables: [as('A', 'build', 'secret')], pending: idle } })
+    tab()
+    await edit('A')
+    expect(screen.getByLabelText('How A is passed to the build')).toHaveValue('secret')
+    await userEvent.selectOptions(screen.getByLabelText('How A is passed to the build'), 'arg')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+    await userEvent.selectOptions(screen.getByLabelText('How A is passed to the build'), 'secret')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  test('moving a secret to runtime sends the scope only: how it is passed means nothing there', async () => {
+    const api = mockApi({ [ENV]: { variables: [as('A', 'build', 'secret')], pending: idle }, [PUT('A')]: { key: 'A', scope: 'runtime' } })
+    tab()
+    await edit('A')
+    await userEvent.selectOptions(screen.getByLabelText('How A is passed to the build'), 'arg') // changed, then the scope is moved away
+    await userEvent.selectOptions(screen.getByLabelText('Where A is available'), 'runtime')
+    await save()
+    await waitFor(() => expect(api.called('PUT', BASE('A'))).toHaveLength(1))
+    expect(api.called('PUT', BASE('A'))[0].body).toEqual({ scope: 'runtime' })
+  })
+
+  test('an argument warns that the value is baked in; a secret says it is not, and shows the line for the Dockerfile with this name', async () => {
+    mockApi({ [ENV]: { variables: [as('NPM_TOKEN', 'build', 'arg')], pending: idle } })
+    tab()
+    await edit('NPM_TOKEN')
+    expect(screen.getByText(/baked into the image/)).toBeInTheDocument()
+    expect(screen.queryByText('Not stored in the image')).toBeNull()
+    await userEvent.selectOptions(screen.getByLabelText('How NPM_TOKEN is passed to the build'), 'secret')
+    expect(screen.queryByText(/baked into the image/)).toBeNull()
+    expect(screen.getByText('Not stored in the image')).toBeInTheDocument()
+    expect(screen.getByText('RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN ...')).toBeInTheDocument()
+    expect(screen.getByText(/Deploy without cache/)).toBeInTheDocument()
+  })
+
+  test('the line follows the name being typed, also after a rename', async () => {
+    mockApi({ [ENV]: { variables: [as('OLD_NAME', 'build', 'secret')], pending: idle } })
+    tab()
+    await edit('OLD_NAME')
+    await userEvent.clear(screen.getByLabelText('Name of OLD_NAME'))
+    await userEvent.type(screen.getByLabelText('Name of OLD_NAME'), 'NEW_NAME')
+    expect(screen.getByText('RUN --mount=type=secret,id=NEW_NAME,env=NEW_NAME ...')).toBeInTheDocument()
+  })
+
+  test('cancelling puts how it is passed back, and editing again starts from the saved state', async () => {
+    mockApi({ [ENV]: { variables: [as('A', 'build', 'arg')], pending: idle } })
+    tab()
+    await edit('A')
+    await userEvent.selectOptions(screen.getByLabelText('How A is passed to the build'), 'secret')
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await edit('A')
+    expect(screen.getByLabelText('How A is passed to the build')).toHaveValue('arg')
+  })
+
+  test('the add form offers it only for a build variable, defaults to an argument, and sends the choice', async () => {
+    const api = mockApi({ [ENV]: { variables: [], pending: idle }, [PUT('NPM_TOKEN')]: answer(201, { key: 'NPM_TOKEN', created: true, scope: 'build', build_as: 'secret' }) })
+    tab()
+    await screen.findByLabelText('Available in')
+    expect(screen.queryByLabelText('Passed to the build as')).toBeNull()
+    await userEvent.selectOptions(screen.getByLabelText('Available in'), 'build')
+    expect(screen.getByLabelText('Passed to the build as')).toHaveValue('arg')
+    await userEvent.selectOptions(screen.getByLabelText('Passed to the build as'), 'secret')
+    await userEvent.type(screen.getByLabelText('Name'), 'NPM_TOKEN')
+    await userEvent.type(screen.getByLabelText('Value'), 'tok')
+    expect(screen.getByText('RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN ...')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Add or update' }))
+    await waitFor(() => expect(api.called('PUT', BASE('NPM_TOKEN'))).toHaveLength(1))
+    expect(api.called('PUT', BASE('NPM_TOKEN'))[0].body).toEqual({ value: 'tok', scope: 'build', buildAs: 'secret' })
+  })
+
+  test('a runtime variable is added without buildAs, and the form goes back to an argument after adding', async () => {
+    const api = mockApi({ [ENV]: { variables: [], pending: idle }, [PUT('A')]: answer(201, { key: 'A', created: true, scope: 'runtime' }), [PUT('B')]: answer(201, { key: 'B', created: true, scope: 'build' }) })
+    tab()
+    await screen.findByLabelText('Available in')
+    await userEvent.selectOptions(screen.getByLabelText('Available in'), 'build')
+    await userEvent.selectOptions(screen.getByLabelText('Passed to the build as'), 'secret')
+    await userEvent.selectOptions(screen.getByLabelText('Available in'), 'runtime') // changed its mind
+    await userEvent.type(screen.getByLabelText('Name'), 'A')
+    await userEvent.type(screen.getByLabelText('Value'), '1')
+    await userEvent.click(screen.getByRole('button', { name: 'Add or update' }))
+    await waitFor(() => expect(api.called('PUT', BASE('A'))).toHaveLength(1))
+    expect(api.called('PUT', BASE('A'))[0].body).toEqual({ value: '1', scope: 'runtime' })
+    await userEvent.selectOptions(screen.getByLabelText('Available in'), 'build')
+    expect(screen.getByLabelText('Passed to the build as')).toHaveValue('arg')
   })
 })
 

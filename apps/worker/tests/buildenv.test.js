@@ -8,53 +8,75 @@ const WORKER_ENV = {
   APP_SECRETS_KEY: 'a'.repeat(64), SESSION_SECRET: 'sss', POSTGRES_PASSWORD: 'pg', REDIS_PASSWORD: 'rd', GITHUB_APP_PRIVATE_KEY_FILE: '/k.pem', SHIPDOK_PUBLIC: 'full',
 };
 
+describe('build secrets', () => {
+  test('`--secret id=NAME,env=NAME`: the name only, the value stays in docker\'s environment', () => {
+    const { args, env, secretNames, names } = dockerBuildEnvironment(['A=1'], ['NPM_TOKEN=s3cr3t-token'], WORKER_ENV);
+    assert.deepEqual(args, ['--build-arg', 'A', '--secret', 'id=NPM_TOKEN,env=NPM_TOKEN']);
+    assert.deepEqual([names, secretNames], [['A'], ['NPM_TOKEN']]);
+    assert.ok(!args.join(' ').includes('s3cr3t-token'));
+    assert.equal(env.NPM_TOKEN, 's3cr3t-token');
+  });
+
+  test('the same rules for names as arguments: a reserved name is refused, naming it and never the value', () => {
+    assert.throws(() => dockerBuildEnvironment([], ['DOCKER_HOST=topsecretvalue'], WORKER_ENV), (err) => err.message.includes('DOCKER_HOST') && !err.message.includes('topsecretvalue'));
+  });
+
+  test('a name in both lists is passed once (the first, an argument, wins)', () => {
+    assert.deepEqual(dockerBuildEnvironment(['A=1'], ['A=2'], WORKER_ENV).args, ['--build-arg', 'A']);
+  });
+
+  test('none: no --secret', () => {
+    assert.deepEqual(dockerBuildEnvironment([], undefined, WORKER_ENV).args, []);
+  });
+});
+
 describe('the arguments', () => {
   test('only names, never values: `--build-arg NAME` reads the value from docker\'s environment', () => {
-    const { args } = dockerBuildEnvironment(['VITE_API=https://api.example.com', 'NPM_TOKEN=s3cr3t'], WORKER_ENV);
+    const { args } = dockerBuildEnvironment(['VITE_API=https://api.example.com', 'NPM_TOKEN=s3cr3t'], [], WORKER_ENV);
     assert.deepEqual(args, ['--build-arg', 'VITE_API', '--build-arg', 'NPM_TOKEN']);
     assert.ok(!args.join(' ').includes('s3cr3t') && !args.join(' ').includes('example.com'));
   });
 
   test('no build variables: no arguments', () => {
-    assert.deepEqual(dockerBuildEnvironment([], WORKER_ENV).args, []);
-    assert.deepEqual(dockerBuildEnvironment(undefined, WORKER_ENV).args, []);
+    assert.deepEqual(dockerBuildEnvironment([], [], WORKER_ENV).args, []);
+    assert.deepEqual(dockerBuildEnvironment(undefined, [], WORKER_ENV).args, []);
   });
 
   test('the value is everything after the FIRST =, exactly as stored', () => {
-    const { env } = dockerBuildEnvironment(['URL=https://h/?a=b=c', 'EMPTY=', 'MULTI=line1\nline2'], WORKER_ENV);
+    const { env } = dockerBuildEnvironment(['URL=https://h/?a=b=c', 'EMPTY=', 'MULTI=line1\nline2'], [], WORKER_ENV);
     assert.deepEqual([env.URL, env.EMPTY, env.MULTI], ['https://h/?a=b=c', '', 'line1\nline2']);
   });
 
   test('a name given twice is passed once', () => {
-    assert.deepEqual(dockerBuildEnvironment(['A=1', 'A=2'], WORKER_ENV).args, ['--build-arg', 'A']);
+    assert.deepEqual(dockerBuildEnvironment(['A=1', 'A=2'], [], WORKER_ENV).args, ['--build-arg', 'A']);
   });
 });
 
 describe('docker\'s environment', () => {
   test('has what docker needs and the build variables', () => {
-    const { env } = dockerBuildEnvironment(['VITE_API=v'], WORKER_ENV);
+    const { env } = dockerBuildEnvironment(['VITE_API=v'], [], WORKER_ENV);
     for (const k of ['PATH', 'HOME', 'DOCKER_HOST', 'DOCKER_CONFIG', 'BUILDX_CONFIG', 'XDG_CONFIG_HOME', 'HTTPS_PROXY', 'LANG']) assert.equal(env[k], WORKER_ENV[k], k);
     assert.equal(env.DOCKER_BUILDKIT, '1');
     assert.equal(env.VITE_API, 'v');
   });
 
   test('does NOT have the worker\'s own secrets', () => {
-    const { env } = dockerBuildEnvironment(['A=1'], WORKER_ENV);
+    const { env } = dockerBuildEnvironment(['A=1'], [], WORKER_ENV);
     for (const k of ['APP_SECRETS_KEY', 'SESSION_SECRET', 'POSTGRES_PASSWORD', 'REDIS_PASSWORD', 'GITHUB_APP_PRIVATE_KEY_FILE', 'SHIPDOK_PUBLIC']) assert.ok(!(k in env), k);
   });
 
   test('DOCKER_BUILDKIT is always 1, whatever the worker was started with', () => {
-    assert.equal(dockerBuildEnvironment([], { ...WORKER_ENV, DOCKER_BUILDKIT: '0' }).env.DOCKER_BUILDKIT, '1');
+    assert.equal(dockerBuildEnvironment([], [], { ...WORKER_ENV, DOCKER_BUILDKIT: '0' }).env.DOCKER_BUILDKIT, '1');
   });
 });
 
 describe('names that cannot be used (the API refuses them; this guards against a bad row)', () => {
   for (const bad of ['PATH', 'HOME', 'DOCKER_HOST', 'DOCKER_CONFIG', 'BUILDKIT_PROGRESS', 'BUILDX_BUILDER', 'LD_PRELOAD', 'XDG_CONFIG_HOME', 'SHIPDOK_X', 'NODE_OPTIONS', '1BAD', 'has-dash', '']) {
     test(`"${bad}" is refused, naming it but never the value`, () => {
-      assert.throws(() => dockerBuildEnvironment([`${bad}=topsecretvalue`], WORKER_ENV), (err) => err.message.includes('cannot be used at build time') && !err.message.includes('topsecretvalue'));
+      assert.throws(() => dockerBuildEnvironment([`${bad}=topsecretvalue`], [], WORKER_ENV), (err) => err.message.includes('cannot be used at build time') && !err.message.includes('topsecretvalue'));
     });
   }
   test('an ordinary name is fine', () => {
-    assert.doesNotThrow(() => dockerBuildEnvironment(['VITE_X=1', 'NEXT_PUBLIC_Y=2', 'NODE_ENV=production', 'HTTP_PROXY=p'], WORKER_ENV));
+    assert.doesNotThrow(() => dockerBuildEnvironment(['VITE_X=1', 'NEXT_PUBLIC_Y=2', 'NODE_ENV=production', 'HTTP_PROXY=p'], [], WORKER_ENV));
   });
 });

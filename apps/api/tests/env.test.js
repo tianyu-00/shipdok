@@ -492,6 +492,86 @@ describe("where a variable is available (scope)", () => {
   });
 });
 
+describe("how a build variable is passed (buildAs)", () => {
+  const putAs = (k, body) => agent.put(`/api/apps/${appId}/env/${k}`).send(body).then(track);
+  const asOf = async (k) => (await testPool.query("SELECT build_as FROM app_env_vars WHERE key = $1", [k])).rows[0]?.build_as;
+  const versionOf = async (k) => (await testPool.query("SELECT version::text AS v FROM app_env_vars WHERE key = $1", [k])).rows[0].v;
+  const valueOf = async (k) => (await reveal(k)).body.value;
+
+  test("a new variable is passed as an argument unless it says otherwise; the list and the answer show it", async () => {
+    await put("PLAIN", "1");
+    const res = await putAs("NPM_TOKEN", { value: "t", scope: "build", buildAs: "secret" });
+    expect([res.status, res.body.build_as]).toEqual([201, "secret"]);
+    expect((await list()).body.variables.map((v) => [v.key, v.build_as])).toEqual([["NPM_TOKEN", "secret"], ["PLAIN", "arg"]]);
+  });
+
+  test("a new value keeps how it is passed", async () => {
+    await putAs("A", { value: "1", scope: "build", buildAs: "secret" });
+    await put("A", "2");
+    expect(await asOf("A")).toBe("secret");
+  });
+
+  test("buildAs alone changes how it is passed, keeps the value and the scope, and gets a new version", async () => {
+    await putAs("A", { value: "keep-me", scope: "both" });
+    const before = await versionOf("A");
+    const res = await putAs("A", { buildAs: "secret" });
+    expect([res.status, res.body.build_as, res.body.scope]).toEqual([200, "secret", "both"]);
+    expect(await asOf("A")).toBe("secret");
+    expect(await valueOf("A")).toBe("keep-me");
+    expect(await versionOf("A")).not.toBe(before);
+  });
+
+  test("the same again changes nothing, not even the version", async () => {
+    await putAs("A", { value: "1", scope: "build", buildAs: "secret" });
+    const before = await versionOf("A");
+    expect((await putAs("A", { buildAs: "secret", scope: "build" })).status).toBe(200);
+    expect(await versionOf("A")).toBe(before);
+  });
+
+  test("a change is a pending change", async () => {
+    await putAs("A", { value: "1", scope: "build" });
+    await deployOk();
+    await putAs("A", { buildAs: "secret" });
+    expect((await list()).body.pending).toMatchObject({ pending: true, changed: ["A"] });
+  });
+
+  test("a scope change alone keeps how it is passed", async () => {
+    await putAs("A", { value: "1", scope: "build", buildAs: "secret" });
+    await putAs("A", { scope: "both" });
+    expect(await asOf("A")).toBe("secret");
+  });
+
+  test("an unknown value is refused and changes nothing; no such variable is a 404", async () => {
+    await put("A", "1");
+    for (const buildAs of ["Secret", "env", "", null, 1]) expect((await putAs("A", { buildAs })).status).toBe(400);
+    expect(await asOf("A")).toBe("arg");
+    expect((await putAs("NOPE", { buildAs: "secret" })).status).toBe(404);
+  });
+
+  test("an import never changes it, and new variables start as arguments", async () => {
+    await putAs("TOKEN", { value: "old", scope: "build", buildAs: "secret" });
+    expect((await importText("TOKEN=new\nOTHER=1\n")).status).toBe(200);
+    expect(await asOf("TOKEN")).toBe("secret");
+    expect(await asOf("OTHER")).toBe("arg");
+  });
+
+  test("a rename keeps it, and a rename can change it in the same request", async () => {
+    await putAs("OLD_NAME", { value: "v", scope: "build", buildAs: "secret" });
+    expect((await putAs("OLD_NAME", { newKey: "NEW_NAME" })).body.build_as).toBe("secret");
+    expect(await asOf("NEW_NAME")).toBe("secret");
+    expect((await putAs("NEW_NAME", { newKey: "THIRD", buildAs: "arg" })).body.build_as).toBe("arg");
+    expect(await asOf("THIRD")).toBe("arg");
+    expect(await valueOf("THIRD")).toBe("v");
+  });
+
+  test("the value of a secret is encrypted and never listed", async () => {
+    await putAs("NPM_TOKEN", { value: SECRET, scope: "build", buildAs: "secret" });
+    expect((await rows()).find((r) => r.key === "NPM_TOKEN").value_encrypted).not.toContain(SECRET);
+    await list();
+    expect(seen.join("\n")).not.toContain(SECRET.slice(0, 12));
+  });
+});
+
 describe("renaming a variable", () => {
   const edit = (k, body) => agent.put(`/api/apps/${appId}/env/${k}`).send(body).then(track);
   const keys = async () => (await testPool.query("SELECT key FROM app_env_vars ORDER BY key")).rows.map((r) => r.key);

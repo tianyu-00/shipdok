@@ -9,7 +9,7 @@ the folder, so a different folder means an empty installation).
 - [Restore](#restore)
 - [Persistent storage of your apps](#persistent-storage-of-your-apps)
 - [Build cache](#build-cache)
-- [Build-time variables](#build-time-variables)
+- [Build-time variables](#build-time-variables) (and [build secrets](#build-secrets))
 - [Forgot the password](#forgot-the-password)
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
@@ -205,19 +205,39 @@ RUN npm run build
 
 A variable the Dockerfile does not declare is simply ignored (Docker may print a warning). The value is available to the `RUN` steps after its `ARG` line.
 
-- **A build variable is baked into the image if the Dockerfile uses it.** `docker history` on the image shows it, and so does anyone who can read the
-  image. Use build variables for public settings such as an API address, not for secrets. Docker itself warns about `ARG` names such as `TOKEN` and
-  `PASSWORD`. (Passing real secrets without baking them in needs BuildKit secrets, which Shipdok does not offer yet.)
+- **A build argument is baked into the image if the Dockerfile uses it.** `docker history` on the image shows it, and so does anyone who can read the
+  image. Use arguments for public settings such as an API address. Docker itself warns about `ARG` names such as `TOKEN` and `PASSWORD`. For a token or
+  password use a **build secret** instead (next section).
+- Changing a variable or its setting applies from the next deployment, like any variable.
 - Values never appear on a command line: they travel in the environment of the `docker build` command, which has only what it needs, none of the
   worker's own secrets. They are masked (`***`) in the build log, like other variables.
 - Names that change how the build itself runs cannot be build variables (`PATH`, `HOME`, `LANG`, `DOCKER_*`, `BUILDKIT_*`, `LD_*` and a few more); they can
   still be runtime variables. The dashboard tells you before you save.
-- Changing a variable or its setting applies from the next deployment, like any variable. A changed build variable also makes Docker rebuild from the step
-  that first uses it.
+- A changed build argument makes Docker rebuild from the step that first uses it (a changed build secret does not; see below).
 - You can rename a variable in its edit dialog: the value is kept (it is re-encrypted for the new name on the server), the running app keeps the old name
   until the next deployment, and a name another variable already has is refused.
 - A pasted **.env** import adds runtime variables, and never changes the setting of a variable that already exists. Rollbacks build nothing, so they ignore
   build variables.
+
+### Build secrets
+
+When a variable reaches the build (**Build only** or **Build and runtime**), the **Passed to the build as** choice says how: **Build argument** (the default, above) or
+**Build secret**. A secret is handed to BuildKit with `docker build --secret id=NAME,env=NAME`. It exists only while the one `RUN` step that asks for it runs, and
+**nothing of it is stored in the image or its history**. The Dockerfile has to ask for it, with the variable's name as the id (the dashboard shows the line for the
+name you have typed):
+
+```dockerfile
+RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN npm ci
+```
+
+- Inside that step the value is the environment variable `NPM_TOKEN`. (The `env=` part is what gives it that name; without it the secret is a file under
+  `/run/secrets/` instead, which Shipdok does not rely on.) Other steps do not see it, and neither does the running container unless the variable is **Build and runtime**.
+- A step that does not ask for it never sees it, and there is no warning if the Dockerfile forgets to ask.
+- **A changed secret does not re-run a step Docker has cached**, because BuildKit does not put the secret's value in the cache key. After changing one, use
+  **Deploy without cache** (the menu next to Deploy) so the step runs again with the new value.
+- The same name rules apply as for arguments, the value travels the same way (docker's own environment, never a command line) and it is masked in the build log.
+  Only what the step itself prints could leak it: do not echo it.
+- A secret used by a step is still readable by that step's commands, so anything that step installs or runs can read it.
 
 ## Forgot the password
 

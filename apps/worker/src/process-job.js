@@ -89,7 +89,7 @@ export async function processDeployJob(
       await db.markFailed(id, message).catch(tolerate('failure'));
       throw new Error(message);
     }
-    redact = createRedactor([...valuesOf(appEnv.env), ...valuesOf(appEnv.buildEnv), ...secretsFromGitEnv(gitEnv)]);
+    redact = createRedactor([...valuesOf(appEnv.env), ...valuesOf(appEnv.buildEnv), ...valuesOf(appEnv.buildSecretEnv ?? []), ...secretsFromGitEnv(gitEnv)]);
 
     // Watch for a cancel request while the deployment runs: one cheap query per tick, only while active.
     const controller = new AbortController();
@@ -142,6 +142,7 @@ export async function processDeployJob(
         ...d,
         env: appEnv.env,
         buildEnv: appEnv.buildEnv ?? [], // only for `docker build`; never given to the container
+        buildSecretEnv: appEnv.buildSecretEnv ?? [], // the same, as BuildKit secrets
         gitEnv,
         log,
         logSink: sink ?? undefined,

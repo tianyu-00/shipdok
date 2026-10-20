@@ -19,6 +19,24 @@ describe('loadAppEnv: where a variable is available', () => {
     assert.deepEqual(Object.keys(versions), ['BOTH', 'BUILD_ONLY', 'RUN_ONLY']); // every variable has a version, whatever its scope
   });
 
+  test('a build variable passed as a secret goes to buildSecretEnv, not buildEnv; the runtime still gets it for build-and-runtime', async () => {
+    const id = await makeApp();
+    await addVar(id, 'ARG_ONE', 'a', KEY, 'build', 'arg');
+    await addVar(id, 'SECRET_BUILD', 's', KEY, 'build', 'secret');
+    await addVar(id, 'SECRET_BOTH', 'sb', KEY, 'both', 'secret');
+    const { env, buildEnv, buildSecretEnv } = await loadAppEnv(pool, id, KEY);
+    assert.deepEqual(buildEnv, ['ARG_ONE=a']);
+    assert.deepEqual(buildSecretEnv, ['SECRET_BOTH=sb', 'SECRET_BUILD=s']);
+    assert.deepEqual(env, ['SECRET_BOTH=sb']);
+  });
+
+  test('"secret" means nothing for a runtime-only variable: it never reaches the build', async () => {
+    const id = await makeApp();
+    await addVar(id, 'RUN_ONLY', 'r', KEY, 'runtime', 'secret');
+    const { env, buildEnv, buildSecretEnv } = await loadAppEnv(pool, id, KEY);
+    assert.deepEqual([env, buildEnv, buildSecretEnv], [['RUN_ONLY=r'], [], []]);
+  });
+
   test('a variable added without a scope (every one from before this existed) is runtime-only', async () => {
     const id = await makeApp();
     await pool.query('INSERT INTO app_env_vars (app_id, key, value_encrypted) VALUES ($1, $2, $3)', [id, 'OLD', (await import('@shipdok/shared')).encryptSecret('v', KEY, (await import('@shipdok/shared')).envVarContext(id, 'OLD'))]);
@@ -54,7 +72,7 @@ describe('loadAppEnv', () => {
 
   test('an app with no variables gives empty results', async () => {
     const id = await makeApp();
-    assert.deepEqual(await loadAppEnv(pool, id, KEY), { env: [], buildEnv: [], versions: {} });
+    assert.deepEqual(await loadAppEnv(pool, id, KEY), { env: [], buildEnv: [], buildSecretEnv: [], versions: {} });
   });
 
   test('only returns the requested app\'s variables', async () => {

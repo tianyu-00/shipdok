@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { SCOPES, scopeLabel, scopeBadgeClass, reachesBuild, buildNameProblem, nameFormatProblem } from './env-scope'
+import { SCOPES, BUILD_PASSES, scopeLabel, scopeBadgeClass, reachesBuild, secretMount, buildNameProblem, nameFormatProblem } from './env-scope'
 
 describe('scopes', () => {
   test('runtime, build, both, in that order, with readable labels', () => {
@@ -11,6 +11,19 @@ describe('scopes', () => {
   })
   test('only build and both reach the build', () => {
     expect(['runtime', 'build', 'both', undefined].map(reachesBuild)).toEqual([false, true, true, false])
+  })
+})
+
+describe('build secrets', () => {
+  test('argument first (the default), then secret', () => {
+    expect(BUILD_PASSES.map((p) => p.value)).toEqual(['arg', 'secret'])
+  })
+  test('the badge says secret only for a variable that reaches the build', () => {
+    expect([['build', 'secret'], ['both', 'secret'], ['runtime', 'secret'], ['build', 'arg'], ['both', undefined]].map(([s, a]) => scopeLabel(s, a)))
+      .toEqual(['Build secret', 'Build secret + runtime', 'Runtime', 'Build', 'Build + runtime'])
+  })
+  test('the Dockerfile line names the secret and sets it as an environment variable of that step', () => {
+    expect(secretMount('NPM_TOKEN')).toBe('RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN ...')
   })
 })
 

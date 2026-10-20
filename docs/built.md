@@ -600,9 +600,33 @@ Newest work is at the bottom of the Milestone 6 entries. SPEC.md is the target d
   on, BUILDKIT not forced, value-only PUT resetting the scope, an import changing it, scope change without a new version, a same-scope change bumping it, reserved build names
   allowed, unknown scope allowed, scope missing from the list, a scope-only PUT creating a variable, and the form sending or hiding the wrong things). **Not tested:** a real
   push-triggered deployment that uses a build variable (the deploy step is covered with a fake engine and the build step by hand with the same arguments), a real browser pass of the
-  new controls (jsdom only), the Pi, BuildKit secrets (not built). Known limits: Docker only passes an argument the Dockerfile declares (an undeclared one is ignored, with
+  new controls (jsdom only), the Pi (BuildKit secrets were added afterwards, see the next entry). Known limits: Docker only passes an argument the Dockerfile declares (an undeclared one is ignored, with
   Docker's own warning); the same name cannot be both a build and a runtime variable with DIFFERENT values (one variable, one value: use "Build and runtime" for the same value); a
   build variable changes the image, so a deployment with a changed one rebuilds from the step that uses it.
+- **Build secrets (BuildKit; verified with the real worker code and a real `docker build` against a throwaway Docker-in-Docker daemon, and in unit tests):** **Administrator's decisions:
+  add them because it is a security feature; a separate "Passed to the build as" choice (Build argument / Build secret) next to "Available in" and shown only when the variable
+  reaches the build, instead of more options in the scope list; existing variables stay arguments.** Column `app_env_vars.build_as` (migration 024, CHECK `arg`/`secret`, default
+  `arg`); a change gets a new version number like any other, no bump when nothing changes; `BUILD_PASSES` in `packages/shared`. API: `PUT /env/:key` takes `buildAs` (alone it keeps
+  the value and the scope; a value alone keeps `buildAs`; a rename keeps it or changes it in the same request; unknown value 400; no such variable 404; an import never changes it),
+  `GET` and the answers carry `build_as`. Worker: `loadAppEnv` returns `buildSecretEnv` beside `buildEnv` (a runtime-only variable reaches neither, whatever its `build_as`);
+  `dockerBuildEnvironment(buildEnv, buildSecretEnv, base)` adds `--secret id=NAME,env=NAME` (name only; the value is in docker's own environment, the same short environment and
+  the same name rules as arguments, a bad name fails before the build naming it); `process-job` masks the values in the log; the build log names the secrets and says the Dockerfile
+  must ask for them and that a changed secret does not re-run a cached step. Dashboard: the badge says "Build secret" / "Build secret + runtime", the Edit dialog and the add form
+  have the second choice, an argument keeps the amber "baked into the image" note (now pointing to secrets for tokens) and a secret shows a plain note "Not stored in the image"
+  with the exact Dockerfile line for the name being typed (it follows a rename) and the cache gotcha; only what changed is sent, and a secret moved to runtime sends the scope alone.
+  Docs: `docs/operations.md` "Build secrets", `docs/security.md`. **Checked for real:** a Dockerfile with `RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN` and `ARG VITE_API`
+  built with the arguments and environment the worker code produced: the step saw the real value (its length, 23, was written to a file), the argument arrived too,
+  `APP_SECRETS_KEY` was not in docker's environment, the value was not in the build output, `docker history --no-trunc` and every layer of `docker save` (0 matches), and the image
+  holds no `/run/secrets` file; **a rebuild with a different secret (length 30) reused the cached step and still said 23, and `--no-cache` said 30** (the documented caveat).
+  Mutation-proofed (18 mutants: secrets treated as arguments, never passed, the `env=` part dropped, not masked, not handed on, not given to `dockerBuildEnvironment`; same-value no-op
+  ignoring `buildAs`, a value-only PUT or an import resetting it, a rename or an import dropping it, unknown value accepted; in the dashboard: sent for a runtime variable,
+  not reset on cancel or after adding, the wrong note, the badge). A first round of mutation runs was wrong (the database suites refused to start under bare `node --test`, so
+  every mutant looked "killed"); it was redone through `npm test` with the unmutated baseline shown passing first. **Not tested:** a real push-triggered deployment that uses a secret,
+  the Pi / ARM64, a real browser pass of the new controls (jsdom only), BuildKit versions older than Docker 28's bundled one (the worker image ships Docker 28 CLI + buildx).
+  Afterwards, at the administrator's request: the name and value fields on the Variables tab (add form and Edit dialog) no longer get the saved Shipdok sign-in offered by the browser or a password
+  manager (`autocomplete="new-password"` on the value, `off` on the name, plus the `data-1p-ignore` / `data-lpignore` / `data-bwignore` opt-outs); checked only as attributes in tests, **not in a real browser
+  with a real password manager** (browsers may still ignore hints).
+  Known limits: a changed secret does not invalidate the cache; there is no warning when the Dockerfile forgets to ask for a secret; a step that asks for it can read it (and print it).
  **Rename (added after the first version; verified in tests with a real database and in a real browser):** `PUT /api/apps/:id/env/:key` also takes `newKey`. The name is part of what the value is
   encrypted for (`env:<appId>:<name>`), so the server decrypts the stored value and encrypts it again for the new name, in the SAME transaction as any value or scope sent with it (all or
   nothing, one request, no half-renamed variable); the value never leaves the server. The new name follows the usual rules (shape, names reserved everywhere, and the build-reserved names

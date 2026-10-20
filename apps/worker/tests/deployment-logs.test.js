@@ -168,6 +168,22 @@ describe('secrets', () => {
     assert.deepEqual(given.env, ['PUBLIC_URL_X=https://shop.example.com']); // the build-only variable is not in the container
   });
 
+  test('a build SECRET\'s value is masked in the log too, and is handed over as a secret, not an argument or a container variable', async () => {
+    const appId = await makeApp();
+    await addVar(appId, 'NPM_TOKEN', SECRET, KEY, 'build', 'secret');
+    const depId = await makeDeployment(appId);
+    let given;
+    await processDeployJob(jobFor(appId, depId), deps(async (opts) => {
+      given = opts;
+      opts.logSink.write('stderr', `#7 RUN echo ${SECRET}\n`);
+      return done(opts);
+    }));
+    assert.ok(!text(appId, depId).includes(SECRET));
+    assert.deepEqual(given.buildSecretEnv, ['NPM_TOKEN=' + SECRET]);
+    assert.deepEqual(given.buildEnv, []);
+    assert.deepEqual(given.env, []);
+  });
+
   test('the GitHub installation token is masked, in both forms git may print it', async () => {
     const appId = await makeApp();
     const depId = await makeDeployment(appId);

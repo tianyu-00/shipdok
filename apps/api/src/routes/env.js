@@ -13,6 +13,7 @@ import {
   isReservedBuildName,
   reachesBuild,
   ENV_SCOPES,
+  BUILD_PASSES,
 } from "@shipdok/shared";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -55,6 +56,10 @@ function scopeProblem(key, scope) {
   return null;
 }
 
+function buildAsProblem(buildAs) {
+  return BUILD_PASSES.includes(buildAs) ? null : `buildAs must be one of: ${BUILD_PASSES.join(", ")}`;
+}
+
 function valueProblem(value) {
   if (typeof value !== "string") return "value must be a string";
   if (value.includes("\0")) return "Value contains a null character";
@@ -93,15 +98,17 @@ async function pendingChanges(db, appId, rows) {
   };
 }
 
-// $4 is the scope, or null: a new variable then starts as 'runtime' and an existing one keeps its scope (an import never changes it).
+// $4 is the scope and $5 how a build variable is passed, or null: a new variable then starts as 'runtime' / 'arg' and an existing one
+// keeps what it has (an import never changes either).
 const UPSERT = `
-  INSERT INTO app_env_vars (app_id, key, value_encrypted, scope) VALUES ($1, $2, $3, COALESCE($4, 'runtime'))
+  INSERT INTO app_env_vars (app_id, key, value_encrypted, scope, build_as) VALUES ($1, $2, $3, COALESCE($4, 'runtime'), COALESCE($5, 'arg'))
   ON CONFLICT (app_id, key) DO UPDATE
     SET value_encrypted = EXCLUDED.value_encrypted,
         scope = COALESCE($4, app_env_vars.scope),
+        build_as = COALESCE($5, app_env_vars.build_as),
         version = nextval('app_env_var_version_seq'),
         updated_at = now()
-  RETURNING (xmax = 0) AS created, updated_at, scope`;
+  RETURNING (xmax = 0) AS created, updated_at, scope, build_as`;
 
 export function envRouter({ db, secretsKey }) {
   const r = Router({ mergeParams: true });
@@ -131,11 +138,11 @@ export function envRouter({ db, secretsKey }) {
     "/",
     handle(async (req, res) => {
       const { rows } = await db.query(
-        "SELECT key, scope, version::text AS version, updated_at FROM app_env_vars WHERE app_id = $1 ORDER BY key",
+        "SELECT key, scope, build_as, version::text AS version, updated_at FROM app_env_vars WHERE app_id = $1 ORDER BY key",
         [req.appId],
       );
       res.json({
-        variables: rows.map((v) => ({ key: v.key, value: MASK, scope: v.scope, updated_at: v.updated_at })),
+        variables: rows.map((v) => ({ key: v.key, value: MASK, scope: v.scope, build_as: v.build_as, updated_at: v.updated_at })),
         pending: await pendingChanges(db, req.appId, rows),
       });
     }),
@@ -178,7 +185,7 @@ export function envRouter({ db, secretsKey }) {
         let updated = 0;
         for (const v of vars) {
           const token = encryptSecret(v.value, secretsKey, envVarContext(req.appId, v.key));
-          const { rows } = await c.query(UPSERT, [req.appId, v.key, token, null]);
+          const { rows } = await c.query(UPSERT, [req.appId, v.key, token, null, null]);
           if (rows[0].created) created++;
           else updated++;
         }
@@ -188,36 +195,38 @@ export function envRouter({ db, secretsKey }) {
     }),
   );
 
-  // { value?, scope?, newKey? }. A value alone keeps the scope (a new variable starts as runtime-only); a scope alone changes where an
-  // existing variable is available and keeps its value (which is never sent back to the browser); `newKey` renames an existing variable.
+  // { value?, scope?, buildAs?, newKey? }. A value alone keeps the scope (a new variable starts as runtime-only) and how it is passed to the
+  // build; a scope or `buildAs` alone changes an existing variable and keeps its value (which is never sent back to the browser); `newKey` renames an existing variable.
   // The name is part of what the value is encrypted for, so a rename decrypts and encrypts again here, on the server, in the same
   // transaction as everything else the request changes: either all of it happens or none of it.
   r.put(
     "/:key",
     handle(async (req, res) => {
       const { key } = req.params;
-      const { value, scope } = req.body ?? {};
+      const { value, scope, buildAs } = req.body ?? {};
       const target = req.body?.newKey === undefined || req.body.newKey === key ? key : req.body.newKey;
       const renaming = target !== key;
-      if (value === undefined && scope === undefined && !renaming) throw new ClientError(400, "value must be a string");
+      if (value === undefined && scope === undefined && buildAs === undefined && !renaming) throw new ClientError(400, "value must be a string");
       const problem =
         keyProblem(key) ??
         (renaming && typeof target !== "string" ? "newKey must be a string" : null) ??
         (renaming ? keyProblem(target) : null) ??
         (value === undefined ? null : valueProblem(value)) ??
-        (scope === undefined ? null : scopeProblem(target, scope));
+        (scope === undefined ? null : scopeProblem(target, scope)) ??
+        (buildAs === undefined ? null : buildAsProblem(buildAs));
       if (problem) throw new ClientError(400, problem);
 
       let out;
       try {
         out = await withTx(db, async (c) => {
           await c.query("SELECT id FROM apps WHERE id = $1 FOR UPDATE", [req.appId]);
-          const current = (await c.query("SELECT scope, value_encrypted, updated_at FROM app_env_vars WHERE app_id = $1 AND key = $2", [req.appId, key])).rows[0];
+          const current = (await c.query("SELECT scope, build_as, value_encrypted, updated_at FROM app_env_vars WHERE app_id = $1 AND key = $2", [req.appId, key])).rows[0];
 
           if (renaming || value === undefined) {
-            // Changing only the scope, or renaming (with or without a new value): the variable must exist.
+            // Changing only the scope or how it is passed, or renaming (with or without a new value): the variable must exist.
             if (!current) throw new ClientError(404, "Variable not found");
             const newScope = scope ?? current.scope;
+            const newBuildAs = buildAs ?? current.build_as;
             if (renaming) {
               if (reachesBuild(newScope) && isReservedBuildName(target)) throw new ClientError(400, scopeProblem(target, newScope));
               let plain = value;
@@ -231,18 +240,18 @@ export function envRouter({ db, secretsKey }) {
               }
               const token = encryptSecret(plain, secretsKey, envVarContext(req.appId, target));
               const { rows } = await c.query(
-                `UPDATE app_env_vars SET key = $3, value_encrypted = $4, scope = $5, version = nextval('app_env_var_version_seq'), updated_at = now()
-                  WHERE app_id = $1 AND key = $2 RETURNING updated_at, scope`,
-                [req.appId, key, target, token, newScope],
+                `UPDATE app_env_vars SET key = $3, value_encrypted = $4, scope = $5, build_as = $6, version = nextval('app_env_var_version_seq'), updated_at = now()
+                  WHERE app_id = $1 AND key = $2 RETURNING updated_at, scope, build_as`,
+                [req.appId, key, target, token, newScope, newBuildAs],
               );
               return { created: false, renamed: true, ...rows[0] };
             }
-            if (current.scope === scope) return { created: false, scope, updated_at: current.updated_at };
-            // Only the scope changes. A name that is allowed for the new scope was checked above.
+            if (current.scope === newScope && current.build_as === newBuildAs) return { created: false, scope: newScope, build_as: newBuildAs, updated_at: current.updated_at };
+            // Only the scope or how it is passed changes. A name that is allowed for the new scope was checked above.
             const { rows } = await c.query(
-              `UPDATE app_env_vars SET scope = $3, version = nextval('app_env_var_version_seq'), updated_at = now()
-                WHERE app_id = $1 AND key = $2 RETURNING updated_at, scope`,
-              [req.appId, key, scope],
+              `UPDATE app_env_vars SET scope = $3, build_as = $4, version = nextval('app_env_var_version_seq'), updated_at = now()
+                WHERE app_id = $1 AND key = $2 RETURNING updated_at, scope, build_as`,
+              [req.appId, key, newScope, newBuildAs],
             );
             return { created: false, ...rows[0] };
           }
@@ -252,7 +261,7 @@ export function envRouter({ db, secretsKey }) {
             if (n >= MAX_ENV_VARS) throw new ClientError(400, `An app can have at most ${MAX_ENV_VARS} variables`);
           }
           const token = encryptSecret(value, secretsKey, envVarContext(req.appId, key));
-          return (await c.query(UPSERT, [req.appId, key, token, scope ?? null])).rows[0];
+          return (await c.query(UPSERT, [req.appId, key, token, scope ?? null, buildAs ?? null])).rows[0];
         });
       } catch (err) {
         // A name another variable already has (or two requests racing for the same new name): the primary key lets exactly one in.
@@ -264,6 +273,7 @@ export function envRouter({ db, secretsKey }) {
         created: out.created,
         ...(out.renamed ? { previous_key: key } : {}),
         scope: out.scope,
+        build_as: out.build_as,
         ...(out.updated_at ? { updated_at: out.updated_at } : {}),
       });
     }),

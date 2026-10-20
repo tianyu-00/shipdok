@@ -373,6 +373,32 @@ describe('build-time variables', () => {
     assert.equal(b.opts.env.VITE_API, 'https://api.example.com');
   });
 
+  test('a secret is --secret id=NAME,env=NAME with the value only in docker\'s environment, and is not a --build-arg', async () => {
+    const eng = fakeEngine({ previous: [] });
+    const lines = [];
+    await run({ buildSecretEnv: ['NPM_TOKEN=s3cr3t-token'], log: (m) => lines.push(m) }, eng);
+    const b = buildOf(eng);
+    const i = b.args.indexOf('--secret');
+    assert.deepEqual(b.args.slice(i, i + 2), ['--secret', 'id=NPM_TOKEN,env=NPM_TOKEN']);
+    assert.ok(!b.args.includes('--build-arg'));
+    assert.ok(!b.args.join(' ').includes('s3cr3t-token'), 'no value on the command line');
+    assert.equal(b.opts.env.NPM_TOKEN, 's3cr3t-token');
+    const line = lines.find((l) => /build secrets/.test(l));
+    assert.ok(line && line.includes('NPM_TOKEN') && /RUN --mount=type=secret/.test(line) && !line.includes('s3cr3t-token'));
+    assert.ok(!lines.some((l) => /build arguments/.test(l)), 'a secret is not described as an argument');
+  });
+
+  test('a secret is NOT given to the containers, and a bad secret name fails before the build', async () => {
+    const eng = fakeEngine({ previous: ['old'] });
+    await run({ env: ['RUN=1'], buildSecretEnv: ['S=1'] }, eng);
+    for (const c of eng.created) assert.deepEqual(c.env, ['RUN=1'], c.name);
+    const eng2 = fakeEngine({ previous: ['old'] });
+    const r = await run({ buildSecretEnv: ['PATH=/x'] }, eng2);
+    assert.equal(r.ok, false);
+    assert.match(r.error ?? '', /PATH/);
+    assert.ok(!buildOf(eng2));
+  });
+
   test('they are NOT given to the containers', async () => {
     const eng = fakeEngine({ previous: [] });
     await run({ env: ['RUN=1'], buildEnv: ['BUILD_ONLY=2'] }, eng);

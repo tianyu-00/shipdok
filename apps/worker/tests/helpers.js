@@ -37,12 +37,13 @@ export async function makeApp() {
   return rows[0].id;
 }
 
-export async function addVar(appId, name, value, key = KEY, scope = "runtime") {
-  await pool.query("INSERT INTO app_env_vars (app_id, key, value_encrypted, scope) VALUES ($1, $2, $3, $4)", [
+export async function addVar(appId, name, value, key = KEY, scope = "runtime", buildAs = "arg") {
+  await pool.query("INSERT INTO app_env_vars (app_id, key, value_encrypted, scope, build_as) VALUES ($1, $2, $3, $4, $5)", [
     appId,
     name,
     encryptSecret(value, key, envVarContext(appId, name)),
     scope,
+    buildAs,
   ]);
 }
 

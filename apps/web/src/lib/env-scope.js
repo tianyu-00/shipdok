@@ -5,8 +5,19 @@ export const SCOPES = [
   { value: 'build', label: 'Build only', short: 'Build' },
   { value: 'both', label: 'Build and runtime', short: 'Build + runtime' },
 ]
-export const scopeLabel = (scope) => (SCOPES.find((s) => s.value === scope) ?? SCOPES[0]).short
+// How a variable that reaches the build is given to docker build: a build argument (baked into the image if the Dockerfile uses it) or a BuildKit secret (not).
+export const BUILD_PASSES = [
+  { value: 'arg', label: 'Build argument' },
+  { value: 'secret', label: 'Build secret' },
+]
 export const reachesBuild = (scope) => scope === 'build' || scope === 'both'
+// The badge text. A secret is named in it, because that is the one thing about a build variable that is not the default.
+export function scopeLabel(scope, buildAs = 'arg') {
+  const short = (SCOPES.find((s) => s.value === scope) ?? SCOPES[0]).short
+  return reachesBuild(scope) && buildAs === 'secret' ? short.replace('Build', 'Build secret') : short
+}
+// What to write in the Dockerfile for a secret: the id is the variable's name, and it is also given as an environment variable of that one step.
+export const secretMount = (name) => `RUN --mount=type=secret,id=${name},env=${name} ...`
 // The badge beside a variable's name. Build and Both share a colour: either way the value reaches the build (and may be baked into the image).
 export const scopeBadgeClass = (scope) => (reachesBuild(scope)
   ? 'border-primary/40 bg-primary/10 text-primary'

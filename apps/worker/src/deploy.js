@@ -32,6 +32,7 @@ import { dockerBuildEnvironment } from './buildenv.js';
  * @param {number} [opts.cpus=1]
  * @param {string[]} [opts.env=[]]      ['KEY=VALUE', ...] for the container
  * @param {string[]} [opts.buildEnv=[]]  ['KEY=VALUE', ...] for `docker build --build-arg` ONLY (values travel in docker's environment, never on its command line, never in the container)
+ * @param {string[]} [opts.buildSecretEnv=[]]  the same, for `docker build --secret` (a BuildKit secret: never stored in the image)
  * @param {Record<string,string>} [opts.gitEnv]  extra environment for GIT ONLY (a GitHub token). Never given to docker or the container.
  * @param {(container: object) => Promise<void>} [opts.onRetire]  called with each old container after the new one is live, before it is removed (save its output)
  * @param {{path: string, name: string}[]} [opts.volumes]  persistent storage: Docker named volumes the live container mounts (the candidate gets throwaway ones)
@@ -55,7 +56,7 @@ const COMMIT_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 const REUSE_TAG_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function deploy(opts, eng = realEngine) {
-  const o = { ref: 'main', dir: '.', memoryMb: 512, cpus: 1, env: [], buildEnv: [], volumes: [], ...opts };
+  const o = { ref: 'main', dir: '.', memoryMb: 512, cpus: 1, env: [], buildEnv: [], buildSecretEnv: [], volumes: [], ...opts };
   const log = o.log ?? ((m) => console.log(`[${new Date().toISOString()}] ${m}`));
   const notify = (fn, ...args) => { try { fn?.(...args); } catch { /* hooks must never break a deploy */ } };
   const deploymentId = o.deploymentId ?? randomBytes(4).toString('hex');
@@ -164,8 +165,9 @@ export async function deploy(opts, eng = realEngine) {
         // Resolve symlinks AFTER cloning: the API validates the string, but only the real path is trustworthy.
         const buildDir = await resolveBuildDir(workDir, o.dir);
 
-        const build = dockerBuildEnvironment(o.buildEnv); // throws, naming the variable, if a name cannot be used
-        if (build.args.length) log(`Build variables passed as build arguments: ${build.args.filter((a) => a !== '--build-arg').join(', ')} (the Dockerfile must declare them with ARG)`);
+        const build = dockerBuildEnvironment(o.buildEnv, o.buildSecretEnv); // throws, naming the variable, if a name cannot be used
+        if (build.names.length) log(`Build variables passed as build arguments: ${build.names.join(', ')} (the Dockerfile must declare them with ARG)`);
+        if (build.secretNames.length) log(`Build variables passed as build secrets: ${build.secretNames.join(', ')} (the Dockerfile must ask for them with RUN --mount=type=secret,id=NAME; a changed secret does not re-run a cached step)`);
         log(o.noCache === true ? `Building ${image} without the build cache` : `Building ${image}`);
         await eng.run('docker', [
           'build', '--progress=plain', '-t', image, // plain: readable in a file, no terminal redrawing
