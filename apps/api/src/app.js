@@ -20,6 +20,7 @@ import { githubConnectRouter } from './routes/githubconnect.js';
 import { createGithubProvider, logRoot } from '@shipdok/shared';
 import { deploymentLogsRouter, appLogsRouter, storageRouter } from './routes/logs.js';
 import { defaultDiskUsage } from './disk.js';
+import { docsGate, docsRouter } from './docs.js';
 
 // What the API asks about GitHub: the client, the webhook secret, a status. Normally read from the database (the app is connected in the
 // dashboard); tests can pass a fixed client and secret instead.
@@ -40,6 +41,7 @@ export function createApp({
   logDir = logRoot(), diskUsage = defaultDiskUsage, portRange = parsePortRange(config.portRangeText),
   trustProxy = process.env.TRUST_PROXY || 'loopback',
   settings = createSettings(db),
+  apiDocs = config.apiDocs,
 } = {}) {
   const provider = githubProvider ?? (github !== undefined || webhookSecret !== undefined
     ? fixedGithub({ github, webhookSecret })
@@ -86,6 +88,7 @@ export function createApp({
     }
   });
 
+  if (apiDocs) app.use('/api/docs', docsGate(config.maxLifetimeMs), requireAuth, docsRouter());
   app.use('/api/settings', requireAuth, settingsRouter({ db, settings, provider }));
   app.use('/api/auth', authRouter(db));
   app.use('/api/auth', recoveryRouter(db));

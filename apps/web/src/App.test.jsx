@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'vitest'
+import { describe, test, expect, vi, afterEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
@@ -41,6 +41,32 @@ describe('who sees what', () => {
     mockApi({ ...signedIn, 'GET /api/apps': [], 'GET /api/storage': {} })
     renderWithProviders(<App />, { route: '/nowhere/at/all' })
     expect(await screen.findByRole('heading', { name: 'Apps' })).toBeInTheDocument()
+  })
+})
+
+describe('coming back from the API reference', () => {
+  const realLocation = window.location
+  afterEach(() => { Object.defineProperty(window, 'location', { value: realLocation, writable: true, configurable: true }) })
+  const spyOnReplace = () => {
+    const replace = vi.fn()
+    Object.defineProperty(window, 'location', { value: { ...realLocation, replace }, writable: true, configurable: true })
+    return replace
+  }
+
+  test('signed out, /api-docs shows the login form, and nothing is opened', async () => {
+    const replace = spyOnReplace()
+    mockApi({ 'GET /api/auth/status': { needsSetup: false, authenticated: false } })
+    renderWithProviders(<App />, { route: '/api-docs' })
+    expect(await screen.findByRole('button', { name: 'Log in' })).toBeInTheDocument()
+    expect(replace).not.toHaveBeenCalled()
+  })
+
+  test('once signed in, /api-docs goes on to the API reference', async () => {
+    const replace = spyOnReplace()
+    mockApi({ ...signedIn, 'GET /api/apps': [], 'GET /api/storage': {} })
+    renderWithProviders(<App />, { route: '/api-docs' })
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/api/docs'))
+    expect(screen.getByRole('link', { name: /api reference/i })).toHaveAttribute('href', '/api/docs') // in case the browser does not follow
   })
 })
 

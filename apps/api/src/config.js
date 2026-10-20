@@ -13,6 +13,8 @@ export const config = {
   setupToken: process.env.SETUP_TOKEN || null, // optional: required on first-run setup if set
   // "true"/"false" force it; anything else (compose's default, "auto") sets the Secure flag only on requests that came in over HTTPS
   // (as reported by a trusted proxy), so the same install works on plain http locally and behind an https proxy.
+  // The interactive API reference at /api/docs (administrator only). On unless API_DOCS=false.
+  apiDocs: process.env.API_DOCS !== "false",
   secureCookies: process.env.COOKIE_SECURE === "true" ? true : process.env.COOKIE_SECURE === "false" ? false : "auto",
   // Who may reach Shipdok from outside, and where: normally set in the dashboard. These environment settings override it.
   publicModeEnv: process.env.SHIPDOK_PUBLIC || null,

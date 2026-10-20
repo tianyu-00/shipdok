@@ -18,6 +18,8 @@ Read the relevant section of the spec before building a new feature.
   `jar.txt`, `infrastructure/.env`, `*.pem` or `node_modules/`. Check `git status` before committing.
 - Plain `npm pkg set` has silently failed on my machine: edit `package.json` by hand when it matters.
 - Do not commit or push unless I ask.
+- When a route is added, renamed or removed, describe it in `apps/api/openapi/operations/` and run `npm run openapi -w apps/api`; a test fails
+  until the documentation and the routes agree (and until `openapi.json` is regenerated).
 - When an environment setting is added, renamed, removed or gets a new default, update `.env.example` in the same change, with a
   comment above each setting saying what it does and its default. Keep every value commented out.
 - When a feature is finished and tested, update "Built and verified" and "Next" in this file in the same commit.
@@ -31,6 +33,7 @@ Read the relevant section of the spec before building a new feature.
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
   migrations/    001_init ... 019_missing_container
   src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), recovery.js (recovery codes), resetpassword.js (host-side reset), authutil.js, settings.js + publicurl.js (public-access settings), visitor.js (local or outside), middleware/ (originCheck, publicAccess, requireAuth), routes/ (auth, recovery, settings, apps, env, webhooks, github, logs)
+  openapi/       API documentation: operations/*.js (one description per route), schemas.js, build.js, inventory.js (real routes), generate.js, openapi.json (generated, committed)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`), reset-password.js (host-side password reset; `npm run reset-password`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
   src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), deleteapp.js (removing an app), stats.js (CPU and memory samples), monitor.js, activity.js, buildlog.js (the log sink), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
@@ -65,13 +68,13 @@ docker compose -f infrastructure/compose.yaml logs api               # the first
 
 Optional compose settings (all have defaults; put them in `infrastructure/.env` and pass `--env-file infrastructure/.env`, or export them; NOTE
 compose reads a `.env` that sits next to the compose file even without `--env-file`, use `--env-file /dev/null` to ignore it, as the isolated
-test projects do): `POSTGRES_USER`/`POSTGRES_DB` (default `shipdok`), `API_HOST_PORT` (default 4000, loopback), `WEB_HOST_PORT` (default 8080) and
+test projects do): `POSTGRES_USER`/`POSTGRES_DB` (default `shipdok`), `API_HOST_PORT` (default 4000, loopback), `API_DOCS` (the API reference at `/api/docs`, default on), `WEB_HOST_PORT` (default 8080) and
 `SHIPDOK_VERSION` (image release, default `latest`), `WEB_BIND` (default 127.0.0.1; `0.0.0.0` or this machine's address to reach the dashboard from other devices), `PORT_RANGE` (default
 `20000-20999`), `SHIPDOK_PUBLIC`, `PUBLIC_URL`, `COOKIE_SECURE` (default `auto`), `WEB_ORIGIN` (optional extra origins; the dashboard accepts
 requests from whatever address it is opened at), `MONITOR_INTERVAL_MS`, `STATS_INTERVAL_MS`, and the four secrets below (your value wins).
 `LOG_DIR` is set by compose to the `shipdok_logs` volume (outside Docker it defaults to `~/.shipdok/logs`). **`DOCKER_GID` is gone.**
 
-Tests: API 887, worker 530, shared 232, web 521. Worker tests reuse the `_test` database the API tests create and
+Tests: API 904, worker 530, shared 232, web 524. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` is now needed only for development with npm (`POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY`: 64 hex, losing
 it makes stored secrets unrecoverable) and for the optional settings above. **The GitHub App is NOT configured here any more** (dashboard,
@@ -548,6 +551,38 @@ GitHub page; see "Connect GitHub").
   (api healthy, then worker and web), a restart says "Database is up to date", a migration that fails stops the API with that message and it
   recovers on its own once the cause is fixed. Not covered by an automated test (server.js is not imported by the tests). Long-running services
   are now postgres, redis, api, worker, web (plus the one-shot `secrets`).
+- **API documentation (Milestone 6 step 7; verified in a real browser through the dashboard's nginx):** **Administrator's decisions: the
+  descriptions live in a SEPARATE file, not as comments in the routes, and a test fails when a route has none; `/api/docs` is for the
+  signed-in administrator only, on by default, `API_DOCS=false` turns it off; MIT licence.** `apps/api/openapi/`: `operations/{auth,apps,more}.js` describe
+  every route (summary, description, parameters, request body, success and error answers, whether it needs the session) with the builders in
+  `helpers.js`; `schemas.js` has the response shapes and takes the REQUEST bodies of the app calls straight from the zod validators the routes use
+  (exported from `routes/apps.js`, `z.toJSONSchema`) so they cannot drift; `build.js` assembles an OpenAPI 3.0.3 document and compares it with the
+  routes; `generate.js` (`npm run openapi -w apps/api`) writes `openapi.json` (committed) or fails listing the undocumented and stale routes.
+  **Deviation from SPEC.md ("use swagger-autogen"): swagger-autogen was tried and rejected as the route list**: it found 71 operations for 56 real
+  routes (it mixes up routers that are built by functions and mounted under variable paths, e.g. it invented `/api/deployments/{id}/crashes`).
+  `inventory.js` instead records the real routes while `createApp` builds the app (it wraps `Router.prototype.route`/`use`, because Express 5 does
+  not keep the path strings); SPEC.md was not edited. **Tests** (`openapi.test.js`, `apidocs.test.js`): every real route is described and
+  every description has a route; `openapi.json` is up to date; the document validates (`@apidevtools/swagger-parser` 10, the 13 line is ESM-only
+  and Jest cannot load it); every operation has a summary, description, success answer, declared tags; calls that need a session document the 401
+  and every error answer is the shared `Error` shape; and **the documented sign-in requirement equals the real one** (every route is called without
+  a session: documented-as-session ones answer 401, the others do not). Mutation-proofed: a renamed route, a new undocumented route, a stale
+  `openapi.json`, a route documented as open that needs a session; and for the page: docs mounted without the sign-in, the CDN instead of the local
+  bundle, `API_DOCS=false` ignored, `unsafe-eval` in the policy. **The page** (`src/docs.js`, Scalar via `@scalar/express-api-reference`): `/api/docs`
+  (HTML, a fresh nonce per request and its own Content-Security-Policy: nothing but this origin, one nonce-allowed inline script, no
+  `unsafe-eval`), `/api/docs/openapi.json`, `/api/docs/scalar.js` (Scalar's standalone bundle served from here, so it works on a LAN with no
+  internet); all behind `requireAuth`, so an outside visitor gets the usual 404 and a signed-out one a 401; Scalar's hosted-product menus (AI
+  assistant, share, deploy, developer tools, MCP) and telemetry are off. **The Docker image** gets the bundle from a separate build stage
+  (`SCALAR_BUNDLE`; keep `SCALAR_VERSION` in `apps/api/Dockerfile` equal to the `@scalar/api-reference` devDependency): the package has ~200 MB of
+  dependencies the bundle does not need (the image grew 373 -> 622 MB until this was fixed; now 385 MB). `apps/web/nginx.conf` has a location for
+  exactly `/api/docs` that leaves out the dashboard's own policy (the page sets its own; the other headers are repeated there). Checked for real
+  in headless Chromium through nginx: Scalar renders the tags and operations, nothing is requested from another origin, "Test Request" on
+  `GET /api/auth/logins` returns a real 200 with the session cookie sent automatically, no console errors. **Reaching it:** the header has an **API** link (book icon, icon only on phones) that opens `/api/docs` in a new tab. A browser that is NOT
+  signed in and asks for the page (`Accept: text/html`) is redirected (302) to `/api-docs`, a dashboard route: the dashboard shows its login
+  form there and, once signed in, `ApiDocsPage` sends the browser on to `/api/docs` (no query parameter, so no open redirect). The document, the
+  script and a program asking for JSON still get the plain 401 (`docsGate` in `src/docs.js` only redirects the page). Checked for real in Chromium
+  through nginx: signed out `/api/docs` -> login at `/api-docs` -> after login the reference; the header link and its new tab; phone width. Known limits: Scalar tries `eval` once
+  and the policy blocks it (nothing visible is lost); Scalar's "Generate SDK" button is still shown; response shapes are written by hand from the
+  routes (only the app request bodies come from validators), so a changed response is not caught by a test unless the route list changes.
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
@@ -571,7 +606,7 @@ Build order (SPEC.md Milestone 6); steps 1 to 5 (password policy and lockout, re
    into a fresh project (old password logs in, app listed, a stored secret decrypts; backup files need `chmod 600`), the Nginx and Caddy examples in
    all three modes against a live stack (webhook-only and full proxies, Secure cookie, wrong Origin 403, real client address in the sign-ins list;
    Caddy needs `handle` blocks, a bare `respond 404` swallows everything). NOT tested: Nginx Proxy Manager itself, restoring over a non-empty
-   install. Still to do: API docs (Scalar), a LICENSE, hardening (rate limit/audit on `reveal`).
+   install. API docs and the MIT LICENSE are DONE (see "API documentation"). Still to do: hardening (rate limit/audit on `reveal`).
 8. Optional: Caddy compose profile for people without a proxy.
 
 Later (idea from the administrator, not started, decided to come back to it): deploying from several GitHub accounts or organisations. Option A (small):

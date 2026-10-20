@@ -7,6 +7,7 @@
     "test": "node --env-file=../../infrastructure/.env --experimental-vm-modules ../../node_modules/jest/bin/jest.js --runInBand",
     "migrate": "node --env-file=../../infrastructure/.env src/db/migrate.js",
     "dev": "node --env-file=../../infrastructure/.env src/server.js",
+    "openapi": "node openapi/generate.js",
     "reset-password": "node --env-file=../../infrastructure/.env scripts/reset-password.js",
     "webhook": "node --env-file=../../infrastructure/.env scripts/send-webhook.js"
   },
@@ -25,6 +26,7 @@
   "type": "module",
   "dependencies": {
     "@node-rs/argon2": "^2.2.2",
+    "@scalar/express-api-reference": "^0.10.30",
     "@shipdok/shared": "*",
     "bullmq": "^6.3.15",
     "connect-pg-simple": "^10.0.0",
@@ -37,6 +39,8 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@apidevtools/swagger-parser": "^10.1.1",
+    "@scalar/api-reference": "^1.75.0",
     "jest": "^30.5.2",
     "supertest": "^7.3.1"
   }

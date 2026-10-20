@@ -17,6 +17,15 @@ describe('the header', () => {
     expect(screen.queryByRole('button', { name: 'Change password' })).toBeNull() // it lives on the Security page
   })
 
+  test('has an API link that opens the API reference in a new tab', () => {
+    mockApi({})
+    renderWithProviders(<Shell username="admin"><p>page</p></Shell>)
+    const link = screen.getByRole('link', { name: 'API' })
+    expect(link).toHaveAttribute('href', '/api/docs')
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link.getAttribute('rel')).toMatch(/noopener/)
+  })
+
   test('no banner while nothing is reachable from outside', async () => {
     mockApi({ 'GET /api/settings/public': access({ mode: 'local' }) })
     renderWithProviders(<Shell username="admin"><p>page</p></Shell>)

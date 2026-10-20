@@ -18,7 +18,7 @@ const rootDir = z.string().trim().min(1).max(200)
   .regex(/^[A-Za-z0-9._\/-]+$/, 'Use letters, numbers, dot, dash, underscore and slash')
   .refine((p) => !p.startsWith('/') && !p.split('/').includes('..'), 'Must be a relative path inside the repository');
 
-const createSchema = z.object({
+export const createSchema = z.object({
   name: z.string().trim().min(1).max(64),
   repo: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'Use GitHub owner/repo'),
   branch: z.string().trim().regex(/^[A-Za-z0-9_][A-Za-z0-9._\/-]{0,254}$/, 'Invalid branch name').default('main'),
@@ -39,7 +39,7 @@ const createSchema = z.object({
 
 // What can be edited later. Not the repository (delete and recreate instead) and not the slug (it names the images and containers).
 // A name change keeps the slug. keep_previous_images/auto_prune have their own endpoint; desired_state is Start/Stop.
-const updateSchema = z.object({
+export const updateSchema = z.object({
   name: createSchema.shape.name,
   branch: createSchema.shape.branch.unwrap(),
   root_dir: createSchema.shape.root_dir.unwrap(),
@@ -55,12 +55,12 @@ const updateSchema = z.object({
 // and the restart limit are read live, so they never are.
 const SNAPSHOT_SETTINGS = ['branch', 'root_dir', 'container_port', 'host_port', 'health_path', 'memory_mb', 'cpus'];
 
-const retentionSchema = z.object({
+export const retentionSchema = z.object({
   keep_previous_images: z.number().int().min(0).max(10).optional(),
   auto_prune: z.boolean().optional(),
 }).strict().refine((v) => v.keep_previous_images !== undefined || v.auto_prune !== undefined, 'Give keep_previous_images, auto_prune, or both');
 
-const rollbackSchema = z.object({
+export const rollbackSchema = z.object({
   deploymentId: z.string().regex(UUID_RE, 'Must be a deployment id').optional(),
   start: z.boolean().optional(),
 }).strict();
@@ -106,7 +106,7 @@ const CLEANUP = `(SELECT row_to_json(c) FROM (
       FROM app_cleanup WHERE app_id = a.id) c)`;
 
 // ignoreDiskWarning: the administrator has seen the "disk is nearly full" answer and wants to build anyway.
-const deploySchema = z.object({ start: z.boolean().optional(), ignoreDiskWarning: z.boolean().optional() }).strict();
+export const deploySchema = z.object({ start: z.boolean().optional(), ignoreDiskWarning: z.boolean().optional() }).strict();
 
 export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = defaultDiskUsage, portRange = parsePortRange() }) {
   const r = Router();

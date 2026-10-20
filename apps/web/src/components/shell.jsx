@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { GitBranch, HardDrive, LogOut, Ship, ShieldCheck } from 'lucide-react'
+import { BookOpen, GitBranch, HardDrive, LogOut, Ship, ShieldCheck } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
@@ -24,6 +24,7 @@ export function Shell({ username, children }) {
             <Button variant="ghost" size="sm" asChild><Link to="/storage" aria-label="Storage"><HardDrive className="size-4" aria-hidden="true" /><span className="hidden sm:inline">Storage</span></Link></Button>
             <Button variant="ghost" size="sm" asChild><Link to="/github" aria-label="GitHub"><GitBranch className="size-4" aria-hidden="true" /><span className="hidden sm:inline">GitHub</span></Link></Button>
             <Button variant="ghost" size="sm" asChild><Link to="/security" aria-label="Security"><ShieldCheck className="size-4" aria-hidden="true" /><span className="hidden sm:inline">Security</span></Link></Button>
+            <Button variant="ghost" size="sm" asChild><a href="/api/docs" target="_blank" rel="noopener noreferrer" aria-label="API"><BookOpen className="size-4" aria-hidden="true" /><span className="hidden sm:inline">API</span></a></Button>
             <span className="mr-2 hidden text-sm text-muted-foreground sm:inline">{username}</span>
             <ThemeToggle />
             <Button variant="ghost" size="icon" aria-label="Log out" onClick={() => logout.mutate()}><LogOut className="size-4" /></Button>

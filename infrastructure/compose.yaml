@@ -112,6 +112,7 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-} # optional: the public address, e.g. https://shipdok.example.com. Same: the dashboard sets it, this overrides
       GITHUB_APP_ID: ${GITHUB_APP_ID:-} # no longer read: passed only so Shipdok can tell you that an old setting is being ignored
       PORT_RANGE: ${PORT_RANGE:-} # host ports chosen automatically for new apps (default 20000-20999)
+      API_DOCS: ${API_DOCS:-} # the interactive API reference at /api/docs (administrator only): on unless this is `false`
       COOKIE_SECURE: ${COOKIE_SECURE:-auto} # auto: Secure only for requests that came in over https (through your proxy)
       LOG_DIR: /var/lib/shipdok/logs
     ports:

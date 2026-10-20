@@ -95,6 +95,7 @@ as described in [Public access](docs/public-access.md).
 | Upgrade, back up, restore, troubleshoot | [Operations](docs/operations.md) |
 | Put Shipdok behind Nginx, Caddy, Nginx Proxy Manager or a tunnel | [Public access](docs/public-access.md) |
 | Forgot the password | use a recovery code on the login screen, or [reset it on the host](docs/operations.md#forgot-the-password) |
+| Look up an API call | the API reference at `/api/docs` in the dashboard's address (signed in; switch off with `API_DOCS=false`) |
 | Every setting | [`.env.example`](.env.example) (all optional) |
 
 ## How it is put together
@@ -115,6 +116,10 @@ is expected.
 **Security notes.** The worker holds the Docker socket, which is equivalent to root on the machine, so only deploy code you trust. Secrets are
 encrypted in the database with a key stored in the `shipdok_secrets` volume. Back that volume up together with the database; see
 [Operations](docs/operations.md#backup).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
 
 ## Developing Shipdok
 

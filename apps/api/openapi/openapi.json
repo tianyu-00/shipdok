@@ -1,0 +1,5713 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Shipdok API",
+    "version": "1.0.0",
+    "description": "The API behind the Shipdok dashboard. Everything the dashboard does goes through it.\n\n**Signing in.** Sign in with `POST /api/auth/login`; the answer sets the cookie `shipdok.sid`, which every other call needs (except the ones marked as open). Sessions end after 30 minutes without activity, or 12 hours in all.\n\n**State-changing calls and the `Origin` header.** A browser sends `Origin` itself and it must be one of Shipdok's own addresses (the address the dashboard is opened at, or the configured public address). A call with no `Origin` header at all (for example `curl`) is accepted, so scripts only need the cookie.\n\n**Who can reach it.** Visitors from outside the local network get a plain `404 {\"error\":\"Not found\"}` for everything in `local` mode, and for everything except `POST /api/webhooks/github` in `webhook` mode (see the Security page's Public access).\n\n**Errors** are JSON: `{\"error\": \"a sentence\"}`, with `code` (a short stable code) and `details` where there are any.\n\n**Asynchronous work.** Deploying, rolling back, starting, stopping, restarting, cleaning up and deleting are queued for the worker and answer **202**; follow the result in the app's `runtime`, the deployment's `status` or `GET /api/apps/{id}`.",
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  },
+  "tags": [
+    {
+      "name": "Account",
+      "description": "Signing in, the administrator's password, recovery codes and the sign-in history."
+    },
+    {
+      "name": "Apps",
+      "description": "Creating, editing, starting, stopping and deleting apps."
+    },
+    {
+      "name": "Deployments",
+      "description": "Building and releasing a version, cancelling, rolling back, and the history."
+    },
+    {
+      "name": "Images and clean-up",
+      "description": "The Docker images kept for rollback and how they are cleaned up."
+    },
+    {
+      "name": "Variables",
+      "description": "An app's environment variables, encrypted at rest. Values are never returned except by `reveal`."
+    },
+    {
+      "name": "GitHub",
+      "description": "The connected GitHub App: connecting it, repositories, installations and the webhook address."
+    },
+    {
+      "name": "Settings",
+      "description": "Who may reach Shipdok from outside."
+    },
+    {
+      "name": "Logs and storage",
+      "description": "Build logs, an app's own output, and disk usage."
+    },
+    {
+      "name": "Webhooks",
+      "description": "GitHub's push webhook and its delivery history."
+    },
+    {
+      "name": "System",
+      "description": "Health checks and internals."
+    }
+  ],
+  "paths": {
+    "/api/apps/{id}": {
+      "delete": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Delete an app",
+        "description": "Deletes the app: its containers, images, logs, variables and every deployment record. The API only marks the app and queues the work; the worker does it (so the answer is 202, and the app disappears when the worker has finished; a failure shows as `delete_error`, and sending the delete again retries). **The exact name must be sent as `confirm`.** Refused while a deployment is queued or running.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Deletion queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleting": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The confirmation does not match (`code: confirm_mismatch`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A deployment is still running; cancel it first (`code: deployment_active`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The job queue is not available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "confirm"
+                ],
+                "properties": {
+                  "confirm": {
+                    "type": "string",
+                    "description": "The app's exact name."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Get one app",
+        "description": "The app as the dashboard shows it, plus `settings_pending`: which edited settings the running version does not have yet.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/App"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Edit an app's settings",
+        "description": "Changes the settings you send. **Nothing running is touched:** the next deployment uses the new values (see `settings_pending`); the name and the restart limit apply at once. The repository and the slug cannot be changed (delete the app and create a new one).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The app after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/App"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid settings (`details`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The name or host port belongs to another app (`code: name_taken` or `port_taken`, and `app` names it), or the app is being deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppUpdate"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/env/{key}": {
+      "delete": {
+        "tags": [
+          "Variables"
+        ],
+        "summary": "Delete a variable",
+        "description": "Removes it. The running app keeps its copy until the next deployment.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "description": "The variable's name: letters, digits and underscore, not starting with a digit, at most 128 characters; some names are reserved.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app or variable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Variables"
+        ],
+        "summary": "Create or change a variable",
+        "description": "Stores the value encrypted (AES-256-GCM, bound to the app and the name). The running app keeps its old value until the next deployment.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "description": "The variable's name: letters, digits and underscore, not starting with a digit, at most 128 characters; some names are reserved.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "created": {
+                      "type": "boolean"
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "created": {
+                      "type": "boolean"
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad name or value, a reserved name, or too many variables.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "The value; at most 64 KB, no null characters."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/logs": {
+      "delete": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Delete an app's output logs",
+        "description": "Deletes both the current and the previous run's log. Refused while the app's output is still being collected (stop the app first).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "freedBytes": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app, or no runtime logs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The app is running and its output is still being collected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The files could not be deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "get": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "An app's own output",
+        "description": "There is one log per app plus the run before it, reset on every restart or deployment. Page through it with `nextOffset`; `complete` is true when the log has finished and everything has been read. Secrets are masked with `***`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "description": "`runtime` (default): since the container last started. `previous`: the run before that.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "runtime",
+                "previous"
+              ],
+              "default": "runtime"
+            }
+          },
+          {
+            "name": "tail",
+            "in": "query",
+            "required": false,
+            "description": "The last N lines (1 to 5000). Cannot be combined with `offset` or `limit`.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5000
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Byte offset to start at (default 0).",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many bytes at most (1 to 1048576; default 65536).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1048576
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A piece of the log.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogChunk"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad `kind`, `offset`, `limit` or `tail`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app, or no output has been collected yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/deployments/{id}": {
+      "delete": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Delete a deployment",
+        "description": "Deletes the record, its build log and, through the worker, its image if nothing needs it. Permanent. Refused while it runs, while a queued rollback will use it, for the running version, and for a version kept for rollback that nothing else holds.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The deployment's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean"
+                    },
+                    "freedLogBytes": {
+                      "type": "integer"
+                    },
+                    "image": {
+                      "type": "string",
+                      "description": "`none`, `queued`, `failed` or `kept (another deployment uses it)`."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "It is running, a rollback is waiting for it, or it is a version that must be kept.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The log files could not be deleted; nothing was deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "get": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Get one deployment",
+        "description": "The deployment and its status. Status is separate from whether the app is running.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The deployment's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deployment"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/deployments/{id}/logs": {
+      "delete": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Delete a finished deployment's build log",
+        "description": "The deployment, its status and its error summary stay.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The deployment's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "freedBytes": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such deployment, or no logs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The deployment is still running.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The files could not be deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "get": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "A deployment's build log",
+        "description": "The clone and build output plus Shipdok's progress lines and the outcome. Kept until the deployment is deleted. Each line is `<ISO time> <stdout|stderr|shipdok> <message>`; the app's variable values and the GitHub token are masked with `***`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The deployment's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "description": "Only `build`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "build"
+              ],
+              "default": "build"
+            }
+          },
+          {
+            "name": "tail",
+            "in": "query",
+            "required": false,
+            "description": "The last N lines (1 to 5000).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5000
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Byte offset to start at.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many bytes at most (1 to 1048576; default 65536).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1048576
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A piece of the log.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogChunk"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad `kind`, `offset`, `limit` or `tail`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such deployment, or no log.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/github": {
+      "delete": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Disconnect GitHub",
+        "description": "Forgets the app. Deployed apps keep running; private repositories cannot be built until GitHub is connected again. Shipdok cannot delete the app on github.com. Needs the current password.",
+        "parameters": [],
+        "responses": {
+          "204": {
+            "description": "Disconnected."
+          },
+          "400": {
+            "description": "No password given.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong password, or the Origin is not allowed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordOnly"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "get": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Is GitHub connected?",
+        "description": "The connected GitHub App's details, never a secret. `problem: cannot_decrypt` means the stored credentials do not fit the platform key.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GithubStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/_visitor": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "May this visitor see the dashboard?",
+        "description": "Used by the dashboard's web server before it serves a page: **204** for a local visitor or when the mode is `full`, otherwise **403**. Not for general use.",
+        "parameters": [],
+        "responses": {
+          "204": {
+            "description": "The visitor may see the dashboard."
+          },
+          "403": {
+            "description": "The visitor may not (the web server turns this into a 404)."
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/apps": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "List apps",
+        "description": "Every app, newest first, each with its newest deployment, what the worker last reported (`runtime`), the last image clean-up, the settings the running version was deployed with (`running_settings`) and the latest CPU and memory reading (`stats`, `null` when stale).",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The apps.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/App"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Create an app",
+        "description": "Registers an app; nothing is built until you deploy. Leave `host_port` out and the lowest free port in the platform's port range (default 20000-20999) is used. If a GitHub App is connected, the API looks up its installation for the repository; a missing installation never blocks creation and only adds a `warning` (public repositories still deploy).",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/App"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid settings (`details` lists each problem).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The name or host port is taken (the message says which), or every port in the range is used (`code: no_free_port`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppCreate"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/crashes": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Why the app was not running",
+        "description": "The last 20 times the app was not running when it should have been, newest first, with what Shipdok did about each: crash, stopped outside Shipdok, recovered after a host restart, or container removed outside Shipdok.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The events.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CrashEvent"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/deployments": {
+      "get": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Deployment history",
+        "description": "The app's last 50 deployments, newest first.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The deployments.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Deployment"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Deploy now",
+        "description": "Queues a build and deployment of the branch's latest commit. Older queued or running deployments of the app are superseded (the newest wins). Answers 202 at once; follow the deployment with `GET /api/deployments/{id}`. Under 10% free disk the request is refused (409 `disk_critical`) unless the body says `ignoreDiskWarning: true`; under 20% it goes ahead and the answer carries a `warning`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deployment"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The app is being deleted, or the disk is almost full (`code: disk_critical`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The job queue is not available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeployRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/env": {
+      "get": {
+        "tags": [
+          "Variables"
+        ],
+        "summary": "List an app's variables",
+        "description": "The names, **never the values** (they are always `********`), and which changes wait for the next deployment.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The variables.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/images": {
+      "get": {
+        "tags": [
+          "Images and clean-up"
+        ],
+        "summary": "Versions that have an image",
+        "description": "Each successful version with its state (live, previous, prunable, removed), the retention settings, the last clean-up, and what a clean-up would free now.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The versions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Images"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/stats": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "CPU and memory history",
+        "description": "Readings taken by the worker every 15 seconds, oldest first, for a chart, and `latest` (`null` when the app is not running or the worker is quiet).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "minutes",
+            "in": "query",
+            "required": false,
+            "description": "How far back, 1 to 60 (default 60).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60,
+              "default": 60
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The readings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid. `error` says what is wrong; `details` lists each problem when there are several.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/auth/logins": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Recent sign-in attempts",
+        "description": "The latest sign-in attempts and security changes, good and bad (names typed by strangers included), newest first. Kinds: `login`, `setup`, `recovery`, `reset` (a password reset on the machine), `settings` (public access changed), `github` (GitHub connected or changed).",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many, 1 to 100 (default 20).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The attempts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "logins"
+                  ],
+                  "properties": {
+                    "logins": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/LoginAttempt"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Who is signed in?",
+        "description": "The administrator's name; also a cheap way to check the session is still valid.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The signed-in administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Username"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/auth/recovery": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "How many recovery codes are left",
+        "description": "Never the codes themselves: they exist in the clear only at the moment they are made.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The count.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Make a new set of recovery codes",
+        "description": "Replaces the whole set (the old codes stop working) and returns the ten new ones **once**. Needs the current password.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The new codes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "codes"
+                  ],
+                  "properties": {
+                    "codes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid. `error` says what is wrong; `details` lists each problem when there are several.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused: the Origin header is not one of Shipdok's own addresses, or the password given was wrong (`code: wrong_password`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries. `Retry-After` and `retryAfterSeconds` say how long to wait.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordOnly"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/auth/status": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Is there an administrator, and is this browser signed in?",
+        "description": "The first thing the dashboard asks. Safe to call without signing in. The setup token itself is never sent; `setupTokenRequired` only says whether the setup screen must ask for it.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthStatus"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/docs": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "This API reference (page)",
+        "description": "The interactive reference built from this document (Scalar). A web page for the signed-in administrator, with everything served from Shipdok itself (no internet needed). Can be switched off with `API_DOCS=false`, in which case it answers 404.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The page (HTML).",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/docs/openapi.json": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "This document (OpenAPI 3)",
+        "description": "The OpenAPI 3.0 description of the API, as JSON. Generated from the code's route list and descriptions with `npm run openapi`.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The document.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/docs/scalar.js": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "The API reference's script",
+        "description": "Scalar's browser bundle, served from Shipdok so the reference works without the internet. Used by the reference page.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "JavaScript.",
+            "content": {
+              "application/javascript": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/github/connect/callback": {
+      "get": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Where GitHub sends the browser back",
+        "description": "A page navigation, not an API call: GitHub redirects the browser here with a one-time `code` and the `state` from the start. Every outcome is a **302 redirect** to `/github?connected=1` or `/github?error=<login|state|exchange_failed|github_unreachable|already_connected>`; the API trades the code for the app's credentials and stores them encrypted. The state is compared in constant time and used once whatever happens. No secret is ever put in a redirect.",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "description": "The one-time code from GitHub.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "description": "The state returned by the start call.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the GitHub page of the dashboard, with a short result code."
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/github/installations": {
+      "get": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Where the app is installed",
+        "description": "Asked from GitHub when you press \"Check again\" after installing the app.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The installations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "installations": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/GithubInstallation"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "GitHub is not connected yet (connect it on the GitHub page).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "GitHub could not be asked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/github/repos": {
+      "get": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Repositories the app can see",
+        "description": "Across all installations of the connected GitHub App.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The repositories.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "repos": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/GithubRepo"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "GitHub is not connected yet (connect it on the GitHub page).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "GitHub could not be asked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/github/webhook": {
+      "get": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Does GitHub send webhooks to the right address?",
+        "description": "Compares the address GitHub has (read from the app) with the one Shipdok expects (the public address + `/api/webhooks/github`).",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The comparison.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GithubWebhook"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "GitHub is not connected yet (connect it on the GitHub page).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "GitHub could not be asked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/settings/public": {
+      "get": {
+        "tags": [
+          "Settings"
+        ],
+        "summary": "Who may reach Shipdok from outside",
+        "description": "The mode (`local`, `webhook` or `full`), the public address, whether the environment fixes either, and how THIS request was classified (`visitor`).",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicSettings"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Settings"
+        ],
+        "summary": "Change who may reach Shipdok from outside",
+        "description": "Needs the current password; takes effect at once; recorded in the sign-ins list. A value fixed by the environment (`SHIPDOK_PUBLIC`, `PUBLIC_URL`) cannot be changed here. The address is tidied to an origin (`https://host[:port]`, no path, no credentials). A new address is also sent to GitHub when an app is connected; the answer says how that went in `githubWebhook` (the setting is saved either way).",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The settings after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No password, nothing to change, a bad mode or a bad address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong password, or the Origin is not allowed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The environment fixes that setting (`code: locked_by_environment`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "password"
+                ],
+                "properties": {
+                  "password": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "local",
+                      "webhook",
+                      "full"
+                    ]
+                  },
+                  "publicUrl": {
+                    "type": "string",
+                    "nullable": true
+                  }
+                },
+                "description": "Send `mode`, `publicUrl` or both."
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/storage": {
+      "get": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Disk, log and image usage",
+        "description": "Log bytes and image bytes per app (image sizes are upper bounds: versions of an app share layers) and the disk's free space with a level: `ok`, `low` (under 20% free) or `critical` (under 10%).",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The usage.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Storage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/webhooks/deliveries": {
+      "get": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Recent webhook deliveries",
+        "description": "The last 50 deliveries: \"why didn't my push deploy?\". `details` says, per app, what happened.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The deliveries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WebhookDelivery"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Is the API up?",
+        "description": "Answers as long as the process runs (used by the container health check).",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "ok"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Is the API ready?",
+        "description": "Like `/health`, and also checks that the database answers. Answers 503 while it does not.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Ready.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "ready"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The database is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/apps/{id}/env/import": {
+      "post": {
+        "tags": [
+          "Variables"
+        ],
+        "summary": "Import variables from `.env` text",
+        "description": "All or nothing: if any line has a problem nothing is saved and `problems` lists them (up to 50) with their line numbers. Existing names are updated, new ones created, within the limit per app.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Imported.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "created": {
+                      "type": "integer"
+                    },
+                    "updated": {
+                      "type": "integer"
+                    },
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "duplicates": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A problem in the file (`problems`, `total_problems`), no variables in it, or too many in total. Nothing was saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "content"
+                ],
+                "properties": {
+                  "content": {
+                    "type": "string",
+                    "description": "The text of a `.env` file."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/env/{key}/reveal": {
+      "post": {
+        "tags": [
+          "Variables"
+        ],
+        "summary": "Show a variable's value",
+        "description": "The **only** place a value leaves the server. It is a POST so it is never prefetched or cached, and the answer says `Cache-Control: no-store`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "description": "The variable's name: letters, digits and underscore, not starting with a digit, at most 128 characters; some names are reserved.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The value.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app or variable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored value could not be decrypted (has `APP_SECRETS_KEY` changed?).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/prune": {
+      "post": {
+        "tags": [
+          "Images and clean-up"
+        ],
+        "summary": "Clean up old images now",
+        "description": "Queues a clean-up: the worker removes this app's images that are not the live one, not the retained earlier ones and not in use. Deployment records and logs are never touched.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "queued": {
+                      "type": "boolean"
+                    }
+                  },
+                  "description": "Whether it was queued."
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The app is being deleted (`code: deleting`): it accepts nothing but another delete.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The job queue is not available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/restart": {
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Restart the app",
+        "description": "Restarts the running container without rebuilding. Then the worker waits for the health check; a failure is shown as `unhealthy` and the app is left running.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "action": {
+                      "type": "string"
+                    },
+                    "desired_state": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The app is being deleted (`code: deleting`): it accepts nothing but another delete.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The job queue is not available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/rollback": {
+      "post": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Roll back to an earlier version",
+        "description": "Runs an earlier version's existing image again: nothing is cloned or built, so it works offline and needs no disk space. The new deployment (trigger `rollback`) uses the app's CURRENT settings and variables; only the image is old. Without `deploymentId` the newest earlier version that still has an image is used.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deployment"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app, or that is not a successful deployment of this app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Nothing deployed yet, no earlier version with an image, the image was removed, that version already runs, or the app is being deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The job queue is not available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/start": {
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Start the app",
+        "description": "Records that the app should run, then queues the work for the worker (the only part that talks to Docker), so the answer is 202 and the result appears in `runtime`. A manual start also forgives earlier crashes.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "action": {
+                      "type": "string"
+                    },
+                    "desired_state": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The app is being deleted (`code: deleting`): it accepts nothing but another delete.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The job queue is not available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/stop": {
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Stop the app",
+        "description": "Records that the app should be stopped (webhooks skip a stopped app at once), then queues the work. The container, image and configuration are kept. A stopped app stays stopped when deployed unless the deployment asks to start it.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "action": {
+                      "type": "string"
+                    },
+                    "desired_state": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The app is being deleted (`code: deleting`): it accepts nothing but another delete.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The job queue is not available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Sign in",
+        "description": "Sets the session cookie `shipdok.sid`. Failed tries are counted per name and per address: after five in a row the next ones are refused (429 `locked`) for 30 seconds, doubling, up to 15 minutes per name and 60 per address. While locked even the right password is refused.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Username"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Username or password missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong name or password (the same answer for an unknown name).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Locked for a while; see the description.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "username",
+                  "password"
+                ],
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Sign out this browser",
+        "description": "Ends this session and clears the cookie.",
+        "parameters": [],
+        "responses": {
+          "204": {
+            "description": "Signed out."
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/auth/logout-all": {
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Sign out every browser and device",
+        "description": "Ends every session of the administrator, this one included.",
+        "parameters": [],
+        "responses": {
+          "204": {
+            "description": "Signed out everywhere."
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/auth/password": {
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Change the password",
+        "description": "Needs a session AND the current password. Every other session ends and this one gets a new id. A wrong current password is a **403** (`wrong_password`), not a 401, so a client does not mistake it for an ended session. Limited to 10 tries per 15 minutes.",
+        "parameters": [],
+        "responses": {
+          "204": {
+            "description": "Changed."
+          },
+          "400": {
+            "description": "Missing fields, a weak new password (`code: weak_password`), or the same as the current one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The current password is wrong (`code: wrong_password`) or the Origin is not allowed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "currentPassword",
+                  "newPassword"
+                ],
+                "properties": {
+                  "currentPassword": {
+                    "type": "string"
+                  },
+                  "newPassword": {
+                    "type": "string",
+                    "description": "Must pass the password rules and differ from the current one."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/auth/recover": {
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Set a new password with a recovery code",
+        "description": "For a lost password: the name, one recovery code and a new password. A weak new password is refused BEFORE the code is looked at, so that answer says nothing about the code and does not use it up. A good code is spent (single use), the password is set, every session ends and this browser is signed in. Wrong code, used code and unknown name all give the same 401. Tries share the sign-in lockout.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Signed in with the new password.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Username"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing fields, or the new password does not pass the rules (`code: weak_password`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong name or code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Locked for a while.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "username",
+                  "code",
+                  "newPassword"
+                ],
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  },
+                  "code": {
+                    "type": "string",
+                    "description": "A recovery code; case, spaces and dashes do not matter."
+                  },
+                  "newPassword": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/auth/setup": {
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Create the administrator (first run only)",
+        "description": "Creates the one administrator account, signs this browser in, and returns the ten recovery codes **once**. Works only while no administrator exists (a second call is 409). While the platform has a setup token (printed in the API log), it must be sent as `setupToken`. The password must pass the password rules.",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": "Created and signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The name or the password does not pass the rules (`error` says which).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The setup token is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An administrator already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries from this address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "username",
+                  "password"
+                ],
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "setupToken": {
+                    "type": "string",
+                    "description": "The setup token from the API log; needed while `setupTokenRequired` is true."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/deployments/{id}/cancel": {
+      "post": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Cancel a deployment",
+        "description": "A queued deployment ends at once (200). A running one is only asked to stop (202); the worker stops it and the final status appears after clean-up. A deployment already past the swap point finishes.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The deployment's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancelled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deployment"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Asked to stop.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deployment"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "It has already finished.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/github/connect/start": {
+      "post": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Start the \"Connect GitHub\" flow",
+        "description": "Returns a prepared GitHub App definition (`manifest`) and the address (`postUrl`, always on github.com) the browser posts it to. Keeps a one-time `state` in the session for 10 minutes. The manifest asks only for read access to contents and metadata and the push event, and the app is created private. Needs an Origin that is one of the dashboard's own addresses, because GitHub sends the browser back there.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The manifest.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectManifest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad name or organisation, or the dashboard was not opened at its own address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "GitHub is already connected (`code: already_connected`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectStart"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/github/manual": {
+      "post": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Enter an existing GitHub App by hand",
+        "description": "The key and id are proven with GitHub (`GET /app`) BEFORE anything is stored, so a typo never replaces a working connection. Needs the current password. Remembered installations are forgotten, because installation ids belong to one app. Recorded in the sign-ins list as a GitHub change.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Connected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connected": {
+                      "type": "boolean"
+                    },
+                    "app": {
+                      "$ref": "#/components/schemas/GithubApp"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A missing or malformed field, or GitHub did not accept the id and key (`code: github_rejected`), or the key belongs to another app (`code: app_id_mismatch`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong password, or the Origin is not allowed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "GitHub could not be reached (`code: github_unreachable`) or could not check the app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GithubManual"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/github/webhook/sync": {
+      "post": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Point GitHub at the right webhook address",
+        "description": "Updates only the address on GitHub (never the secret). The retry for the automatic update that follows a change of the public address.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GithubWebhook"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No public address is set yet (`code: no_public_address`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "GitHub is not connected yet (connect it on the GitHub page).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "GitHub could not be reached or did not accept it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/webhooks/github": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "GitHub's push webhook",
+        "description": "Called by GitHub, not by people. **Public and protected only by the HMAC signature** (`X-Hub-Signature-256`, SHA-256 over the exact bytes, compared in constant time). Order: size limit, signature, shape, then the database. A push to a branch that an app tracks deploys that app (every app tracking the repository and branch); other events and branches are recorded and ignored. Deliveries are deduplicated by `X-GitHub-Delivery`. Pushes are not built while the disk is critically full. Rate limited to 120 requests a minute per client. Answers 503 until a GitHub App is connected. Which visitors can reach it from outside depends on the public access mode.",
+        "parameters": [
+          {
+            "name": "X-Hub-Signature-256",
+            "in": "header",
+            "required": true,
+            "description": "`sha256=` and the hex HMAC of the body, with the webhook secret.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-GitHub-Event",
+            "in": "header",
+            "required": true,
+            "description": "The event name (`push`, `ping`, ...).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-GitHub-Delivery",
+            "in": "header",
+            "required": true,
+            "description": "GitHub's unique delivery id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Handled without deploying: `ignored` (with `reason`) or `duplicate`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResult"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Deployments were requested.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A missing or invalid header, or the payload is not a JSON object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The signature is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No GitHub App is connected (`Webhooks are not configured`), or the queue is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "description": "GitHub's JSON payload (set the webhook content type to `application/json`).",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/apps/{id}/retention": {
+      "put": {
+        "tags": [
+          "Images and clean-up"
+        ],
+        "summary": "Set how many versions to keep",
+        "description": "How many earlier versions' images to keep besides the live one (0 to 10), and whether to clean up automatically after each successful deployment. Send either or both.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The app's id.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The new settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "keep_previous_images": {
+                      "type": "integer"
+                    },
+                    "auto_prune": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The app is being deleted (`code: deleting`): it accepts nothing but another delete.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Retention"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "shipdok.sid",
+        "description": "The administrator's session cookie, set by `POST /api/auth/login`."
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "A sentence for a person."
+          },
+          "code": {
+            "type": "string",
+            "description": "A short stable code for programs, where there is one (for example `wrong_password`, `locked`, `port_taken`)."
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Each problem, when a request had several."
+          }
+        }
+      },
+      "Empty": {
+        "type": "object",
+        "description": "No content."
+      },
+      "AppCreate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
+          },
+          "branch": {
+            "default": "main",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_][A-Za-z0-9._\\/-]{0,254}$"
+          },
+          "root_dir": {
+            "default": ".",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9._\\/-]+$"
+          },
+          "container_port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "host_port": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 65535
+          },
+          "health_path": {
+            "nullable": true,
+            "type": "string",
+            "maxLength": 200,
+            "pattern": "^\\/[^\\s]*$"
+          },
+          "memory_mb": {
+            "default": 512,
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 8192
+          },
+          "cpus": {
+            "default": 1,
+            "type": "number",
+            "minimum": 0.1,
+            "maximum": 4
+          },
+          "max_restarts": {
+            "default": 5,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 50
+          },
+          "keep_previous_images": {
+            "default": 1,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10
+          },
+          "auto_prune": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "repo",
+          "container_port"
+        ],
+        "additionalProperties": false,
+        "description": "A new app. `host_port` left out: the lowest free port in the platform's port range is used."
+      },
+      "AppUpdate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "branch": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_][A-Za-z0-9._\\/-]{0,254}$"
+          },
+          "root_dir": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9._\\/-]+$"
+          },
+          "container_port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "host_port": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 65535
+          },
+          "health_path": {
+            "nullable": true,
+            "type": "string",
+            "maxLength": 200,
+            "pattern": "^\\/[^\\s]*$"
+          },
+          "memory_mb": {
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 8192
+          },
+          "cpus": {
+            "type": "number",
+            "minimum": 0.1,
+            "maximum": 4
+          },
+          "max_restarts": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 50
+          }
+        },
+        "additionalProperties": false,
+        "description": "Settings to change; send only the ones you want to change. The repository and the slug cannot be changed."
+      },
+      "Retention": {
+        "type": "object",
+        "properties": {
+          "keep_previous_images": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10
+          },
+          "auto_prune": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "description": "How many earlier versions' images to keep, and whether to clean up automatically."
+      },
+      "RollbackRequest": {
+        "type": "object",
+        "properties": {
+          "deploymentId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "start": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "description": "`deploymentId`: the version to go back to (default: the newest earlier version that still has an image). `start`: also start the app if it is stopped."
+      },
+      "DeployRequest": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "type": "boolean"
+          },
+          "ignoreDiskWarning": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "description": "`start`: start the app after deploying if it is stopped. `ignoreDiskWarning`: deploy although the disk is almost full."
+      },
+      "Runtime": {
+        "type": "object",
+        "description": "What the worker last reported about the running container. `null` (on the app) until it has reported.",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "stopped",
+              "unhealthy",
+              "restarting",
+              "crashed",
+              "missing"
+            ],
+            "description": "What the worker last saw. `missing`: the container was removed outside Shipdok."
+          },
+          "last_action": {
+            "type": "string",
+            "nullable": true,
+            "description": "The last thing the worker did.",
+            "enum": [
+              "deploy",
+              "start",
+              "stop",
+              "restart",
+              "auto_restart",
+              "recover",
+              null
+            ]
+          },
+          "last_error": {
+            "type": "string",
+            "nullable": true,
+            "description": "Why the last action or the current state is a problem."
+          },
+          "last_exit_code": {
+            "type": "integer",
+            "nullable": true,
+            "description": "The exit code of the last time the container stopped."
+          },
+          "oom_killed": {
+            "type": "boolean",
+            "description": "Whether that stop was an out-of-memory kill."
+          },
+          "health_failures": {
+            "type": "integer",
+            "description": "Health checks failed in a row."
+          },
+          "next_restart_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When a scheduled automatic restart is due."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this was last written."
+          }
+        },
+        "required": [
+          "state",
+          "last_action",
+          "last_error",
+          "last_exit_code",
+          "oom_killed",
+          "health_failures",
+          "next_restart_at",
+          "updated_at"
+        ]
+      },
+      "Stats": {
+        "type": "object",
+        "nullable": true,
+        "description": "The newest CPU and memory reading of the running container, or `null` when it is older than 90 seconds (the app is stopped or the worker is quiet).",
+        "properties": {
+          "cpuPercent": {
+            "type": "number",
+            "nullable": true,
+            "description": "A share of ONE processor, like `docker stats`; above 100 when more than one is busy. `null` when there is nothing to compare with yet."
+          },
+          "memoryBytes": {
+            "type": "integer",
+            "description": "Memory in use, without the file cache the kernel can take back."
+          },
+          "memoryLimitBytes": {
+            "type": "integer",
+            "nullable": true,
+            "description": "The container's memory limit."
+          },
+          "sampledAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the reading was taken."
+          }
+        }
+      },
+      "Cleanup": {
+        "type": "object",
+        "nullable": true,
+        "description": "What the last image clean-up of the app did (`null` until one has run).",
+        "properties": {
+          "last_run_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it ran."
+          },
+          "trigger": {
+            "type": "string",
+            "description": "`manual` or `auto`."
+          },
+          "images_removed": {
+            "type": "integer",
+            "description": "How many images were removed."
+          },
+          "freed_bytes": {
+            "type": "integer",
+            "description": "Disk space freed, measured as the drop in Docker's layer usage (0 if Docker cannot say)."
+          },
+          "skipped": {
+            "type": "integer",
+            "description": "Images that were not removed because something still uses them."
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "A failure, if there was one."
+          }
+        }
+      },
+      "DeploymentBrief": {
+        "type": "object",
+        "nullable": true,
+        "description": "The app's newest deployment.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Deployment id."
+          },
+          "status": {
+            "$ref": "#/components/schemas/DeploymentStatus"
+          },
+          "commit_sha": {
+            "type": "string",
+            "nullable": true,
+            "description": "The commit."
+          },
+          "queued_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was requested."
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When it ended."
+          }
+        }
+      },
+      "RunningSettings": {
+        "type": "object",
+        "nullable": true,
+        "additionalProperties": true,
+        "description": "The settings the running version was deployed with (the newest successful deployment's snapshot, without variable versions). `null` until one succeeded. Editing the app changes the NEXT deployment, not this."
+      },
+      "App": {
+        "type": "object",
+        "description": "An app.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The app's id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name (editable)."
+          },
+          "slug": {
+            "type": "string",
+            "description": "Normalised name; names the images and containers and never changes."
+          },
+          "repo": {
+            "type": "string",
+            "description": "GitHub `owner/repo`."
+          },
+          "github_installation_id": {
+            "type": "integer",
+            "nullable": true,
+            "description": "The GitHub App installation remembered for this repository (`null` until found)."
+          },
+          "branch": {
+            "type": "string",
+            "description": "The branch deployed on push."
+          },
+          "root_dir": {
+            "type": "string",
+            "description": "Where the Dockerfile is, inside the repository."
+          },
+          "container_port": {
+            "type": "integer",
+            "description": "The port the app listens on inside its container."
+          },
+          "host_port": {
+            "type": "integer",
+            "nullable": true,
+            "description": "The port it is published on, on this machine."
+          },
+          "health_path": {
+            "type": "string",
+            "nullable": true,
+            "description": "A path that answers when the app is healthy (`null`: any answer counts)."
+          },
+          "memory_mb": {
+            "type": "integer",
+            "description": "Memory limit in MB."
+          },
+          "cpus": {
+            "type": "string",
+            "description": "CPU limit, as a decimal string (for example `\"1.00\"`)."
+          },
+          "max_restarts": {
+            "type": "integer",
+            "description": "Automatic restarts allowed within 10 minutes before the app is marked crashed."
+          },
+          "desired_state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "stopped"
+            ],
+            "description": "What the administrator wants. What really happens is in `runtime`."
+          },
+          "keep_previous_images": {
+            "type": "integer",
+            "description": "Earlier versions' images kept besides the running one."
+          },
+          "auto_prune": {
+            "type": "boolean",
+            "description": "Clean up images automatically after each successful deployment."
+          },
+          "deleting_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Set while the app is being deleted."
+          },
+          "delete_error": {
+            "type": "string",
+            "nullable": true,
+            "description": "Why a deletion failed (press delete again to retry)."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Created."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last edited."
+          },
+          "latest_deployment": {
+            "$ref": "#/components/schemas/DeploymentBrief"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/Runtime",
+            "nullable": true
+          },
+          "cleanup": {
+            "$ref": "#/components/schemas/Cleanup"
+          },
+          "running_settings": {
+            "$ref": "#/components/schemas/RunningSettings"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/Stats"
+          },
+          "settings_pending": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "Only on the single-app answers: which edited settings the running version does not have yet (`null`: nothing deployed yet)."
+          },
+          "warning": {
+            "type": "string",
+            "description": "Only when creating: for example that the GitHub App is not installed on the repository."
+          }
+        }
+      },
+      "DeploymentStatus": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "building",
+          "starting",
+          "validating",
+          "successful",
+          "failed",
+          "cancelled",
+          "superseded",
+          "interrupted"
+        ],
+        "description": "Where a deployment is. Separate from whether the app is running."
+      },
+      "Deployment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Deployment id."
+          },
+          "app_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The app."
+          },
+          "commit_sha": {
+            "type": "string",
+            "nullable": true,
+            "description": "The commit built."
+          },
+          "trigger": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "webhook",
+              "rollback"
+            ],
+            "description": "What asked for it."
+          },
+          "status": {
+            "$ref": "#/components/schemas/DeploymentStatus"
+          },
+          "image_ref": {
+            "type": "string",
+            "nullable": true,
+            "description": "The Docker image built or reused."
+          },
+          "image_bytes": {
+            "type": "string",
+            "nullable": true,
+            "description": "Image size in bytes, as a string."
+          },
+          "image_removed_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the image was cleaned up (the version can no longer be rolled back to)."
+          },
+          "rollback_of": {
+            "type": "string",
+            "format": "uuid",
+            "description": "For a rollback: the version it went back to.",
+            "nullable": true
+          },
+          "config_snapshot": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "The settings this deployment used (no secret values)."
+          },
+          "error_summary": {
+            "type": "string",
+            "nullable": true,
+            "description": "A short reason it failed; the build log has the detail."
+          },
+          "job_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "The queue job."
+          },
+          "queued_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Requested."
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Started."
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Ended."
+          },
+          "cancel_status": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "cancelled",
+              "superseded",
+              null
+            ]
+          },
+          "superseded_by": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The newer deployment that replaced it.",
+            "nullable": true
+          },
+          "warning": {
+            "type": "string",
+            "description": "Only when requesting: for example that the disk is getting full."
+          },
+          "disk": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Only with `warning`: the disk figures."
+          }
+        }
+      },
+      "CrashEvent": {
+        "type": "object",
+        "properties": {
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When."
+          },
+          "cause": {
+            "type": "string",
+            "enum": [
+              "crash",
+              "stopped_outside",
+              "recovered",
+              "removed_outside"
+            ],
+            "description": "Why the app was not running when it should be."
+          },
+          "exit_code": {
+            "type": "integer",
+            "nullable": true,
+            "description": "The exit code, where there was one."
+          },
+          "oom_killed": {
+            "type": "boolean",
+            "description": "Killed for running out of memory."
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "restart_scheduled",
+              "gave_up",
+              "none",
+              "restarted"
+            ],
+            "description": "What Shipdok did about it."
+          }
+        },
+        "required": [
+          "occurred_at",
+          "cause",
+          "exit_code",
+          "oom_killed",
+          "action"
+        ]
+      },
+      "StatsHistory": {
+        "type": "object",
+        "properties": {
+          "latest": {
+            "$ref": "#/components/schemas/Stats"
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "t": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When."
+                },
+                "cpu": {
+                  "type": "number",
+                  "nullable": true
+                },
+                "memory": {
+                  "type": "integer",
+                  "description": "Memory in bytes."
+                }
+              },
+              "required": [
+                "t",
+                "cpu",
+                "memory"
+              ]
+            }
+          }
+        },
+        "required": [
+          "latest",
+          "samples"
+        ]
+      },
+      "ImageVersion": {
+        "type": "object",
+        "properties": {
+          "deploymentId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The deployment."
+          },
+          "commit": {
+            "type": "string",
+            "nullable": true,
+            "description": "Commit."
+          },
+          "trigger": {
+            "type": "string",
+            "description": "What asked for it."
+          },
+          "finishedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it went live."
+          },
+          "image": {
+            "type": "string",
+            "description": "The Docker image."
+          },
+          "bytes": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Image size."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "live",
+              "previous",
+              "prunable",
+              "removed"
+            ],
+            "description": "live: runs now. previous: kept for rollback. prunable: a clean-up would remove it. removed: its image is gone."
+          },
+          "rollbackOf": {
+            "type": "string",
+            "format": "uuid",
+            "description": "If this was a rollback.",
+            "nullable": true
+          },
+          "canRollBackTo": {
+            "type": "boolean",
+            "description": "Whether Roll back can use it."
+          }
+        },
+        "required": [
+          "deploymentId",
+          "commit",
+          "trigger",
+          "finishedAt",
+          "image",
+          "bytes",
+          "state",
+          "rollbackOf",
+          "canRollBackTo"
+        ]
+      },
+      "Images": {
+        "type": "object",
+        "properties": {
+          "keep_previous_images": {
+            "type": "integer",
+            "description": "Earlier versions kept."
+          },
+          "auto_prune": {
+            "type": "boolean",
+            "description": "Automatic clean-up."
+          },
+          "cleanup": {
+            "$ref": "#/components/schemas/Cleanup"
+          },
+          "prunableBytes": {
+            "type": "integer",
+            "description": "What a clean-up would free (an upper bound)."
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImageVersion"
+            }
+          }
+        },
+        "required": [
+          "keep_previous_images",
+          "auto_prune",
+          "cleanup",
+          "prunableBytes",
+          "versions"
+        ]
+      },
+      "EnvList": {
+        "type": "object",
+        "properties": {
+          "variables": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "description": "The name."
+                },
+                "value": {
+                  "type": "string",
+                  "description": "Always `********`: values are never returned here."
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Last changed."
+                }
+              },
+              "required": [
+                "key",
+                "value",
+                "updated_at"
+              ]
+            }
+          },
+          "pending": {
+            "type": "object",
+            "properties": {
+              "deployed": {
+                "type": "boolean",
+                "description": "Whether the app has been deployed."
+              },
+              "pending": {
+                "type": "boolean",
+                "description": "Whether any change waits for the next deployment."
+              },
+              "added": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "description": "Name."
+                }
+              },
+              "changed": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "description": "Name."
+                }
+              },
+              "removed": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "description": "Name."
+                }
+              }
+            },
+            "required": [
+              "deployed",
+              "pending",
+              "added",
+              "changed",
+              "removed"
+            ]
+          }
+        },
+        "required": [
+          "variables",
+          "pending"
+        ]
+      },
+      "LogChunk": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The log text."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Byte offset of the start of `text`."
+          },
+          "nextOffset": {
+            "type": "integer",
+            "description": "Where to continue from."
+          },
+          "size": {
+            "type": "integer",
+            "description": "The file's size."
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "The log has finished AND everything has been read."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "The log hit its size cap."
+          },
+          "deploymentId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Runtime logs only: the deployment whose container wrote it.",
+            "nullable": true
+          }
+        },
+        "required": [
+          "text",
+          "offset",
+          "nextOffset",
+          "size",
+          "complete",
+          "truncated"
+        ]
+      },
+      "Disk": {
+        "type": "object",
+        "nullable": true,
+        "description": "The disk the logs (and normally Docker) live on, or `null` if it cannot be measured.",
+        "properties": {
+          "totalBytes": {
+            "type": "integer",
+            "description": "Size."
+          },
+          "freeBytes": {
+            "type": "integer",
+            "description": "Free."
+          },
+          "freePercent": {
+            "type": "number"
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "low",
+              "critical"
+            ],
+            "description": "low: under 20% free. critical: under 10% free."
+          }
+        }
+      },
+      "Storage": {
+        "type": "object",
+        "properties": {
+          "logs": {
+            "type": "object",
+            "properties": {
+              "totalBytes": {
+                "type": "integer",
+                "description": "All logs."
+              },
+              "apps": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "appId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "description": "App."
+                    },
+                    "slug": {
+                      "type": "string",
+                      "description": "Slug."
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "description": "Log bytes."
+                    },
+                    "files": {
+                      "type": "integer",
+                      "description": "Log files."
+                    }
+                  },
+                  "required": [
+                    "appId",
+                    "slug",
+                    "bytes",
+                    "files"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "totalBytes",
+              "apps"
+            ]
+          },
+          "images": {
+            "type": "object",
+            "properties": {
+              "totalBytes": {
+                "type": "integer",
+                "description": "All images (an upper bound)."
+              },
+              "apps": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "appId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "description": "App."
+                    },
+                    "slug": {
+                      "type": "string",
+                      "description": "Slug."
+                    },
+                    "images": {
+                      "type": "integer",
+                      "description": "Images."
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "description": "Bytes."
+                    }
+                  },
+                  "required": [
+                    "appId",
+                    "slug",
+                    "images",
+                    "bytes"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "totalBytes",
+              "apps"
+            ]
+          },
+          "disk": {
+            "$ref": "#/components/schemas/Disk"
+          }
+        },
+        "required": [
+          "logs",
+          "images",
+          "disk"
+        ]
+      },
+      "Credentials": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "description": "3 to 64 characters: letters, numbers, dot, dash, underscore.",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          },
+          "password": {
+            "type": "string",
+            "description": "12 to 256 characters; refused: a repeated short pattern, a plain run of characters, or one containing the username.",
+            "minLength": 12,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ]
+      },
+      "AuthStatus": {
+        "type": "object",
+        "properties": {
+          "needsSetup": {
+            "type": "boolean",
+            "description": "No administrator exists yet."
+          },
+          "authenticated": {
+            "type": "boolean",
+            "description": "This browser has a valid session."
+          },
+          "setupTokenRequired": {
+            "type": "boolean",
+            "description": "The setup screen must ask for the setup token (the token is printed in the API log)."
+          }
+        },
+        "required": [
+          "needsSetup",
+          "authenticated",
+          "setupTokenRequired"
+        ]
+      },
+      "Username": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "description": "The signed-in name."
+          }
+        },
+        "required": [
+          "username"
+        ]
+      },
+      "SetupResult": {
+        "type": "object",
+        "description": "The only time the recovery codes are ever returned.",
+        "properties": {
+          "username": {
+            "type": "string",
+            "description": "The administrator."
+          },
+          "recoveryCodes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "A code, `XXXX-XXXX-XXXX-XXXX`."
+            }
+          }
+        },
+        "required": [
+          "username",
+          "recoveryCodes"
+        ]
+      },
+      "LoginAttempt": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "login",
+              "setup",
+              "recovery",
+              "reset",
+              "settings",
+              "github"
+            ],
+            "description": "What was attempted or changed."
+          },
+          "username": {
+            "type": "string",
+            "description": "The name typed (any name, real or not)."
+          },
+          "address": {
+            "type": "string",
+            "description": "The client address (`host` for a reset on the machine)."
+          },
+          "success": {
+            "type": "boolean",
+            "description": "Whether it worked."
+          }
+        },
+        "required": [
+          "at",
+          "kind",
+          "username",
+          "address",
+          "success"
+        ]
+      },
+      "RecoveryStatus": {
+        "type": "object",
+        "properties": {
+          "remaining": {
+            "type": "integer",
+            "description": "Unused codes left (of 10)."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the current set was made."
+          }
+        },
+        "required": [
+          "remaining",
+          "createdAt"
+        ]
+      },
+      "Locked": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "A sentence."
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "locked"
+            ],
+            "description": "Always `locked`."
+          },
+          "retryAfterSeconds": {
+            "type": "integer",
+            "description": "Seconds to wait."
+          }
+        },
+        "required": [
+          "error",
+          "code",
+          "retryAfterSeconds"
+        ]
+      },
+      "PublicSettings": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "local",
+              "webhook",
+              "full"
+            ],
+            "description": "Who may reach Shipdok from outside."
+          },
+          "publicUrl": {
+            "type": "string",
+            "nullable": true,
+            "description": "The public address (an origin, no path), or `null`."
+          },
+          "modeLocked": {
+            "type": "boolean",
+            "description": "The environment (`SHIPDOK_PUBLIC`) fixes the mode."
+          },
+          "urlLocked": {
+            "type": "boolean",
+            "description": "The environment (`PUBLIC_URL`) fixes the address."
+          },
+          "visitor": {
+            "type": "string",
+            "enum": [
+              "local",
+              "outside"
+            ],
+            "description": "How THIS request was classified."
+          },
+          "githubWebhook": {
+            "type": "object",
+            "description": "Only after a change of the public address while GitHub is connected.",
+            "properties": {
+              "updated": {
+                "type": "boolean",
+                "description": "Whether GitHub now has the new webhook address."
+              },
+              "error": {
+                "type": "string",
+                "description": "Why not."
+              }
+            },
+            "required": [
+              "updated"
+            ]
+          }
+        },
+        "required": [
+          "mode",
+          "publicUrl",
+          "modeLocked",
+          "urlLocked",
+          "visitor"
+        ]
+      },
+      "GithubApp": {
+        "type": "object",
+        "description": "The connected GitHub App. Never contains a secret.",
+        "properties": {
+          "appId": {
+            "type": "string",
+            "description": "The GitHub App id."
+          },
+          "slug": {
+            "type": "string",
+            "nullable": true,
+            "description": "The app's URL name."
+          },
+          "name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Its name."
+          },
+          "ownerLogin": {
+            "type": "string",
+            "nullable": true,
+            "description": "The account that owns it."
+          },
+          "htmlUrl": {
+            "type": "string",
+            "nullable": true,
+            "description": "Its page on github.com."
+          },
+          "clientId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Its client id."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "manifest",
+              "manual"
+            ],
+            "description": "How it was connected."
+          },
+          "connectedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last changed."
+          }
+        },
+        "required": [
+          "appId",
+          "slug",
+          "name",
+          "ownerLogin",
+          "htmlUrl",
+          "clientId",
+          "source",
+          "connectedAt",
+          "updatedAt"
+        ]
+      },
+      "GithubStatus": {
+        "type": "object",
+        "properties": {
+          "connected": {
+            "type": "boolean",
+            "description": "Whether an app is connected."
+          },
+          "app": {
+            "$ref": "#/components/schemas/GithubApp",
+            "nullable": true
+          },
+          "problem": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "cannot_decrypt",
+              null
+            ],
+            "description": "`cannot_decrypt`: the stored credentials do not fit the platform key."
+          }
+        },
+        "required": [
+          "connected",
+          "app",
+          "problem"
+        ]
+      },
+      "GithubManual": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "The administrator's current password."
+          },
+          "appId": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "description": "The App ID (a number; not the Client ID)."
+          },
+          "privateKey": {
+            "type": "string",
+            "description": "The private key (the `.pem` file's text)."
+          },
+          "webhookSecret": {
+            "type": "string",
+            "description": "The app's webhook secret, 16 to 256 characters.",
+            "minLength": 16,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "password",
+          "appId",
+          "privateKey",
+          "webhookSecret"
+        ]
+      },
+      "PasswordOnly": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "The administrator's current password."
+          }
+        },
+        "required": [
+          "password"
+        ]
+      },
+      "GithubRepo": {
+        "type": "object",
+        "properties": {
+          "fullName": {
+            "type": "string",
+            "description": "`owner/repo`."
+          },
+          "private": {
+            "type": "boolean",
+            "description": "Private repository."
+          },
+          "defaultBranch": {
+            "type": "string",
+            "nullable": true,
+            "description": "Its default branch."
+          },
+          "installationId": {
+            "type": "integer",
+            "description": "The installation that covers it."
+          }
+        },
+        "required": [
+          "fullName",
+          "private",
+          "defaultBranch",
+          "installationId"
+        ]
+      },
+      "GithubInstallation": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Installation id."
+          },
+          "account": {
+            "type": "string",
+            "nullable": true,
+            "description": "The account it is installed on."
+          }
+        },
+        "required": [
+          "id",
+          "account"
+        ]
+      },
+      "GithubWebhook": {
+        "type": "object",
+        "properties": {
+          "expected": {
+            "type": "string",
+            "nullable": true,
+            "description": "The address Shipdok expects (public address + `/api/webhooks/github`)."
+          },
+          "actual": {
+            "type": "string",
+            "nullable": true,
+            "description": "The address GitHub has."
+          },
+          "matches": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "`null` when either is unknown."
+          }
+        },
+        "required": [
+          "expected",
+          "actual",
+          "matches"
+        ]
+      },
+      "ConnectStart": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "description": "An organisation to create the app under (default: the personal account)."
+          },
+          "name": {
+            "type": "string",
+            "description": "The app name, 1 to 34 characters (default `Shipdok-xxxx`)."
+          }
+        }
+      },
+      "ConnectManifest": {
+        "type": "object",
+        "properties": {
+          "postUrl": {
+            "type": "string",
+            "description": "Where the browser posts `manifest` (always on github.com)."
+          },
+          "manifest": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "The prepared GitHub App definition."
+          }
+        },
+        "required": [
+          "postUrl",
+          "manifest"
+        ]
+      },
+      "WebhookResult": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "deployed",
+              "ignored",
+              "duplicate",
+              "error"
+            ],
+            "description": "What was done."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why it was ignored."
+          },
+          "deployments": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "description": "A deployment that was requested."
+            }
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "WebhookDelivery": {
+        "type": "object",
+        "properties": {
+          "delivery_id": {
+            "type": "string",
+            "description": "GitHub's delivery id."
+          },
+          "event": {
+            "type": "string",
+            "description": "The GitHub event."
+          },
+          "repo": {
+            "type": "string",
+            "nullable": true,
+            "description": "Repository."
+          },
+          "ref": {
+            "type": "string",
+            "nullable": true,
+            "description": "Branch."
+          },
+          "commit_sha": {
+            "type": "string",
+            "nullable": true,
+            "description": "Commit."
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "processing",
+              "deployed",
+              "ignored",
+              "error"
+            ],
+            "description": "The result."
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true,
+            "description": "Why, in a sentence."
+          },
+          "details": {
+            "type": "array",
+            "nullable": true,
+            "description": "Per app: what happened.",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Received."
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Finished."
+          }
+        },
+        "required": [
+          "delivery_id",
+          "event",
+          "repo",
+          "ref",
+          "commit_sha",
+          "outcome",
+          "reason",
+          "details",
+          "received_at",
+          "processed_at"
+        ]
+      }
+    }
+  }
+}

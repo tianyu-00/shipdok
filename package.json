@@ -1,6 +1,7 @@
 {
   "name": "shipdok",
   "private": true,
+  "license": "MIT",
   "workspaces": [
     "apps/api",
     "apps/web",
