@@ -1,14 +1,13 @@
 # Build the images from the source in this checkout instead of pulling the published ones (for development and for changes of your own):
 #   docker compose -f infrastructure/compose.yaml -f infrastructure/compose.build.yaml up -d --build
 # The images get the same names as the published ones, so a later `docker compose pull` replaces them with the released versions.
-x-api-build: &api-build
-  context: ..
-  dockerfile: apps/api/Dockerfile
-
+# `secrets` and `api` run the same image: only `api` builds it, `secrets` uses what was built (building it twice at once collides).
 services:
-  secrets: { build: *api-build }
-  migrate: { build: *api-build }
-  api: { build: *api-build }
+  secrets: { pull_policy: never }
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
   worker:
     build:
       context: ..

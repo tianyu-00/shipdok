@@ -83,30 +83,14 @@ services:
       timeout: 3s
       retries: 10
 
-  # Applies database migrations, then exits. api and worker wait for it.
-  migrate:
-    image: *api-image # the image names are not under shipdok/: that prefix is reserved for deployed apps (image cleanup targets it)
-    command: ["node", "src/db/migrate.js"]
-    restart: "no"
-    depends_on:
-      <<: *after-secrets
-      postgres: { condition: service_healthy }
-    environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_USER: ${POSTGRES_USER:-shipdok}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
-      POSTGRES_PASSWORD_FILE: /run/shipdok-secrets/postgres_password # used when you did not set the password yourself
-      POSTGRES_DB: ${POSTGRES_DB:-shipdok}
-    volumes:
-      - shipdok_secrets:/run/shipdok-secrets:ro
-
+  # The backend. It also brings the database up to date (migrations) every time it starts.
   api:
     image: *api-image
     restart: unless-stopped
     init: true
     depends_on:
       <<: *after-secrets
-      migrate: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
     environment:
       API_HOST: 0.0.0.0 # inside the container; the published port below is what stays on loopback
@@ -152,7 +136,7 @@ services:
     init: true # reaps the git/docker child processes
     depends_on:
       <<: *after-secrets
-      migrate: { condition: service_completed_successfully }
+      api: { condition: service_healthy } # the API applies the database migrations before it reports healthy
       redis: { condition: service_healthy }
     # No group to configure: the container's entry script reads the group that owns the Docker socket (it differs per machine), drops to
     # the unprivileged `node` user and gives it that one group. See apps/worker/docker-entrypoint.sh.

@@ -39,7 +39,7 @@ apps/web/        Vite + React (JavaScript) dashboard, Tailwind v4 + shadcn/ui (c
   src/           App.jsx, pages/ (auth, apps list, create app, app detail), components/ (tabs, log viewer, actions), lib/ (api client, queries, format)
   nginx.conf, Dockerfile   production image: nginx serves the build and forwards /api to the API
 packages/shared/ @shipdok/shared: crypto (AES-256-GCM), .env parser, github.js (app JWT, installation tokens), logstore.js (log format, masking, safe read/delete), constants
-infrastructure/  compose.yaml (Postgres 16, Redis 7 on 127.0.0.1; migrate, api, worker services), .env (never committed)
+infrastructure/  compose.yaml (Postgres 16, Redis 7; secrets (one-shot), api, worker, web services), .env (never committed)
 apps/api/Dockerfile, apps/worker/Dockerfile, apps/web/Dockerfile, .dockerignore   images built from the repo root (see "Run it")
 ```
 
@@ -285,7 +285,7 @@ GitHub page; see "Connect GitHub").
   `infrastructure/.env`; they are now entered once on the dashboard's GitHub page and `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE` and
   `GITHUB_WEBHOOK_SECRET` are no longer read (`GITHUB_APP_ID` is still passed into the containers so that a leftover value gets a log
   warning naming it).
-- **Docker Compose hosting (api, migrate, worker verified on x86/WSL2 in an isolated project):** `migrate` runs once, then `api`
+- **Docker Compose hosting (api, worker verified on x86/WSL2 in an isolated project; there is NO `migrate` service any more, see "No migrate service" below):** formerly `migrate` ran once, then `api`
   (loopback-published, `/health` healthcheck) and `worker` start. Images are `shipdok-api` / `shipdok-worker`, deliberately NOT under
   `shipdok/` (that prefix is deployed apps; image cleanup will target it). The worker image has git and the Docker CLI + buildx; only
   the worker gets `/var/run/docker.sock` (root-equivalent, decided to mount it directly, no socket proxy). Inside compose the
@@ -515,7 +515,7 @@ GitHub page; see "Connect GitHub").
   Before any push each image is built for amd64 and checked by `.github/scripts/check-image.sh`, which fails on `.env*`, `*.pem`, `jar.txt`,
   `id_rsa*` anywhere in the image (outside node_modules and system certificates); checked on the real api, worker and web images (clean) and on
   an image with a planted `.env` and `.pem` (fails, listing both); an unknown image also fails. `infrastructure/compose.yaml` now has only
-  `image:` lines (`ghcr.io/tianyu-00/shipdok-api|worker|web:${SHIPDOK_VERSION:-latest}`; secrets, migrate and api share the api image);
+  `image:` lines (`ghcr.io/tianyu-00/shipdok-api|worker|web:${SHIPDOK_VERSION:-latest}`; secrets and api share the api image);
   `infrastructure/compose.build.yaml` is the override that adds the `build:` sections. Checked: `docker compose config --images` for both file
   sets and for a pinned version. **Checked by the administrator on GitHub: the workflow ran, the images were published and made public, each has amd64 and arm64
   (`docker buildx imagetools inspect` from here, no login).** A second job, `release`, runs after all three images are published (push to `publish`
@@ -523,6 +523,15 @@ GitHub page; see "Connect GitHub").
   leaves it alone (bump `VERSION` for a new release); VERSION is validated. The release script was run locally with a fake `gh` (new, existing,
   bad version); actionlint clean; **the release job itself has not run on GitHub yet. Not tested: pulling on the Pi.** To do once, after the first publish: set the three packages to Public on github.com (GHCR starts
   private) or `docker compose pull` needs a login. Do a pre-release on the `publish` branch to see it work.
+- **No `migrate` service (fewer services; verified with the real stack from nothing):** **Administrator's decision: drop `migrate`.** The API runs
+  the migrations itself at start (`runMigrations()` in `apps/api/src/server.js`, before it listens, under the same Postgres advisory lock, so
+  `/health` passes only once the tables exist); a failed migration logs "The database could not be prepared: Migration X failed: ..." and exits 1
+  (compose restarts it until it works). The worker now waits for a healthy `api` instead. `npm run migrate -w apps/api` still works for
+  development. `compose.build.yaml` builds the API image only through `api` (`secrets` uses it, `pull_policy: never`; building one image from
+  three services at once collided on the new Docker image store). Checked for real: fresh start applies all 18 migrations and the stack comes up
+  (api healthy, then worker and web), a restart says "Database is up to date", a migration that fails stops the API with that message and it
+  recovers on its own once the cause is fixed. Not covered by an automated test (server.js is not imported by the tests). Long-running services
+  are now postgres, redis, api, worker, web (plus the one-shot `secrets`).
 - **Pi:** early prototype ran on the Pi (ARM64 builds work). The full stack has not been run on the Pi.
 
 ## Next
