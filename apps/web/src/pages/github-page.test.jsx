@@ -29,22 +29,55 @@ const routes = (github = NONE, over = {}) => ({
 })
 const page = (route = '/github') => renderWithProviders(<GithubPage />, { route })
 const card = async (title) => within((await screen.findByText(title, { selector: '[data-slot=card-title]' })).closest('[data-slot=card]'))
-const section = async (name) => within(await screen.findByRole('region', { name }))
+const section = card // (one card per GitHub app)
+// "Add a GitHub app" opens a dialog with two ways: have Shipdok create one, or enter one that exists.
+const openAdd = async () => {
+  await userEvent.click(await screen.findByRole('button', { name: /add a github app/i }))
+  return within(await screen.findByRole('dialog'))
+}
+const openExisting = async () => {
+  const dialog = await openAdd()
+  await userEvent.click(dialog.getByRole('tab', { name: 'I already have one' }))
+  return dialog
+}
 
 describe('not connected', () => {
-  test('offers both ways to connect', async () => {
+  test('says so, and offers to add one', async () => {
     mockApi(routes())
     page()
-    expect(await card('Connect GitHub')).toBeTruthy()
-    expect(await card('I already have a GitHub App')).toBeTruthy()
-    expect(await screen.findByRole('heading', { name: 'Connect a GitHub app' })).toBeInTheDocument()
+    expect(await screen.findByText('No GitHub app is connected')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /add a github app/i })).toBeEnabled()
+    expect(screen.queryByRole('dialog')).toBeNull() // the forms are not on the page until asked for
+    expect(screen.queryByLabelText('App ID')).toBeNull()
+  })
+
+  test('no button, no forms and no "empty" message while the list is loading', async () => {
+    let release
+    const gate = new Promise((r) => { release = r })
+    mockApi(routes(NONE, { 'GET /api/github': async () => { await gate; return NONE } }))
+    page()
+    expect(screen.queryByRole('button', { name: /add a github app/i })).toBeNull()
+    expect(screen.queryByText('No GitHub app is connected')).toBeNull()
+    release()
+    expect(await screen.findByText('No GitHub app is connected')).toBeInTheDocument()
+  })
+
+  test('the dialog has both ways, "create one for me" first', async () => {
+    mockApi(routes())
+    page()
+    const d = await openAdd()
+    expect(d.getByRole('tab', { name: 'Create one for me' })).toHaveAttribute('aria-selected', 'true')
+    expect(d.getByRole('tab', { name: 'I already have one' })).toHaveAttribute('aria-selected', 'false')
+    expect(d.getByRole('button', { name: /connect github/i })).toBeInTheDocument()
+    await userEvent.click(d.getByRole('tab', { name: 'I already have one' }))
+    expect(d.getByLabelText('App ID')).toBeInTheDocument()
   })
 
   test('the button starts the flow and hands the definition to GitHub', async () => {
     const api = mockApi(routes(NONE, { 'POST /api/github/connect/start': { postUrl: 'https://github.com/settings/apps/new?state=s1', manifest: { name: 'Shipdok-ab12' } } }))
     page()
-    const c = await card('Connect GitHub')
-    await userEvent.click(c.getByRole('button', { name: /connect github/i }))
+    const d = await openAdd()
+    await userEvent.click(d.getByRole('button', { name: /connect github/i }))
     await waitFor(() => expect(lib.postManifest).toHaveBeenCalledWith({ postUrl: 'https://github.com/settings/apps/new?state=s1', manifest: { name: 'Shipdok-ab12' } }))
     expect(api.called('POST', '/api/github/connect/start')[0].body).toEqual({})
   })
@@ -52,11 +85,11 @@ describe('not connected', () => {
   test('an organisation and a name are sent when chosen', async () => {
     const api = mockApi(routes(NONE, { 'POST /api/github/connect/start': { postUrl: 'https://github.com/organizations/my-org/settings/apps/new?state=s1', manifest: {} } }))
     page()
-    const c = await card('Connect GitHub')
-    await userEvent.click(c.getByRole('radio', { name: /organisation/i }))
-    await userEvent.type(c.getByLabelText('Organisation name'), 'my-org')
-    await userEvent.type(c.getByLabelText('App name'), 'My Shipdok')
-    await userEvent.click(c.getByRole('button', { name: /connect github/i }))
+    const d = await openAdd()
+    await userEvent.click(d.getByRole('radio', { name: /organisation/i }))
+    await userEvent.type(d.getByLabelText('Organisation name'), 'my-org')
+    await userEvent.type(d.getByLabelText('App name'), 'My Shipdok')
+    await userEvent.click(d.getByRole('button', { name: /connect github/i }))
     await waitFor(() => expect(api.called('POST', '/api/github/connect/start')).toHaveLength(1))
     expect(api.called('POST', '/api/github/connect/start')[0].body).toEqual({ owner: 'my-org', name: 'My Shipdok' })
   })
@@ -64,45 +97,53 @@ describe('not connected', () => {
   test('an organisation without a name is caught before anything is sent', async () => {
     const api = mockApi(routes())
     page()
-    const c = await card('Connect GitHub')
-    await userEvent.click(c.getByRole('radio', { name: /organisation/i }))
-    await userEvent.click(c.getByRole('button', { name: /connect github/i }))
-    expect(await c.findByRole('alert')).toHaveTextContent(/organisation/i)
+    const d = await openAdd()
+    await userEvent.click(d.getByRole('radio', { name: /organisation/i }))
+    await userEvent.click(d.getByRole('button', { name: /connect github/i }))
+    expect(await d.findByRole('alert')).toHaveTextContent(/organisation/i)
     expect(api.called('POST', '/api/github/connect/start')).toHaveLength(0)
   })
 
   test('says what it will ask GitHub for, and that nothing leaves without confirming', async () => {
     mockApi(routes())
     page()
-    const c = await card('Connect GitHub')
-    expect(c.getByText(/read your repositories|read access to code/i)).toBeInTheDocument()
-    expect(c.getByText(/confirm once on github/i)).toBeInTheDocument()
+    const d = await openAdd()
+    expect(d.getByText(/read your repositories|read access to code/i)).toBeInTheDocument()
+    expect(d.getByText(/confirm once on github/i)).toBeInTheDocument()
   })
 
   test('warns when there is no public address, but still lets you connect', async () => {
     mockApi(routes(NONE, { 'GET /api/settings/public': { ...ACCESS, publicUrl: '' } }))
     page()
-    const c = await card('Connect GitHub')
-    expect(await c.findByText(/no public address/i)).toBeInTheDocument()
-    expect(c.getByRole('link', { name: /public access/i })).toHaveAttribute('href', '/security')
-    expect(c.getByRole('button', { name: /connect github/i })).toBeEnabled()
+    const d = await openAdd()
+    expect(await d.findByText(/no public address/i)).toBeInTheDocument()
+    expect(d.getByRole('link', { name: /public access/i })).toHaveAttribute('href', '/security')
+    expect(d.getByRole('button', { name: /connect github/i })).toBeEnabled()
   })
 
   test('no warning when a public address is set', async () => {
     mockApi(routes())
     page()
-    const c = await card('Connect GitHub')
-    await c.findByRole('button', { name: /connect github/i })
-    expect(c.queryByText(/no public address/i)).toBeNull()
+    const d = await openAdd()
+    await d.findByRole('button', { name: /connect github/i })
+    expect(d.queryByText(/no public address/i)).toBeNull()
   })
 
   test('the server refusing to start is shown', async () => {
     mockApi(routes(NONE, { 'POST /api/github/connect/start': answer(400, { error: 'Open the dashboard at one of its configured addresses' }) }))
     page()
-    const c = await card('Connect GitHub')
-    await userEvent.click(c.getByRole('button', { name: /connect github/i }))
-    expect(await c.findByRole('alert')).toHaveTextContent('configured addresses')
+    const d = await openAdd()
+    await userEvent.click(d.getByRole('button', { name: /connect github/i }))
+    expect(await d.findByRole('alert')).toHaveTextContent('configured addresses')
     expect(lib.postManifest).not.toHaveBeenCalled()
+  })
+
+  test('with apps connected the button is still there, to add another', async () => {
+    mockApi(routes(CONNECTED))
+    page()
+    await card('Shipdok-ab12')
+    expect(screen.queryByText('No GitHub app is connected')).toBeNull()
+    expect(await openAdd()).toBeTruthy()
   })
 })
 
@@ -119,7 +160,7 @@ describe('entering an app by hand', () => {
     let connected = NONE
     const api = mockApi(routes(NONE, { 'GET /api/github': () => connected, 'POST /api/github/apps': () => { connected = CONNECTED; return answer(201, { created: true, app: APP }) } }))
     page()
-    const c = await card('I already have a GitHub App')
+    const c = await openExisting()
     await fill(c)
     await userEvent.click(c.getByRole('button', { name: /^connect$/i }))
     await waitFor(() => expect(api.called('POST', '/api/github/apps')).toHaveLength(1))
@@ -128,12 +169,13 @@ describe('entering an app by hand', () => {
     })
     await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('GitHub app added'))
     expect(await screen.findByText('Shipdok-ab12', { selector: '[data-slot=card-title]' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull()) // done: the dialog closes
   })
 
   test('the same app entered again says it was updated, not added', async () => {
     mockApi(routes(CONNECTED, { 'POST /api/github/apps': { created: false, app: APP } }))
     page()
-    const c = await card('I already have a GitHub App')
+    const c = await openExisting()
     await fill(c)
     await userEvent.click(c.getByRole('button', { name: /^connect$/i }))
     await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('GitHub app updated'))
@@ -142,20 +184,33 @@ describe('entering an app by hand', () => {
   test('the secrets are in password-style fields', async () => {
     mockApi(routes())
     page()
-    const c = await card('I already have a GitHub App')
+    const c = await openExisting()
     expect(c.getByLabelText('Webhook secret')).toHaveAttribute('type', 'password')
     expect(c.getByLabelText('Current password')).toHaveAttribute('type', 'password')
   })
 
-  test('the secrets are not kept in the page after connecting', async () => {
-    const api = mockApi(routes(NONE, { 'POST /api/github/apps': answer(201, { created: true, app: APP }) })) // the list stays empty, so the form stays on screen
+  test('the secrets are not kept in the page after connecting: opening it again gives an empty form', async () => {
+    const api = mockApi(routes(NONE, { 'POST /api/github/apps': answer(201, { created: true, app: APP }) }))
     page()
-    const c = await card('I already have a GitHub App')
+    const c = await openExisting()
     await fill(c)
     await userEvent.click(c.getByRole('button', { name: /^connect$/i }))
     await waitFor(() => expect(api.called('POST', '/api/github/apps')).toHaveLength(1))
-    await waitFor(() => expect(toasts.success).toHaveBeenCalled())
-    for (const label of ['App ID', 'Private key', 'Webhook secret', 'Current password']) expect(c.getByLabelText(label)).toHaveValue('')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(document.body.textContent).not.toContain('a-webhook-secret-0123')
+    const again = await openExisting()
+    for (const label of ['App ID', 'Private key', 'Webhook secret', 'Current password']) expect(again.getByLabelText(label)).toHaveValue('')
+  })
+
+  test('a refusal leaves the dialog open with what was typed, so it can be fixed', async () => {
+    mockApi(routes(NONE, { 'POST /api/github/apps': answer(400, { error: 'GitHub did not accept this app ID and private key.' }) }))
+    page()
+    const c = await openExisting()
+    await fill(c)
+    await userEvent.click(c.getByRole('button', { name: /^connect$/i }))
+    await c.findByRole('alert')
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(c.getByLabelText('App ID')).toHaveValue('123456')
   })
 
   test.each([
@@ -166,7 +221,7 @@ describe('entering an app by hand', () => {
   ])('a mistake (%j) is caught before anything is sent', async (over, why) => {
     const api = mockApi(routes())
     page()
-    const c = await card('I already have a GitHub App')
+    const c = await openExisting()
     await fill(c, over)
     await userEvent.click(c.getByRole('button', { name: /^connect$/i }))
     expect(await c.findByRole('alert')).toHaveTextContent(why)
@@ -176,7 +231,7 @@ describe('entering an app by hand', () => {
   test("GitHub's or the server's refusal is explained and nothing changes", async () => {
     mockApi(routes(NONE, { 'POST /api/github/apps': answer(400, { error: 'GitHub did not accept this app ID and private key.', code: 'github_rejected' }) }))
     page()
-    const c = await card('I already have a GitHub App')
+    const c = await openExisting()
     await fill(c)
     await userEvent.click(c.getByRole('button', { name: /^connect$/i }))
     expect(await c.findByRole('alert')).toHaveTextContent('did not accept')
@@ -200,20 +255,33 @@ describe('coming back from GitHub', () => {
   test('no message when there is nothing in the address', async () => {
     mockApi(routes())
     page()
-    await card('Connect GitHub')
+    await screen.findByText('No GitHub app is connected')
     expect(toasts.success).not.toHaveBeenCalled()
   })
 })
 
 describe('one connected app', () => {
-  test('shows the app, where it came from, and a link to it on GitHub', async () => {
-    mockApi(routes(CONNECTED))
+  test('the card shows its name, account, link on GitHub, App ID and the Install button; the rest (projects, installations, source, date) is folded into Details', async () => {
+    mockApi(routes({ apps: [{ ...APP, projects: [{ id: 'p1', name: 'Portfolio', slug: 'portfolio' }] }] }))
     page()
     const c = await card('Shipdok-ab12')
+    expect(c.getByText('GitHub account: tianyu-00')).toBeInTheDocument()
+    const details = c.getByText('Details').closest('details')
+    expect(details).not.toHaveAttribute('open') // folded away until wanted
+    // visible without opening anything
     expect(c.getByRole('link', { name: 'Shipdok-ab12' })).toHaveAttribute('href', 'https://github.com/apps/shipdok-ab12')
     expect(c.getByText('424242')).toBeInTheDocument()
-    expect(c.getByText('tianyu-00')).toBeInTheDocument()
-    expect(c.getByText(/created by shipdok|connect github button/i)).toBeInTheDocument()
+    expect(details).not.toContainElement(c.getByRole('link', { name: 'Shipdok-ab12' }))
+    expect(details).not.toContainElement(c.getByText('424242'))
+    expect(c.getByRole('link', { name: /install on repositories/i })).toHaveAttribute('href', 'https://github.com/apps/shipdok-ab12/installations/new')
+    expect(details).not.toContainElement(c.getByRole('link', { name: /install on repositories/i })) // the next step after adding an app is not hidden
+    // inside Details
+    const d = within(details)
+    expect(d.getByText('Used by')).toBeInTheDocument()
+    expect(d.getByRole('link', { name: 'Portfolio' })).toBeInTheDocument()
+    expect(d.getByText('Installed on')).toBeInTheDocument()
+    expect(d.getByRole('button', { name: /check again/i })).toBeInTheDocument()
+    expect(d.getByText(/created by shipdok|connect github button/i)).toBeInTheDocument()
   })
 
   test('an app entered by hand says so', async () => {
@@ -224,19 +292,9 @@ describe('one connected app', () => {
 
   test('shows no secret anywhere', async () => {
     mockApi(routes(CONNECTED))
-    page()
-    const sectionOfApp = await screen.findByRole('region', { name: 'Shipdok-ab12' }) // (the form for adding another app has a field called Private key)
-    expect(sectionOfApp.textContent).not.toMatch(/PRIVATE KEY|webhook secret value/i)
-  })
-
-  test('the connect cards stay, to add another app', async () => {
-    mockApi(routes(CONNECTED))
-    page()
+    const { container } = page()
     await card('Shipdok-ab12')
-    expect(await screen.findByRole('heading', { name: 'Add another GitHub app' })).toBeInTheDocument()
-    expect(await card('Connect GitHub')).toBeTruthy()
-    expect(await card('I already have a GitHub App')).toBeTruthy()
-    expect((await card('Connect GitHub')).getByText(/add another github app, for another account or organisation/i)).toBeInTheDocument()
+    expect(container.textContent).not.toMatch(/PRIVATE KEY|webhook secret value/i)
   })
 
   test('installing the app: a link, and "check again" lists where it is installed', async () => {
@@ -245,8 +303,10 @@ describe('one connected app', () => {
     const c = await card('Shipdok-ab12')
     expect(c.getByRole('link', { name: /install on repositories/i })).toHaveAttribute('href', 'https://github.com/apps/shipdok-ab12/installations/new')
     expect(api.called('GET', `/api/github/apps/${ID1}/installations`)).toHaveLength(0)
+    expect(c.getByText('Press Check again to look')).toBeInTheDocument() // it is not asked until you ask
     await userEvent.click(c.getByRole('button', { name: /check again/i }))
     expect(await c.findByText('tianyu-00', { selector: 'li' })).toBeInTheDocument()
+    expect(c.queryByText('Press Check again to look')).toBeNull()
   })
 
   test('not installed anywhere is said plainly', async () => {
@@ -279,15 +339,18 @@ describe('one connected app', () => {
     expect(await (await card('Shipdok-ab12')).findByText('No project yet')).toBeInTheDocument()
   })
 
-  test('credentials that cannot be read are reported on that app, which can still be disconnected', async () => {
-    mockApi(routes({ apps: [{ ...APP, problem: 'cannot_decrypt' }] }))
+  test('credentials that cannot be read are reported on that app, which can still be disconnected; GitHub is not asked about its webhook', async () => {
+    const api = mockApi(routes({ apps: [{ ...APP, problem: 'cannot_decrypt' }] }, { [`GET /api/github/apps/${ID1}/webhook`]: answer(409, { error: 'cannot be read', code: 'cannot_decrypt' }) }))
     page()
     const c = await card('Shipdok-ab12')
-    expect(await c.findByText(/cannot be read/i, { selector: '[data-slot=card-description]' })).toBeInTheDocument()
+    expect(await c.findByText(/stored credentials cannot be read/i)).toBeInTheDocument()
     expect(c.getByText(/APP_SECRETS_KEY/)).toBeInTheDocument()
     expect(c.getByRole('button', { name: /disconnect/i })).toBeEnabled()
     expect(c.queryByRole('button', { name: /check again/i })).toBeNull() // GitHub cannot be asked without its key
-    expect(screen.queryByText('Webhook address', { selector: '[data-slot=card-title]' })).toBeNull()
+    expect(c.queryByText(/webhook (ok|address differs|not checked)|checking webhook/i)).toBeNull() // nor about its webhook
+    expect(c.getAllByRole('alert')).toHaveLength(1) // only the one about the credentials, not a second about the webhook
+    await new Promise((r) => setTimeout(r, 30))
+    expect(api.called('GET', `/api/github/apps/${ID1}/webhook`)).toHaveLength(0)
   })
 })
 
@@ -297,7 +360,7 @@ describe('several connected apps', () => {
     page()
     const titles = (await screen.findAllByText(/^Shipdok-/, { selector: '[data-slot=card-title]' })).map((t) => t.textContent)
     expect(titles).toEqual(['Shipdok-ab12', 'Shipdok-cd34'])
-    expect(screen.getAllByText('Webhook address', { selector: '[data-slot=card-title]' })).toHaveLength(2)
+    expect(document.querySelectorAll('[data-slot=card]')).toHaveLength(2) // one card per app, nothing else
   })
 
   test('"check again" asks only that app', async () => {
@@ -336,53 +399,71 @@ describe('several connected apps', () => {
   })
 })
 
-describe('the webhook address', () => {
-  test('matching is a calm confirmation', async () => {
+describe('the webhook status on the card', () => {
+  const OLD = 'https://old.example.com/api/webhooks/github'
+
+  test('right: a calm "Webhook OK" in the header, and the address is in Details', async () => {
     mockApi(routes(CONNECTED))
     page()
-    const c = await card('Webhook address')
-    expect(await c.findByText(/sends pushes to the right address/i)).toBeInTheDocument()
-    expect(c.getByText(HOOK)).toBeInTheDocument()
+    const c = await card('Shipdok-ab12')
+    expect(await c.findByText('Webhook OK')).toBeInTheDocument()
+    expect(within(c.getByText('Details').closest('details')).getByText(HOOK)).toBeInTheDocument()
     expect(c.queryByRole('button', { name: /update on github/i })).toBeNull()
+    expect(c.queryByText(/sending pushes to a different address/i)).toBeNull() // nothing to explain
   })
 
-  test('a mismatch shows both addresses and offers to fix it', async () => {
-    const api = mockApi(routes(CONNECTED, { ...hook(ID1, { actual: 'https://old.example.com/api/webhooks/github', matches: false }), [`POST /api/github/apps/${ID1}/webhook/sync`]: { expected: HOOK, actual: HOOK, matches: true } }))
+  test('while GitHub is asked it says so', async () => {
+    let release
+    const gate = new Promise((r) => { release = r })
+    mockApi(routes(CONNECTED, { [`GET /api/github/apps/${ID1}/webhook`]: async () => { await gate; return { expected: HOOK, actual: HOOK, matches: true } } }))
     page()
-    const c = await card('Webhook address')
-    expect(await c.findByText('https://old.example.com/api/webhooks/github')).toBeInTheDocument()
-    expect(c.queryByText(/sends pushes to the right address/i)).toBeNull()
+    const c = await card('Shipdok-ab12')
+    expect(c.getByText('Checking webhook…')).toBeInTheDocument()
+    release()
+    expect(await c.findByText('Webhook OK')).toBeInTheDocument()
+  })
+
+  test('different: an amber mark and the fix in the header, and both addresses spelled out', async () => {
+    const api = mockApi(routes(CONNECTED, { ...hook(ID1, { actual: OLD, matches: false }), [`POST /api/github/apps/${ID1}/webhook/sync`]: { expected: HOOK, actual: HOOK, matches: true } }))
+    page()
+    const c = await card('Shipdok-ab12')
+    expect(await c.findByText('Webhook address differs')).toBeInTheDocument()
+    expect(c.getByText(OLD)).toBeInTheDocument()
+    expect(c.getAllByText(HOOK).length).toBeGreaterThan(0)
+    expect(c.queryByText('Webhook OK')).toBeNull()
     await userEvent.click(c.getByRole('button', { name: /update on github/i }))
     await waitFor(() => expect(api.called('POST', `/api/github/apps/${ID1}/webhook/sync`)).toHaveLength(1))
     await waitFor(() => expect(toasts.success).toHaveBeenCalledWith(expect.stringMatching(/updated/i)))
   })
 
   test('with two apps, each is checked and fixed on its own', async () => {
-    const api = mockApi(routes(TWO, { ...hook(ID2, { actual: 'https://old.example.com/api/webhooks/github', matches: false }), [`POST /api/github/apps/${ID2}/webhook/sync`]: { expected: HOOK, actual: HOOK, matches: true } }))
+    const api = mockApi(routes(TWO, { ...hook(ID2, { actual: OLD, matches: false }), [`POST /api/github/apps/${ID2}/webhook/sync`]: { expected: HOOK, actual: HOOK, matches: true } }))
     page()
-    const first = await section('Shipdok-ab12')
-    const second = await section('Shipdok-cd34')
-    expect(await first.findByText(/sends pushes to the right address/i)).toBeInTheDocument()
+    const first = await card('Shipdok-ab12')
+    const second = await card('Shipdok-cd34')
+    expect(await first.findByText('Webhook OK')).toBeInTheDocument()
     expect(first.queryByRole('button', { name: /update on github/i })).toBeNull()
-    await userEvent.click(await second.findByRole('button', { name: /update on github/i }))
+    expect(await second.findByText('Webhook address differs')).toBeInTheDocument()
+    await userEvent.click(second.getByRole('button', { name: /update on github/i }))
     await waitFor(() => expect(api.called('POST', `/api/github/apps/${ID2}/webhook/sync`)).toHaveLength(1))
     expect(api.called('POST', `/api/github/apps/${ID1}/webhook/sync`)).toHaveLength(0)
   })
 
   test('fixing one app asks GitHub again about that app only', async () => {
-    const api = mockApi(routes(TWO, { ...hook(ID2, { actual: 'https://old.example.com/api/webhooks/github', matches: false }), [`POST /api/github/apps/${ID2}/webhook/sync`]: { expected: HOOK, actual: HOOK, matches: true } }))
+    const api = mockApi(routes(TWO, { ...hook(ID2, { actual: OLD, matches: false }), [`POST /api/github/apps/${ID2}/webhook/sync`]: { expected: HOOK, actual: HOOK, matches: true } }))
     page()
-    const second = await section('Shipdok-cd34')
+    const second = await card('Shipdok-cd34')
     await userEvent.click(await second.findByRole('button', { name: /update on github/i }))
     await waitFor(() => expect(api.called('GET', `/api/github/apps/${ID2}/webhook`).length).toBeGreaterThan(1)) // checked again
     expect(api.called('GET', `/api/github/apps/${ID1}/webhook`)).toHaveLength(1) // the other one was left alone
   })
 
-  test('without a public address it says what to do', async () => {
-    mockApi(routes(CONNECTED, hook(ID1, { expected: null, actual: 'https://old.example.com/api/webhooks/github', matches: null })))
+  test('without a public address it says what to do, and offers no fix', async () => {
+    mockApi(routes(CONNECTED, hook(ID1, { expected: null, actual: OLD, matches: null })))
     page()
-    const c = await card('Webhook address')
-    expect(await c.findByText(/no public address/i)).toBeInTheDocument()
+    const c = await card('Shipdok-ab12')
+    expect(await c.findByText('No public address')).toBeInTheDocument()
+    expect(c.queryByText(/sending pushes to a different address/i)).toBeNull() // nothing to compare, so nothing is "different"
     expect(c.getByRole('link', { name: /public access/i })).toHaveAttribute('href', '/security')
     expect(c.queryByRole('button', { name: /update on github/i })).toBeNull()
   })
@@ -390,16 +471,29 @@ describe('the webhook address', () => {
   test('a failed update is explained', async () => {
     mockApi(routes(CONNECTED, { ...hook(ID1, { actual: null, matches: false }), [`POST /api/github/apps/${ID1}/webhook/sync`]: answer(502, { error: 'GitHub did not accept the request.' }) }))
     page()
-    const c = await card('Webhook address')
+    const c = await card('Shipdok-ab12')
     await userEvent.click(await c.findByRole('button', { name: /update on github/i }))
     await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('GitHub did not accept the request.'))
   })
 
-  test('failing to read it from GitHub is shown with a retry', async () => {
-    mockApi(routes(CONNECTED, { [`GET /api/github/apps/${ID1}/webhook`]: answer(502, { error: 'Could not reach GitHub. Try again in a moment.' }) }))
+  test('GitHub having nothing for the address says "nothing", not a blank', async () => {
+    mockApi(routes(CONNECTED, hook(ID1, { actual: null, matches: false })))
     page()
-    const c = await card('Webhook address')
-    expect(await c.findByRole('alert')).toHaveTextContent('Could not reach GitHub')
+    expect(await (await card('Shipdok-ab12')).findByText('nothing')).toBeInTheDocument()
+  })
+
+  test('failing to read it from GitHub is shown with a retry, and the rest of the card still works', async () => {
+    let fail = true
+    const api = mockApi(routes(CONNECTED, { [`GET /api/github/apps/${ID1}/webhook`]: () => { if (fail) throw { status: 502, body: { error: 'Could not reach GitHub. Try again in a moment.' } }; return { expected: HOOK, actual: HOOK, matches: true } } }))
+    page()
+    const c = await card('Shipdok-ab12')
+    expect(await c.findByText('Webhook not checked')).toBeInTheDocument()
+    expect(c.getByRole('alert')).toHaveTextContent('Could not reach GitHub')
+    expect(c.getByRole('button', { name: /check again/i })).toBeEnabled()
+    fail = false
+    await userEvent.click(c.getByRole('button', { name: 'Try again' }))
+    expect(await c.findByText('Webhook OK')).toBeInTheDocument()
+    expect(api.called('GET', `/api/github/apps/${ID1}/webhook`)).toHaveLength(2)
   })
 })
 
@@ -494,15 +588,5 @@ describe('loading', () => {
     mockApi(routes(NONE, { 'GET /api/github': () => { throw { status: 500, body: { error: 'github boom' } } } }))
     page()
     expect(await screen.findByText('github boom')).toBeInTheDocument()
-  })
-
-  test('while the list is loading, no connect cards are offered yet', async () => {
-    let release
-    const gate = new Promise((r) => { release = r })
-    mockApi(routes(NONE, { 'GET /api/github': async () => { await gate; return NONE } }))
-    page()
-    expect(screen.queryByText('Connect GitHub', { selector: '[data-slot=card-title]' })).toBeNull()
-    release()
-    expect(await card('Connect GitHub')).toBeTruthy()
   })
 })

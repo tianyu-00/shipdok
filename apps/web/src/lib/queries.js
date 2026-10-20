@@ -84,4 +84,5 @@ export const usePublicAccess = () => useQuery({ queryKey: ['public-access'], que
 export const useGithub = () => useQuery({ queryKey: ['github'], queryFn: () => api('/github'), retry: false })
 
 // Does GitHub send this app's webhooks to the address Shipdok expects?
-export const useGithubWebhook = (githubAppId) => useQuery({ queryKey: ['github-webhook', githubAppId], queryFn: () => api(`/github/apps/${githubAppId}/webhook`), retry: false })
+// (`enabled` false for an app whose credentials cannot be read: GitHub cannot be asked as that app.)
+export const useGithubWebhook = (githubAppId, enabled = true) => useQuery({ queryKey: ['github-webhook', githubAppId], queryFn: () => api(`/github/apps/${githubAppId}/webhook`), enabled, retry: false })

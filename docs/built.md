@@ -746,6 +746,10 @@ worker, a merged repository picker, webhook sync per app). Do A first if reposit
   server side all caught, 1 harmless equivalent found and simplified; 40 in the dashboard, 6 survivors that each got a test). **Not tested:** real github.com with two apps (needs a second account: creating the
   second app with the button, installing it, a push through it), a real browser pass of the new screens, the Pi. Known limits: a job queued before the upgrade has no `githubAppId` (rare; deploy again);
   an app with no GitHub app is never deployed by a push; the same repository tracked by projects of two apps is deployed by each app's own pushes only.
+  **The GitHub page was then restructured at the administrator's request (option A; checked in jsdom only, mutation-proofed: 21 planted bugs, 4 survived and each got a tighter test or a simplification, one a real
+  find: a card for an app whose credentials cannot be read still asked GitHub about its webhook on every refresh, now it does not):** one card per app (name and account, the webhook as a status in the header, the link on GitHub, the App ID and the Install button always visible: *Webhook OK*,
+  or *Webhook address differs* with the fix button, *No public address*, *Webhook not checked* with a retry; then folded into Details: the projects using it, where it is installed (asked on demand), Check again, source, date and the webhook address; the Install button stays outside), the two ways to add an app behind one **Add a GitHub app** button (a dialog with two tabs, the manual form closes it when saved), an empty state when none is connected.
+  The separate webhook cards and the two big forms are gone (`github-app-card.jsx`, `github-add-dialog.jsx`, `github-connect-form.jsx`, `github-manual-form.jsx`). Not looked at in a real browser.
 
 Known gaps (persistent volumes are built; see above): old `shipdok/*` images pile up until the administrator prunes (or turns on `auto_prune`); build-time env vars; Railpack; DB backup docs.
 The portfolio backend (`tianyu-00/TianYuSiteV2`, `backend/`, port 9090) is not yet deployed through the platform.

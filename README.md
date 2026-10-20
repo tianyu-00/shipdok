@@ -63,7 +63,7 @@ take over the account, so keep them private.
 
 ## Deploy your first app
 
-1. Open **GitHub** in the dashboard and press **Connect GitHub**. Shipdok creates a private GitHub App for you (you confirm it on
+1. Open **GitHub** in the dashboard and press **Add a GitHub app** (the first tab, **Create one for me**). Shipdok creates a private GitHub App for you (you confirm it on
    github.com). Then press **Install on repositories** and choose which repositories Shipdok may read. It only ever asks for read-only access to
    code.
 2. Press **Check again** on the GitHub page. Your repositories appear.
@@ -71,9 +71,9 @@ take over the account, so keep them private.
 4. Press **Deploy**. Watch the build log, then open the app's address.
 
 Pushes to the tracked branch now deploy automatically once GitHub can reach Shipdok: set a public address under **Security → Public
-access** (see [Public access](docs/public-access.md)). The dashboard's GitHub page shows the webhook address and keeps GitHub's copy in sync.
+access** (see [Public access](docs/public-access.md)). Each GitHub app's card shows whether its webhook address is right (and fixes it with one click), and Shipdok keeps GitHub's copy in sync.
 
-Repositories on more than one GitHub account or organisation? Press **Connect GitHub** again on the GitHub page for each one, and see
+Repositories on more than one GitHub account or organisation? Press **Add a GitHub app** again on the GitHub page for each one, and see
 [Several GitHub accounts](docs/operations.md#several-github-accounts).
 
 ## Reaching the dashboard from another device

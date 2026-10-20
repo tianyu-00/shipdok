@@ -173,7 +173,7 @@ client then connects from a private address and Shipdok trusts what it reports.
 
 1. Make your proxy or tunnel answer on the public name.
 2. In the dashboard: **Security → Public access**, choose the mode, enter the public address (for example `https://shipdok.example.com`) and save.
-3. On the **GitHub** page, check the **Webhook address** card shows "right address". If it shows a different one, press **Update on GitHub**.
+3. On the **GitHub** page, check each app's card shows **Webhook OK**. If it shows *Webhook address differs*, press **Update on GitHub**.
 4. Push to a tracked branch. The delivery appears in the app's deployment history.
 
 To check from outside what a stranger would see, open the public name on a phone that is **not** on your Wi-Fi. In `webhook` mode you should

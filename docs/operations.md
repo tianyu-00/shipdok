@@ -190,7 +190,7 @@ available for webhook pushes or rollbacks (a rollback builds nothing).
 ## Several GitHub accounts
 
 A GitHub App belongs to one GitHub account or organisation and sees only the repositories it is installed on. To deploy repositories from more than one
-account, connect **one GitHub App for each** on the **GitHub** page: press **Connect GitHub** again (it creates another private app under the account or
+account, connect **one GitHub App for each** on the **GitHub** page: press **Add a GitHub app** (the tab **Create one for me** creates another private app under the account or
 organisation you choose) or enter an app you already have. There is no limit on how many.
 
 - **Each app uses one GitHub app.** When you create an app, choose the GitHub app that has its repository (the repository list and the branch list are
@@ -291,7 +291,7 @@ The `secrets` container shows as *Exited (0)*; that is normal.
 the dashboard's.
 
 **GitHub says the webhook delivery failed.** In **Security → Public access** the mode must be *Webhook only* or *Full access* and the public address
-must be right. Check the GitHub page's *Webhook address* card, and `docker compose logs api`. A delivery that arrived appears in the app's history.
+must be right. Check the webhook status on the app's card on the GitHub page (*Webhook OK*, or *Webhook address differs* with an **Update on GitHub** button), and `docker compose logs api`. A delivery that arrived appears in the app's history.
 A `503` means no GitHub App is connected yet. If a push arrives but nothing deploys, the history says why: *uses a different GitHub app* means the
 app is assigned to another GitHub App than the one that sent the push (change it in the app's **Settings → GitHub app**).
 
