@@ -54,9 +54,11 @@ const jobsOf = (name) => queue.add.mock.calls.filter(([jobName]) => jobName === 
 const states = async () => Object.fromEntries((await agent.get(`/api/apps/${appId}/images`)).body.versions.map((v) => [v.deploymentId, v.state]));
 
 describe('retention settings', () => {
-  test('a new app keeps the live version and one earlier one, and does not clean up by itself', async () => {
+  test('a new app keeps the live version and one earlier one, and cleans up by itself after each deployment', async () => {
     const a = (await agent.get(`/api/apps/${appId}`)).body;
-    expect([a.keep_previous_images, a.auto_prune]).toEqual([1, false]);
+    expect([a.keep_previous_images, a.auto_prune]).toEqual([1, true]);
+    const off = (await agent.post('/api/apps').send({ name: 'App B', repo: 'o/b', container_port: 3000, host_port: 8081, auto_prune: false })).body;
+    expect(off.auto_prune).toBe(false); // (it can still be asked not to)
   });
 
   test('can be chosen when the app is created', async () => {
@@ -70,16 +72,16 @@ describe('retention settings', () => {
   });
 
   test('PUT changes either setting or both, and leaves the other alone', async () => {
-    expect((await agent.put(`/api/apps/${appId}/retention`).send({ keep_previous_images: 4 })).body).toEqual({ keep_previous_images: 4, auto_prune: false });
-    expect((await agent.put(`/api/apps/${appId}/retention`).send({ auto_prune: true })).body).toEqual({ keep_previous_images: 4, auto_prune: true });
-    expect((await agent.put(`/api/apps/${appId}/retention`).send({ keep_previous_images: 0, auto_prune: false })).body).toEqual({ keep_previous_images: 0, auto_prune: false });
+    expect((await agent.put(`/api/apps/${appId}/retention`).send({ keep_previous_images: 4 })).body).toEqual({ keep_previous_images: 4, auto_prune: true }); // (a new app starts with automatic clean-up on)
+    expect((await agent.put(`/api/apps/${appId}/retention`).send({ auto_prune: false })).body).toEqual({ keep_previous_images: 4, auto_prune: false });
+    expect((await agent.put(`/api/apps/${appId}/retention`).send({ keep_previous_images: 0, auto_prune: true })).body).toEqual({ keep_previous_images: 0, auto_prune: true });
   });
 
   test.each([[{}], [{ keep_previous_images: 99 }], [{ auto_prune: 'on' }], [{ name: 'x' }], [{ keep_previous_images: 1, host_port: 1 }]])('PUT %j is refused and changes nothing', async (body) => {
     const res = await agent.put(`/api/apps/${appId}/retention`).send(body);
     expect(res.status).toBe(400);
     const a = (await agent.get(`/api/apps/${appId}`)).body;
-    expect([a.keep_previous_images, a.auto_prune, a.host_port]).toEqual([1, false, 8080]);
+    expect([a.keep_previous_images, a.auto_prune, a.host_port]).toEqual([1, true, 8080]);
   });
 
   test('PUT needs a login, and an unknown app is a 404', async () => {
@@ -98,7 +100,7 @@ describe('GET /api/apps/:id/images', () => {
 
   test('an app with no versions has an empty list', async () => {
     const { body } = await agent.get(`/api/apps/${appId}/images`);
-    expect(body).toMatchObject({ versions: [], prunableBytes: 0, keep_previous_images: 1, auto_prune: false, cleanup: null });
+    expect(body).toMatchObject({ versions: [], prunableBytes: 0, keep_previous_images: 1, auto_prune: true, cleanup: null });
   });
 
   test('the newest version is live, the one before it is kept, the rest could be pruned', async () => {

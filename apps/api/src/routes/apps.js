@@ -38,7 +38,7 @@ export const createSchema = z.object({
   // How many earlier versions' images are kept besides the live one (so a rollback is possible), and whether to clean up
   // automatically after each successful deployment. Cleaning up is normally requested by the administrator.
   keep_previous_images: z.number().int().min(0).max(10).default(1),
-  auto_prune: z.boolean().default(false),
+  auto_prune: z.boolean().default(true), // on for a new app: it keeps the live version and keep_previous_images earlier ones, so a rollback stays possible
   // Minutes the clone and the build may take before they are stopped; empty (null) = no limit.
   build_timeout_minutes: z.number().int().min(5).max(10080).nullish(),
   // How the image is made: the repository's own Dockerfile (the default), or Railpack, which needs none. The three commands only apply to Railpack;
@@ -105,6 +105,11 @@ const RUNTIME = `(SELECT row_to_json(r) FROM (
 
 // The settings the running version was deployed with: the newest successful deployment's snapshot (null until one succeeded).
 // An edit to the app changes the NEXT deployment, so the dashboard shows these for "what runs now" (never the env versions).
+// The newest deployment of any outcome (null: the app was never deployed). On the list AND on a single app, because the dashboard tells a new app apart by it.
+const LATEST_DEPLOYMENT = `(SELECT row_to_json(x) FROM (
+    SELECT id, status, commit_sha, queued_at, finished_at FROM deployments
+    WHERE app_id = a.id ORDER BY queued_at DESC LIMIT 1) x)`;
+
 const RUNNING_SETTINGS = `(SELECT config_snapshot - 'env' FROM deployments
     WHERE app_id = a.id AND status = 'successful' ORDER BY seq DESC LIMIT 1)`;
 
@@ -210,9 +215,7 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
     try {
       const { rows } = await db.query(`
         SELECT a.*,
-          (SELECT row_to_json(x) FROM (
-             SELECT id, status, commit_sha, queued_at, finished_at FROM deployments
-             WHERE app_id = a.id ORDER BY queued_at DESC LIMIT 1) x) AS latest_deployment,
+          ${LATEST_DEPLOYMENT} AS latest_deployment,
           ${RUNTIME} AS runtime, ${CLEANUP} AS cleanup, ${RUNNING_SETTINGS} AS running_settings, ${STATS_LATEST} AS stats
         FROM apps a ORDER BY a.created_at DESC`);
       res.json(rows.map((r) => ({ ...r, stats: shapeStats(r.stats) })));
@@ -221,7 +224,7 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
 
   // The app as the dashboard shows it, plus which edited settings the running version does not have yet (null: nothing deployed).
   async function appDetail(id) {
-    const { rows } = await db.query(`SELECT a.*, ${RUNTIME} AS runtime, ${CLEANUP} AS cleanup, ${RUNNING_SETTINGS} AS running_settings, ${STATS_LATEST} AS stats FROM apps a WHERE a.id = $1`, [id]);
+    const { rows } = await db.query(`SELECT a.*, ${LATEST_DEPLOYMENT} AS latest_deployment, ${RUNTIME} AS runtime, ${CLEANUP} AS cleanup, ${RUNNING_SETTINGS} AS running_settings, ${STATS_LATEST} AS stats FROM apps a WHERE a.id = $1`, [id]);
     const a = rows[0];
     if (!a) return null;
     a.stats = shapeStats(a.stats);

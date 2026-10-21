@@ -804,3 +804,42 @@ describe('persistent storage', () => {
     assert.ok(!eng.events.includes('start shipdok-my-app-dep-1-live'));
   });
 });
+
+describe('the image of a version that never went live', () => {
+  test('is removed at once when the candidate fails its health check, after the candidate (Docker refuses to remove an image a container uses)', async () => {
+    const eng = fakeEngine({ previous: ['old'], health: { candidate: async () => { throw new Error('not healthy'); } } });
+    const r = await run({}, eng);
+    assert.equal(r.ok, false);
+    assert.ok(eng.events.includes(`rmi ${IMAGE}`), `the image must be removed: ${eng.events.filter((e) => e.startsWith('rmi'))}`);
+    assert.ok(eng.events.indexOf('remove shipdok-my-app-dep-1-candidate') < eng.events.indexOf(`rmi ${IMAGE}`), 'the candidate goes first');
+    assert.ok(!eng.events.some((e) => e.startsWith('rmi-BLOCKED')));
+    assert.ok(!eng.events.includes('stop old'), 'the running version is untouched');
+  });
+
+  test('a failed build asks for the image to be removed too (a build can leave one behind; removing a missing image is ignored)', async () => {
+    const eng = fakeEngine({ previous: [], onRun: (cmd, args) => { if (cmd === 'docker' && args[0] === 'build') throw new Error('docker exited 1'); } });
+    const r = await run({}, eng);
+    assert.equal(r.ok, false);
+    assert.ok(eng.events.includes(`rmi ${IMAGE}`));
+  });
+
+  test('a failed deployment of a Railpack app cleans up the same way', async () => {
+    const eng = fakeEngine({ previous: ['old'], health: { candidate: async () => { throw new Error('not healthy'); } } });
+    await run({ buildMethod: 'railpack' }, eng);
+    assert.ok(eng.events.filter((e) => e.startsWith('rmi')).includes(`rmi ${IMAGE}`));
+  });
+
+  test('a rollback that fails keeps the old image it was reusing', async () => {
+    const reuseImage = 'shipdok/my-app:11111111-1111-4111-8111-111111111111';
+    const eng = fakeEngine({ previous: ['old'], appId: 'app-1', health: { candidate: async () => { throw new Error('not healthy'); } } });
+    const r = await run({ reuseImage }, eng);
+    assert.equal(r.ok, false);
+    assert.ok(!eng.events.some((e) => e.startsWith('rmi')), 'an earlier version\'s image is never removed by a failed rollback');
+  });
+
+  test('a success keeps its image', async () => {
+    const eng = fakeEngine({ previous: ['old'] });
+    await run({}, eng);
+    assert.ok(!eng.events.includes(`rmi ${IMAGE}`));
+  });
+});

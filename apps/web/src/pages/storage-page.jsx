@@ -18,6 +18,7 @@ import { storageRows } from '@/lib/storage'
 import { Empty, ListSkeleton, LoadError } from '@/components/states'
 import KeptVolumes from '@/components/kept-volumes'
 import BuildCacheCard from '@/components/build-cache-card'
+import OldImagesCard from '@/components/old-images-card'
 import { MeasureSizes } from '@/components/measure-sizes'
 
 const LEVEL = {
@@ -133,6 +134,7 @@ export default function StoragePage() {
               )}
             </CardContent>
           </Card>
+          <OldImagesCard />
           <BuildCacheCard />
           <KeptVolumes />
         </>

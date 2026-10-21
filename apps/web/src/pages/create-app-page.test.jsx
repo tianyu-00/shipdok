@@ -128,7 +128,7 @@ describe('creating an app', () => {
     expect(await screen.findByText('detail page')).toBeInTheDocument()
     expect(api.called('POST', '/api/apps')[0].body).toEqual({
       name: 'site', repo: 'tianyu-00/site', branch: 'trunk', root_dir: '.', container_port: 3000, host_port: 9301, health_path: '/health',
-      memory_mb: 512, cpus: 1, max_restarts: 5, keep_previous_images: 1, auto_prune: false, build_method: 'dockerfile', github_app_id: APP,
+      memory_mb: 512, cpus: 1, max_restarts: 5, keep_previous_images: 1, auto_prune: true, build_method: 'dockerfile', github_app_id: APP,
     })
   })
 
@@ -178,6 +178,15 @@ describe('creating an app', () => {
     const body = api.called('POST', '/api/apps')[0].body
     expect(body.build_method).toBe('dockerfile')
     expect('install_command' in body).toBe(false)
+  })
+
+  test('after creating, the toast says the app is not deployed yet and to press Deploy', async () => {
+    mockApi({ ...connected, 'POST /api/apps': answer(201, { id: 'new-id', name: 'site' }) })
+    page()
+    await chooseRepo('tianyu-00/site')
+    await userEvent.click(screen.getByRole('button', { name: 'Create app' }))
+    expect(await screen.findByText('detail page')).toBeInTheDocument()
+    expect(toasts.success).toHaveBeenCalledWith('site created', { description: 'It is not deployed yet: press Deploy when you are ready.' })
   })
 
   test('the build time limit: empty means none (not sent), a number is sent', async () => {
@@ -287,7 +296,16 @@ describe('creating an app', () => {
     await userEvent.click(screen.getByRole('switch'))
     await userEvent.click(screen.getByRole('button', { name: 'Create app' }))
     await waitFor(() => expect(api.called('POST', '/api/apps')).toHaveLength(1))
-    expect(api.called('POST', '/api/apps')[0].body).toMatchObject({ keep_previous_images: 3, auto_prune: true })
+    expect(api.called('POST', '/api/apps')[0].body).toMatchObject({ keep_previous_images: 3, auto_prune: false })
+  })
+
+  test('automatic clean-up starts switched on, and says what it does', async () => {
+    mockApi({ ...connected })
+    page()
+    await chooseRepo('a/b')
+    await userEvent.click(screen.getByText('Limits and clean-up'))
+    expect(screen.getByRole('switch')).toBeChecked()
+    expect(screen.getByText('Remove old images automatically after each deployment')).toBeInTheDocument()
   })
 
   test('the button is disabled while the request is running, so it cannot be sent twice', async () => {

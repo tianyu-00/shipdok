@@ -267,6 +267,13 @@ export async function deploy(opts, eng = realEngine) {
     // A limit that fired is a failure with its own message, whatever error the aborted command raised. (A cancel was handled above.)
     const message = timedOut ? timeoutMessage() : err.message;
     log(`Deployment FAILED: ${message}`);
+    // The image of a version that never went live (it built, then the candidate failed its health check) can never be rolled back to: only successful
+    // versions are listed. Remove it now instead of leaving it for a clean-up. The candidate goes first: Docker will not remove an image a container uses.
+    // (A failure in the swap itself, after the point of no return, is left as it was: that image stays until a clean-up.)
+    if (!committed) {
+      if (candidate) { await eng.removeQuietly(candidate); candidate = null; }
+      if (!reused) await eng.removeImage(image);
+    }
     return { ok: false, deploymentId, image, error: message };
   } finally {
     stopLimit();

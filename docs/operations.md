@@ -173,6 +173,21 @@ docker run --rm -v shipdok-vol-XXXX:/data -v "$PWD":/backup alpine tar xzf /back
 
 Backups of app data can hold anything your app stores, so keep them private. They are separate from the [platform backup](#backup).
 
+## Old images
+
+Every deployment leaves an image behind. Each app keeps its **live** version and the **earlier versions you chose** (Images tab, default 1), so a rollback is always
+possible; the others are *old*. Cleaning up removes old images only: no logs, volumes, containers or build cache. A version whose image is removed can no longer
+be rolled back to; its history and logs stay.
+
+- **Automatic clean-up** removes an app's old images after each successful deployment. It is **on for a new app** (switch it off in the app's Images tab). Apps created before
+  that keep the setting they had; the **Storage** page's **Old images** card has *Turn on for every app* (and off again).
+- **Clean up now.** An app's Images tab cleans that app. The Storage page's **Old images** card shows how much old versions could free in total and per app (an upper bound:
+  versions of one app share files, so the real figure is usually smaller) and has *Clean up old images*, which cleans every app. The cleaning is done by the worker, one app after another,
+  so the figures change as each finishes.
+- **A version that failed is removed straight away.** If a build succeeds but the new version fails its health check, its image is removed at once: it could never be rolled back to.
+- **Be told when it piles up.** On the Old images card, *Tell me when old images reach (GB)*. Empty means never, which is the default. Once the old images reach that size, a notice
+  appears on the apps list and the Storage page. It does not clean anything by itself.
+
 ## Build cache
 
 Docker keeps the steps of every build so the next build is faster. All apps share this cache, so it belongs to no app, it grows with every
@@ -345,8 +360,7 @@ build (cloning, GitHub access) also check `docker compose logs worker`.
 build stopped automatically, set a **Build time limit** (minutes) in the app's **Settings** (empty means no limit, the default). The
 limit applies from the next deployment and covers the clone and the build; the running version is never touched.
 
-**The disk is filling up.** The **Storage** page shows where. Old images are cleaned up from each app's **Images** tab (or turn on
-automatic clean-up), old logs from the Storage page, and the shared [build cache](#build-cache) from its card there.
+**The disk is filling up.** The **Storage** page shows where. [Old images](#old-images) are cleaned up from its **Old images** card or each app's **Images** tab (automatic clean-up is on for new apps), old logs from the Storage page, and the shared [build cache](#build-cache) from its card there.
 
 **My data seems empty after restarting.** Compose was probably run from a different folder, which starts a new installation. List the storage
 with `docker volume ls` (names end in `_shipdok_pgdata`) and go back to the original folder.

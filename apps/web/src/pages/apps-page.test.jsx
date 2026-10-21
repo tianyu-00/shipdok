@@ -8,6 +8,24 @@ import { makeApp } from '@/test/fixtures'
 
 const page = () => renderWithProviders(<Routes><Route path="/" element={<AppsPage />} /><Route path="/apps/new" element={<p>create page</p>} /></Routes>)
 
+describe('old images on the apps list', () => {
+  const overview = (over = {}) => ({ reclaimableBytes: 3000 * 1024 ** 2, apps: [], autoCleanup: { on: 1, total: 1 }, thresholdBytes: 1024 ** 3, exceeded: true, ...over })
+
+  test('a notice shows above the apps once old images have reached the size the user set', async () => {
+    mockApi({ 'GET /api/apps': [makeApp()], 'GET /api/storage': {}, 'GET /api/images': overview() })
+    page()
+    expect(await screen.findByText('Old images are piling up')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'My App' })).toBeInTheDocument()
+  })
+
+  test('nothing is shown by default (no size set), however many old images there are', async () => {
+    mockApi({ 'GET /api/apps': [makeApp()], 'GET /api/storage': {}, 'GET /api/images': overview({ thresholdBytes: null, exceeded: false }) })
+    page()
+    await screen.findByRole('link', { name: 'My App' })
+    expect(screen.queryByText('Old images are piling up')).toBeNull()
+  })
+})
+
 describe('the apps list', () => {
   test('shows each app with its repository, branch, runtime state and latest deployment', async () => {
     mockApi({ 'GET /api/apps': [makeApp()], 'GET /api/storage': { disk: { level: 'ok' } } })
@@ -53,7 +71,15 @@ describe('the apps list', () => {
     mockApi({ 'GET /api/apps': [makeApp({ runtime: null, latest_deployment: null })], 'GET /api/storage': {} })
     page()
     expect(await screen.findByText('Not started')).toBeInTheDocument()
-    expect(screen.getByText('Never deployed')).toBeInTheDocument()
+    expect(screen.getByText('Not deployed yet')).toBeInTheDocument()
+    expect(screen.getByText('Open it and press Deploy when ready')).toBeInTheDocument()
+  })
+
+  test('an app that has been deployed, even if it failed, does not say it was never deployed', async () => {
+    mockApi({ 'GET /api/apps': [makeApp({ latest_deployment: { id: 'x', status: 'failed', commit_sha: 'c'.repeat(40), queued_at: '2026-10-19T11:00:00Z', finished_at: null } })], 'GET /api/storage': {} })
+    page()
+    await screen.findByRole('link', { name: 'My App' })
+    expect(screen.queryByText('Not deployed yet')).toBeNull()
   })
 
   test.each([['crashed', 'Crashed'], ['unhealthy', 'Unhealthy'], ['restarting', 'Restarting']])('%s apps are labelled', async (state, label) => {

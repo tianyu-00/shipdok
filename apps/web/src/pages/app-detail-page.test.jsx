@@ -21,6 +21,31 @@ const base = (over = {}) => ({
   ...over,
 })
 
+describe('an app that has not been deployed yet', () => {
+  test('says that creating it did not deploy it, and to press Deploy when ready', async () => {
+    mockApi(base({ [`GET /api/apps/${APP_ID}`]: makeApp({ latest_deployment: null, runtime: null }), [`GET /api/apps/${APP_ID}/deployments`]: [] }))
+    page()
+    expect(await screen.findByText('Not deployed yet')).toBeInTheDocument()
+    expect(screen.getByText(/Creating an app does not build or start it/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Deploy$/ })).toBeInTheDocument() // the button it points to is there
+  })
+
+  test('nothing is claimed when the answer does not say (the field missing): an old project is never told it was not deployed', async () => {
+    const { latest_deployment: _omit, ...withoutIt } = makeApp()
+    mockApi(base({ [`GET /api/apps/${APP_ID}`]: withoutIt }))
+    page()
+    await screen.findByRole('heading', { name: 'My App' })
+    expect(screen.queryByText('Not deployed yet')).toBeNull()
+  })
+
+  test.each(['queued', 'building', 'failed', 'successful'])('once it has a deployment (%s) the notice is gone', async (status) => {
+    mockApi(base({ [`GET /api/apps/${APP_ID}`]: makeApp({ latest_deployment: { id: 'd1', status, commit_sha: 'a'.repeat(40), queued_at: '2026-10-19T11:00:00Z', finished_at: null } }) }))
+    page()
+    await screen.findByRole('heading', { name: 'My App' })
+    expect(screen.queryByText('Not deployed yet')).toBeNull()
+  })
+})
+
 describe('the app page', () => {
   test('shows the name, repository, branch, runtime state and the link to the running app', async () => {
     mockApi(base())

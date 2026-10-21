@@ -659,8 +659,9 @@ describe('image size and clean-up after a deployment', () => {
     assert.equal(Number((await getDeployment(depId)).image_bytes), 123_456_789);
   });
 
-  test('an app with auto_prune off is not cleaned up (the default)', async () => {
+  test('an app with auto_prune off is not cleaned up', async () => {
     const appId = await makeApp();
+    await setAuto(appId, false); // (a new app starts with it on)
     const depId = await makeDeployment(appId);
     const calls = [];
     await processDeployJob(jobFor(appId, depId), { secretsKey: KEY, deployFn: fakeDeploy(), pruneFn: async (o) => { calls.push(o); } });

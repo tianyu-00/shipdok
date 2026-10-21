@@ -30,7 +30,7 @@ export default function CreateAppPage() {
   const repos = useRepos(githubApp)
   const [f, setF] = useState({
     repo: '', name: '', branch: 'main', root_dir: '.', container_port: '3000', host_port: '', health_path: '',
-    memory_mb: '512', cpus: '1', max_restarts: '5', build_timeout_minutes: '', keep_previous_images: '1', auto_prune: false,
+    memory_mb: '512', cpus: '1', max_restarts: '5', build_timeout_minutes: '', keep_previous_images: '1', auto_prune: true,
     build_method: 'dockerfile', install_command: '', build_command: '', start_command: '',
   })
   const [nameTouched, setNameTouched] = useState(false)
@@ -65,7 +65,7 @@ export default function CreateAppPage() {
     }),
     onSuccess: (app) => {
       client.invalidateQueries({ queryKey: ['apps'] })
-      toast.success(`${app.name} created`)
+      toast.success(`${app.name} created`, { description: 'It is not deployed yet: press Deploy when you are ready.' })
       if (app.warning) toast.warning(app.warning, { duration: 12_000 })
       navigate(`/apps/${app.id}`)
     },

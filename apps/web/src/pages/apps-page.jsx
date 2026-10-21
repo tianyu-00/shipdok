@@ -8,6 +8,7 @@ import { appAddress, displayState, timeAgo, shortSha } from '@/lib/format'
 import { DeploymentStatusBadge, RuntimeBadge } from '@/components/status-badge'
 import { Empty, ListSkeleton, LoadError } from '@/components/states'
 import { StorageBanner } from '@/components/storage-banner'
+import { OldImagesNotice } from '@/components/old-images-notice'
 import { formatCpu, formatMemory } from '@/lib/stats'
 import { RepoLink } from '@/components/repo-link'
 
@@ -41,7 +42,12 @@ export function AppCard({ app }) {
               <span className="font-mono text-xs text-muted-foreground">{shortSha(latest.commit_sha)}</span>
               <span className="text-muted-foreground">{timeAgo(latest.finished_at ?? latest.queued_at)}</span>
             </div>
-          ) : <span className="text-muted-foreground">Never deployed</span>}
+          ) : (
+            <div className="flex flex-col sm:items-end">
+              <Badge variant="outline" className="border-warning/50 text-warning">Not deployed yet</Badge>
+              <span className="text-xs text-muted-foreground">Open it and press Deploy when ready</span>
+            </div>
+          )}
           {!app.deleting_at && (
             <a href={appAddress(app)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">
               :{app.running_settings?.host_port ?? app.host_port}<ExternalLink className="size-3" aria-hidden="true" /><span className="sr-only">Open the app</span>
@@ -63,6 +69,7 @@ export default function AppsPage() {
         <Button asChild><Link to="/apps/new"><Plus className="size-4" />New app</Link></Button>
       </div>
       <StorageBanner disk={storage.data?.disk} />
+      <OldImagesNotice />
       {apps.isPending && <ListSkeleton />}
       {apps.isError && <LoadError error={apps.error} onRetry={() => apps.refetch()} title="Could not load your apps" />}
       {apps.data?.length === 0 && (

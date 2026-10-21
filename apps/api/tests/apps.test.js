@@ -124,6 +124,26 @@ describe("reading apps", () => {
     expect(res.body.id).toBe(created.id);
   });
 
+  test("a single app says whether it was ever deployed (null for a new one), as the list does; the dashboard tells a new app apart by it", async () => {
+    const created = (await createApp()).body;
+    expect((await agent.get(`/api/apps/${created.id}`)).body).toHaveProperty("latest_deployment", null);
+    await agent.post(`/api/apps/${created.id}/deployments`);
+    const one = (await agent.get(`/api/apps/${created.id}`)).body;
+    expect(one.latest_deployment).toMatchObject({ status: "queued" });
+    expect(one.latest_deployment.id).toEqual(expect.any(String));
+    // whatever became of it: a failed deployment still counts as deployed
+    await testPool.query("UPDATE deployments SET status = 'failed', finished_at = now() WHERE app_id = $1", [created.id]);
+    expect((await agent.get(`/api/apps/${created.id}`)).body.latest_deployment.status).toBe("failed");
+  });
+
+  test("saving a setting answers with the same field, so the page does not forget the deployment", async () => {
+    const created = (await createApp()).body;
+    await agent.post(`/api/apps/${created.id}/deployments`);
+    const saved = await agent.put(`/api/apps/${created.id}`).send({ memory_mb: 256 });
+    expect(saved.status).toBe(200);
+    expect(saved.body.latest_deployment).toMatchObject({ status: "queued" });
+  });
+
   test("unknown and malformed ids are both a 404, not a 500", async () => {
     expect((await agent.get("/api/apps/00000000-0000-0000-0000-000000000000")).status).toBe(404);
     expect((await agent.get("/api/apps/not-a-uuid")).status).toBe(404);

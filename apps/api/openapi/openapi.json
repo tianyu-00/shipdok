@@ -2828,6 +2828,43 @@
         "security": []
       }
     },
+    "/api/images": {
+      "get": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Old images of all apps",
+        "description": "How much the old versions that are no longer kept could free, in total and per app (an upper bound: versions of one app share files). Each app keeps its live version and `keep_previous_images` earlier ones. `thresholdBytes` is the size at which the dashboard says so (`null`, the default, means never); `exceeded` says whether it has been reached.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The figures.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImagesOverview"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/settings/public": {
       "get": {
         "tags": [
@@ -4672,6 +4709,129 @@
         ]
       }
     },
+    "/api/images/auto-cleanup": {
+      "post": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Automatic clean-up for every app",
+        "description": "Switches the automatic clean-up (after each successful deployment) on or off for every app that exists now. A new app starts with it on. An app's own setting is on its Images tab.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "changed": {
+                      "type": "integer",
+                      "description": "Apps that were not set this way before."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutoCleanupRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/images/prune": {
+      "post": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Clean up the old images of every app",
+        "description": "Queues the same clean-up as an app's own button, once per app, on the same queue as deployments, so it never runs during a build. Each app keeps its live version and its chosen number of earlier ones; a version whose image is removed can no longer be rolled back to. Logs, volumes and containers are never touched. The figures change as each clean-up finishes.",
+        "parameters": [],
+        "responses": {
+          "202": {
+            "description": "Queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "queued": {
+                      "type": "integer",
+                      "description": "Clean-ups queued."
+                    },
+                    "apps": {
+                      "type": "integer",
+                      "description": "Apps there are."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The job queue is not available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/webhooks/github": {
       "post": {
         "tags": [
@@ -4880,6 +5040,63 @@
           }
         ]
       }
+    },
+    "/api/images/notice": {
+      "put": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Set the size of old images at which to say so",
+        "description": "The dashboard shows a notice (on the apps list and the Storage page) once the old images that a clean-up could free reach this size. `null` turns it off, which is the default. Answers with the new figures.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImagesOverview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not null and not a whole number from 100 MB to 10 TB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImagesNoticeRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -4984,7 +5201,7 @@
             "maximum": 10
           },
           "auto_prune": {
-            "default": false,
+            "default": true,
             "type": "boolean"
           },
           "build_timeout_minutes": {
@@ -5448,7 +5665,7 @@
           },
           "auto_prune": {
             "type": "boolean",
-            "description": "Clean up images automatically after each successful deployment."
+            "description": "Clean up images automatically after each successful deployment (on for a new app unless said otherwise)."
           },
           "deleting_at": {
             "type": "string",
@@ -6036,6 +6253,115 @@
           "sampledAt",
           "cleaning",
           "last"
+        ]
+      },
+      "ImagesOverview": {
+        "type": "object",
+        "properties": {
+          "reclaimableBytes": {
+            "type": "integer",
+            "description": "What an immediate clean-up of every app could free: old versions that are no longer kept (an upper bound: versions of one app share files, so the real figure is usually smaller; it is measured when the clean-up has run)."
+          },
+          "apps": {
+            "type": "array",
+            "description": "Every app, most to clean first.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "appId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "The app."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Its name."
+                },
+                "slug": {
+                  "type": "string",
+                  "description": "Its slug."
+                },
+                "reclaimableBytes": {
+                  "type": "integer",
+                  "description": "The same figure for this app."
+                },
+                "images": {
+                  "type": "integer",
+                  "description": "How many old images that is."
+                },
+                "autoCleanup": {
+                  "type": "boolean",
+                  "description": "This app cleans up by itself after each successful deployment."
+                }
+              },
+              "required": [
+                "appId",
+                "name",
+                "slug",
+                "reclaimableBytes",
+                "images",
+                "autoCleanup"
+              ]
+            }
+          },
+          "autoCleanup": {
+            "type": "object",
+            "properties": {
+              "on": {
+                "type": "integer",
+                "description": "Apps with the automatic clean-up on."
+              },
+              "total": {
+                "type": "integer",
+                "description": "Apps."
+              }
+            },
+            "required": [
+              "on",
+              "total"
+            ]
+          },
+          "thresholdBytes": {
+            "type": "integer",
+            "nullable": true,
+            "description": "The size of old images at which the dashboard says so; `null` (the default) means never."
+          },
+          "exceeded": {
+            "type": "boolean",
+            "description": "`reclaimableBytes` has reached `thresholdBytes` (always `false` when there is none)."
+          }
+        },
+        "required": [
+          "reclaimableBytes",
+          "apps",
+          "autoCleanup",
+          "thresholdBytes",
+          "exceeded"
+        ]
+      },
+      "ImagesNoticeRequest": {
+        "type": "object",
+        "properties": {
+          "thresholdBytes": {
+            "type": "integer",
+            "nullable": true,
+            "description": "At least 100 MB and at most 10 TB, or `null` for never."
+          }
+        },
+        "required": [
+          "thresholdBytes"
+        ]
+      },
+      "AutoCleanupRequest": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "`true`: every app cleans up its old images after each successful deployment; `false`: none does."
+          }
+        },
+        "required": [
+          "enabled"
         ]
       },
       "CleanCacheRequest": {

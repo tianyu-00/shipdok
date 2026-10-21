@@ -16,6 +16,7 @@ import { RuntimeBadge } from '@/components/status-badge'
 import { LoadError } from '@/components/states'
 import { RepoLink } from '@/components/repo-link'
 import { DeployButton, ControlButtons } from '@/components/app-actions'
+import { NotDeployedNotice } from '@/components/not-deployed-notice'
 import OverviewTab from '@/components/overview-tab'
 import DeploymentsTab from '@/components/deployments-tab'
 import ImagesTab from '@/components/images-tab'
@@ -80,6 +81,8 @@ export default function AppDetailPage() {
         </div>
         <div className="flex flex-wrap gap-2"><DeployButton app={a} /><ControlButtons app={a} /></div>
       </div>
+
+      <NotDeployedNotice app={a} />
 
       <Tabs value={tab} onValueChange={(t) => navigate(t === 'overview' ? `/apps/${id}` : `/apps/${id}/${t}`)}>
         <div className="-mx-1 overflow-x-auto px-1 py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">

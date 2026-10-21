@@ -65,6 +65,7 @@ export const useBranches = (repo, githubAppId) => useQuery({
 
 export const useEnv = (id) => useQuery({ queryKey: ['env', id], queryFn: () => api(`/apps/${id}/env`) })
 
+export const useOldImages = () => useQuery({ queryKey: ['old-images'], queryFn: () => api('/images'), refetchInterval: 30_000 })
 export const useStorage = () => useQuery({ queryKey: ['storage'], queryFn: () => api('/storage'), refetchInterval: 30_000 })
 
 // The versions that have an image (live / previous / prunable / removed), the retention settings and the last clean-up.

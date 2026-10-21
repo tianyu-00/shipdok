@@ -93,6 +93,31 @@ export default Object.fromEntries([
     errors: { 400: 'Invalid body.', 409: 'One is already waiting or running (`code: already_queued`).', 503: 'The job queue is not available.' },
   })),
 
+  // ---------------------------------------------------------------- old images, all apps
+  route('GET', '/api/images', op({
+    tag: LOG, summary: 'Old images of all apps',
+    description: 'How much the old versions that are no longer kept could free, in total and per app (an upper bound: versions of one app share files). Each app keeps its live version and `keep_previous_images` earlier ones. `thresholdBytes` is the size at which the dashboard says so (`null`, the default, means never); `exceeded` says whether it has been reached.',
+    responses: { 200: ok('The figures.', ref('ImagesOverview')) },
+  })),
+  route('POST', '/api/images/prune', op({
+    tag: LOG, summary: 'Clean up the old images of every app',
+    description: 'Queues the same clean-up as an app\'s own button, once per app, on the same queue as deployments, so it never runs during a build. Each app keeps its live version and its chosen number of earlier ones; a version whose image is removed can no longer be rolled back to. Logs, volumes and containers are never touched. The figures change as each clean-up finishes.',
+    responses: { 202: ok('Queued.', { type: 'object', properties: { queued: { type: 'integer', description: 'Clean-ups queued.' }, apps: { type: 'integer', description: 'Apps there are.' } } }) },
+    errors: { 503: 'The job queue is not available.' },
+  })),
+  route('POST', '/api/images/auto-cleanup', op({
+    tag: LOG, summary: 'Automatic clean-up for every app', body: ref('AutoCleanupRequest'),
+    description: 'Switches the automatic clean-up (after each successful deployment) on or off for every app that exists now. A new app starts with it on. An app\'s own setting is on its Images tab.',
+    responses: { 200: ok('Done.', { type: 'object', properties: { enabled: { type: 'boolean' }, changed: { type: 'integer', description: 'Apps that were not set this way before.' } } }) },
+    errors: { 400: 'Invalid body.' },
+  })),
+  route('PUT', '/api/images/notice', op({
+    tag: LOG, summary: 'Set the size of old images at which to say so', body: ref('ImagesNoticeRequest'),
+    description: 'The dashboard shows a notice (on the apps list and the Storage page) once the old images that a clean-up could free reach this size. `null` turns it off, which is the default. Answers with the new figures.',
+    responses: { 200: ok('Saved.', ref('ImagesOverview')) },
+    errors: { 400: 'Not null and not a whole number from 100 MB to 10 TB.' },
+  })),
+
   // ---------------------------------------------------------------- github
   route('GET', '/api/github', op({
     tag: GH, summary: 'The connected GitHub Apps',

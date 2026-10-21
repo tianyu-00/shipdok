@@ -83,7 +83,7 @@ export const schemas = {
       build_command: nstr('Railpack only: replaces its build step. `null`: Railpack decides.'),
       start_command: nstr('Railpack only: the command that starts the app. `null`: Railpack decides. The app is given `PORT` (the container port) to listen on.'),
       desired_state: enumOf(['running', 'stopped'], 'What the administrator wants. What really happens is in `runtime`.'),
-      keep_previous_images: int('Earlier versions\' images kept besides the running one.'), auto_prune: bool('Clean up images automatically after each successful deployment.'),
+      keep_previous_images: int('Earlier versions\' images kept besides the running one.'), auto_prune: bool('Clean up images automatically after each successful deployment (on for a new app unless said otherwise).'),
       deleting_at: ntime('Set while the app is being deleted.'), delete_error: nstr('Why a deletion failed (press delete again to retry).'),
       created_at: time('Created.'), updated_at: time('Last edited.'),
       latest_deployment: ref('DeploymentBrief'), runtime: { ...ref('Runtime'), nullable: true }, cleanup: ref('Cleanup'),
@@ -156,6 +156,19 @@ export const schemas = {
     cleaning: bool('A clean-up was asked for and has not reported back yet.'),
     last: { ...obj({ at: time('When the last clean-up finished.'), all: bool('It removed every unused entry (otherwise only those unused for a day).'), freedBytes: int('What Docker says it freed.'), error: nstr('Why it failed, if it did.') }), nullable: true, description: 'The most recent clean-up, or `null`.' },
   }),
+  // ---- old images, all apps
+  ImagesOverview: obj({
+    reclaimableBytes: int('What an immediate clean-up of every app could free: old versions that are no longer kept (an upper bound: versions of one app share files, so the real figure is usually smaller; it is measured when the clean-up has run).'),
+    apps: { type: 'array', description: 'Every app, most to clean first.', items: obj({
+      appId: uuid('The app.'), name: str('Its name.'), slug: str('Its slug.'), reclaimableBytes: int('The same figure for this app.'), images: int('How many old images that is.'),
+      autoCleanup: bool('This app cleans up by itself after each successful deployment.'),
+    }) },
+    autoCleanup: obj({ on: int('Apps with the automatic clean-up on.'), total: int('Apps.') }),
+    thresholdBytes: nint('The size of old images at which the dashboard says so; `null` (the default) means never.'),
+    exceeded: bool('`reclaimableBytes` has reached `thresholdBytes` (always `false` when there is none).'),
+  }),
+  ImagesNoticeRequest: obj({ thresholdBytes: nint('At least 100 MB and at most 10 TB, or `null` for never.') }),
+  AutoCleanupRequest: obj({ enabled: bool('`true`: every app cleans up its old images after each successful deployment; `false`: none does.') }),
   CleanCacheRequest: { type: 'object', properties: { all: { type: 'boolean', default: false, description: '`true`: remove every unused entry, so the next builds start from nothing. Default `false`: only cache no build has used for 24 hours.' } }, additionalProperties: false },
 
   // ---- variables

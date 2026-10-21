@@ -18,7 +18,8 @@ const storage = (over = {}) => ({
   ...over,
 })
 const IDLE = { measuring: false, finishedAt: null, error: null, totalBytes: 0, measured: 0 }
-const routes = (over = {}) => ({ 'GET /api/storage': storage(), 'GET /api/volumes/sizes': IDLE, 'GET /api/apps': [makeApp()], 'GET /api/volumes': { volumes: [] }, 'GET /api/build-cache': { totalBytes: null, reclaimableBytes: null, sampledAt: null, cleaning: false, last: null }, ...over })
+const OLD = { reclaimableBytes: 0, apps: [], autoCleanup: { on: 0, total: 0 }, thresholdBytes: null, exceeded: false }
+const routes = (over = {}) => ({ 'GET /api/storage': storage(), 'GET /api/images': OLD, 'GET /api/volumes/sizes': IDLE, 'GET /api/apps': [makeApp()], 'GET /api/volumes': { volumes: [] }, 'GET /api/build-cache': { totalBytes: null, reclaimableBytes: null, sampledAt: null, cleaning: false, last: null }, ...over })
 const page = () => renderWithProviders(<StoragePage />, { route: '/storage' })
 
 describe('the storage page', () => {
