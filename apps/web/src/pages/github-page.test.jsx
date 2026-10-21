@@ -560,6 +560,16 @@ describe('pushes that were refused', () => {
     expect(api.called('DELETE', '/api/github/refusals/5403580')).toHaveLength(1)
   })
 
+  test('a numbered notice links to the apps on GitHub in a new tab; one with no number does not', async () => {
+    mockApi(routes({ apps: [APP], unknownSenders: [{ appNumber: '111', at: ago(1), count: 1 }, { appNumber: null, at: ago(2), count: 1 }] }))
+    page()
+    const link = await screen.findByRole('link', { name: 'Your apps on GitHub' })
+    expect(link).toHaveAttribute('href', 'https://github.com/settings/apps')
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link.getAttribute('rel')).toContain('noreferrer')
+    expect(screen.getAllByRole('link', { name: 'Your apps on GitHub' })).toHaveLength(1)
+  })
+
   test('a push that did not say who sent it is dismissed as "none"', async () => {
     const api = mockApi(routes({ apps: [APP], unknownSenders: [{ appNumber: null, at: ago(2), count: 1 }] }, { 'DELETE /api/github/refusals/none': null }))
     page()

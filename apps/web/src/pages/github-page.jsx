@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { AlertCircle, ArrowLeft, Plus, TriangleAlert } from 'lucide-react'
+import { AlertCircle, ArrowLeft, Plus, TriangleAlert, ExternalLink } from 'lucide-react'
 import { toast } from 'sonner'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -65,10 +65,11 @@ export default function GithubPage() {
             </p>
             <p>
               It was refused {timeAgo(u.at)}{u.count > 1 ? ` (${u.count} times)` : ''} and nothing was deployed.
-              {u.appNumber ? ' If that is your app, add it with its App ID, private key and webhook secret, then choose it in the project\'s settings.' : ''}
+              {u.appNumber ? ' If that is your app, add it with its App ID, private key and webhook secret, then choose it in the project\'s settings. If it is an old app you no longer use, delete it on GitHub (Your apps on GitHub) or just dismiss this.' : ''}
             </p>
             <div className="flex flex-wrap gap-2">
               {u.appNumber && <Button variant="outline" size="sm" onClick={() => setAdding({ tab: 'existing', appId: u.appNumber })}>Add this app</Button>}
+              {u.appNumber && <Button variant="outline" size="sm" asChild><a href="https://github.com/settings/apps" target="_blank" rel="noreferrer">Your apps on GitHub<ExternalLink className="size-4" aria-hidden="true" /></a></Button>}
               <Button variant="ghost" size="sm" disabled={dismiss.isPending} onClick={() => dismiss.mutate(u.appNumber)}>Dismiss</Button>
             </div>
           </AlertDescription>
