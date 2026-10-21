@@ -62,6 +62,17 @@ export default Object.fromEntries([
     description: 'Detached volumes (a path was removed from an app) and orphaned ones (their app was deleted and its data kept). Volumes that an app mounts are not listed here.',
     responses: { 200: ok('The volumes.', ref('VolumeList')) },
   })),
+  route('GET', '/api/volumes/sizes', op({
+    tag: VOL, summary: 'How the measuring of volume sizes stands',
+    description: 'Whether a measurement is waiting or running, when the last one finished and how it went, the total of the last measured sizes and how many volumes have one. The sizes themselves are on each volume (`sizeBytes`, `measuredAt`).',
+    responses: { 200: ok('The state.', ref('VolumeSizing')) },
+  })),
+  route('POST', '/api/volumes/sizes', op({
+    tag: VOL, summary: 'Measure the sizes of the persistent volumes',
+    description: 'Asks the worker to add up every volume. Docker walks every file to do that, which takes seconds (longer for big volumes or a slow disk), so sizes are never measured by themselves. The API only records the request; the worker answers it beside the deployment queue, so it never holds a deployment up. Poll `GET /api/volumes/sizes` until `measuring` is false.',
+    responses: { 202: ok('Asked.', { type: 'object', properties: { queued: { type: 'boolean' } } }) },
+    errors: { 409: 'One is already waiting or running (`code: already_measuring`).' },
+  })),
   route('DELETE', '/api/volumes/{id}', op({
     tag: VOL, summary: 'Delete a volume and its data, for good', parameters: [idParam('id', 'The volume\'s id.')],
     description: '**Permanent.** Only a volume that is not mounted by an app. The API only queues it; the worker removes the Docker volume (and refuses one that is not Shipdok\'s or that a container still uses; the reason then shows as `removeError` on the volume).',
@@ -193,7 +204,7 @@ export default Object.fromEntries([
     errors: { 404: 'No such deployment, or no logs.', 409: 'The deployment is still running.', 500: 'The files could not be deleted.' },
   })),
   route('GET', '/api/storage', op({
-    tag: LOG, summary: 'Disk, log and image usage', description: 'Log bytes and image bytes per app (image sizes are upper bounds: versions of an app share layers) and the disk\'s free space with a level: `ok`, `low` (under 20% free) or `critical` (under 10%).',
+    tag: LOG, summary: 'Disk, log and image usage', description: 'Log bytes and image bytes per app (image sizes are upper bounds: versions of an app share layers), the persistent volumes as last measured (`volumes`; `0` and `measuredAt: null` until a measurement was asked for) and the disk\'s free space with a level: `ok`, `low` (under 20% free) or `critical` (under 10%).',
     responses: { 200: ok('The usage.', ref('Storage')) },
   })),
 

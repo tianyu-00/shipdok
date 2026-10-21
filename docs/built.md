@@ -762,5 +762,20 @@ worker, a merged repository picker, webhook sync per app). Do A first if reposit
   it shows up without a reload. Lost when the API restarts (the next refused push repeats it). Not looked at in a real browser.
   The separate webhook cards and the two big forms are gone (`github-app-card.jsx`, `github-add-dialog.jsx`, `github-connect-form.jsx`, `github-manual-form.jsx`). Not looked at in a real browser.
 
+- **Volume sizes (verified with the worker's own code against the real Docker daemon, a real database and in unit tests; the screens in jsdom only):** **Administrator's decision: measured on request, never by itself** (Docker has
+  to walk every file of a volume: about 4 seconds for 29 volumes here, more on a big one or a Pi's SD card). Migration 026: `app_volumes.size_bytes` and `measured_at`, and a one-row table `volume_sizing`
+  (`requested_at`, `finished_at`, `last_error`). API: `POST /api/volumes/sizes` records the request (202; 409 `already_measuring`; an unanswered request stops blocking after 30 minutes; **no job on the
+  deployment queue**), `GET /api/volumes/sizes` says how it stands (`measuring`, `finishedAt`, `error`, `totalBytes`, `measured`); every volume in `GET /api/apps/:id/volumes`, the save answer and
+  `GET /api/volumes` carries `sizeBytes` / `measuredAt`; `GET /api/storage` has `volumes {totalBytes, measuredAt, apps [{appId, slug, count, measured, bytes}]}` (volumes whose app is gone are in the total only).
+  Worker: `volumesize.js` looks for a request every 3 seconds (one cheap query) beside the queue, asks Docker once (`docker.js` `volumeSizes`: `GET /system/df?type=volume`, a Map of name to bytes; -1 or a missing
+  size is left out, zero is kept), writes every Shipdok volume's size and the time (a volume Docker has not created yet gets the time and no size), ends the request and records "Docker could not measure the
+  volumes" on failure (never Docker's own words; the old sizes stay); it keeps listening after a failure. Dashboard: a **Measure sizes** button with its state ("Not measured yet", "Measuring… Docker adds up every
+  file", "Measured 5 min ago", the error), on the Storage page and in an app's Persistent storage card; it polls every 2 s only while measuring, then reads every size again and says so; a **Volumes** column on the Storage
+  page (none / not measured / the size and how many, "2 of 3 measured"), counted in each app's total and in the card's total line; a size under each path in Settings ("5.0 MB, measured 3 min ago", "Size not measured yet",
+  "Not created in Docker yet"); a Size column for the volumes kept without an app. **Checked for real:** a throwaway volume holding exactly 3,000,000 bytes in a file and 1,000 in another; `volumeSizes()` against the local
+  Docker said 3,001,000 (then removed). Mutation-proofed (36 planted bugs across worker, API and dashboard; 2 survived, a button that was not off while its own request was on its way or while the status loaded, and both
+  got a test; a route that returned zeros when the single status row was missing was found by a test and fixed). **Not tested:** the Pi (SD card speed), a volume of many gigabytes, a real browser pass. Known limits:
+  the figures are a snapshot (measure again to refresh), a path added since is not counted until measured, nothing measures automatically.
+
 Known gaps (persistent volumes are built; see above): old `shipdok/*` images pile up until the administrator prunes (or turns on `auto_prune`); build-time env vars; Railpack; DB backup docs.
 The portfolio backend (`tianyu-00/TianYuSiteV2`, `backend/`, port 9090) is not yet deployed through the platform.

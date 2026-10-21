@@ -30,6 +30,6 @@ export const makeImages = (versions = [makeVersion()], over = {}) => ({
 
 export const makeVolume = (over = {}) => ({
   id: 'vol-1', path: '/data', state: 'in_use', dockerName: 'shipdok-vol-vol-1', appId: ID, appName: 'My App',
-  createdAt: '2026-10-19T10:00:00Z', stateChangedAt: '2026-10-19T10:00:00Z', removeError: null,
+  createdAt: '2026-10-19T10:00:00Z', stateChangedAt: '2026-10-19T10:00:00Z', removeError: null, sizeBytes: null, measuredAt: null,
   ...over,
 })

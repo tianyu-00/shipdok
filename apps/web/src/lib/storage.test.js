@@ -22,4 +22,24 @@ describe('storageRows', () => {
     expect(storageRows({ logs: { apps: [] }, images: { apps: [] } })).toEqual([])
     expect(storageRows(undefined)).toEqual([])
   })
+
+  describe('volumes', () => {
+    const withVolumes = { ...storage, volumes: { totalBytes: 0, measuredAt: null, apps: [{ appId: 'a', slug: 'app-a', count: 2, measured: 1, bytes: 700 }, { appId: 'd', slug: 'app-d', count: 1, measured: 0, bytes: 0 }] } }
+
+    test('are on the row of their app, with how many there are and how many were measured', () => {
+      expect(storageRows(withVolumes, []).find((r) => r.appId === 'a')).toMatchObject({ volumes: 2, volumesMeasured: 1, volumeBytes: 700 })
+    })
+    test('count in the total', () => {
+      expect(storageRows(withVolumes, []).find((r) => r.appId === 'a').total).toBe(1000 + 500 + 700)
+    })
+    test('an app that only has volumes still has a row', () => {
+      expect(storageRows(withVolumes, []).find((r) => r.appId === 'd')).toMatchObject({ logBytes: 0, imageBytes: 0, volumes: 1, volumesMeasured: 0, total: 0 })
+    })
+    test('apps without volumes say so (0), not nothing', () => {
+      expect(storageRows(withVolumes, []).find((r) => r.appId === 'b')).toMatchObject({ volumes: 0, volumesMeasured: 0, volumeBytes: 0 })
+    })
+    test('an answer without a volumes part (an older API) still works', () => {
+      expect(storageRows(storage, []).find((r) => r.appId === 'a')).toMatchObject({ volumes: 0, volumeBytes: 0, total: 1500 })
+    })
+  })
 })

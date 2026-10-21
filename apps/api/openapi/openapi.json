@@ -2927,7 +2927,7 @@
           "Logs and storage"
         ],
         "summary": "Disk, log and image usage",
-        "description": "Log bytes and image bytes per app (image sizes are upper bounds: versions of an app share layers) and the disk's free space with a level: `ok`, `low` (under 20% free) or `critical` (under 10%).",
+        "description": "Log bytes and image bytes per app (image sizes are upper bounds: versions of an app share layers), the persistent volumes as last measured (`volumes`; `0` and `measuredAt: null` until a measurement was asked for) and the disk's free space with a level: `ok`, `low` (under 20% free) or `critical` (under 10%).",
         "parameters": [],
         "responses": {
           "200": {
@@ -2979,6 +2979,93 @@
           },
           "401": {
             "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/volumes/sizes": {
+      "get": {
+        "tags": [
+          "Persistent storage"
+        ],
+        "summary": "How the measuring of volume sizes stands",
+        "description": "Whether a measurement is waiting or running, when the last one finished and how it went, the total of the last measured sizes and how many volumes have one. The sizes themselves are on each volume (`sizeBytes`, `measuredAt`).",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VolumeSizing"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Persistent storage"
+        ],
+        "summary": "Measure the sizes of the persistent volumes",
+        "description": "Asks the worker to add up every volume. Docker walks every file to do that, which takes seconds (longer for big volumes or a slow disk), so sizes are never measured by themselves. The API only records the request; the worker answers it beside the deployment queue, so it never holds a deployment up. Poll `GET /api/volumes/sizes` until `measuring` is false.",
+        "parameters": [],
+        "responses": {
+          "202": {
+            "description": "Asked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "queued": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "One is already waiting or running (`code: already_measuring`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -5639,6 +5726,17 @@
             "type": "string",
             "nullable": true,
             "description": "Why the last request to delete it did not work."
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Its size at the last measurement (`POST /api/volumes/sizes`), or `null` if it was never measured or Docker has no such volume yet."
+          },
+          "measuredAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When that measurement was made."
           }
         },
         "required": [
@@ -5650,7 +5748,44 @@
           "appName",
           "createdAt",
           "stateChangedAt",
-          "removeError"
+          "removeError",
+          "sizeBytes",
+          "measuredAt"
+        ]
+      },
+      "VolumeSizing": {
+        "type": "object",
+        "properties": {
+          "measuring": {
+            "type": "boolean",
+            "description": "A measurement was asked for and has not finished (an unanswered request stops counting after 30 minutes)."
+          },
+          "finishedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the last one finished."
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "Why the last one failed, in plain words."
+          },
+          "totalBytes": {
+            "type": "integer",
+            "description": "The sum of every volume's last measured size."
+          },
+          "measured": {
+            "type": "integer",
+            "description": "How many volumes have a measured size."
+          }
+        },
+        "required": [
+          "measuring",
+          "finishedAt",
+          "error",
+          "totalBytes",
+          "measured"
         ]
       },
       "VolumePaths": {
@@ -6040,6 +6175,62 @@
               "apps"
             ]
           },
+          "volumes": {
+            "type": "object",
+            "properties": {
+              "totalBytes": {
+                "type": "integer",
+                "description": "Every persistent volume as last measured (including those whose app is gone). `0` until a measurement was made."
+              },
+              "measuredAt": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true,
+                "description": "The newest measurement."
+              },
+              "apps": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "appId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "description": "App."
+                    },
+                    "slug": {
+                      "type": "string",
+                      "description": "Slug."
+                    },
+                    "count": {
+                      "type": "integer",
+                      "description": "Volumes (mounted and detached)."
+                    },
+                    "measured": {
+                      "type": "integer",
+                      "description": "How many have a measured size."
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "description": "Their measured bytes."
+                    }
+                  },
+                  "required": [
+                    "appId",
+                    "slug",
+                    "count",
+                    "measured",
+                    "bytes"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "totalBytes",
+              "measuredAt",
+              "apps"
+            ]
+          },
           "disk": {
             "$ref": "#/components/schemas/Disk"
           }
@@ -6047,6 +6238,7 @@
         "required": [
           "logs",
           "images",
+          "volumes",
           "disk"
         ]
       },

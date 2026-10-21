@@ -193,9 +193,18 @@ export function storageRouter({ db, logDir, diskUsage = defaultDiskUsage }) {
          ) x GROUP BY app_id, slug ORDER BY bytes DESC`);
       const imageApps = imageRows.map((r) => ({ appId: r.app_id, slug: r.slug, images: r.images, bytes: Number(r.bytes) }));
 
+      // Persistent volumes, as last measured (the administrator asks for a measurement; until then the sizes are null). Volumes whose app is gone are
+      // counted in the total only: they have their own list.
+      const { rows: volumeRows } = await db.query(
+        `SELECT v.app_id, a.slug, count(*)::int AS count, count(v.size_bytes)::int AS measured, COALESCE(sum(v.size_bytes), 0)::bigint AS bytes
+           FROM app_volumes v JOIN apps a ON a.id = v.app_id GROUP BY v.app_id, a.slug ORDER BY bytes DESC`);
+      const { rows: volumeTotal } = await db.query(`SELECT COALESCE(sum(size_bytes), 0)::bigint AS bytes, max(measured_at) AS measured_at FROM app_volumes`);
+      const volumeApps = volumeRows.map((r) => ({ appId: r.app_id, slug: r.slug, count: r.count, measured: r.measured, bytes: Number(r.bytes) }));
+
       res.json({
         logs: { totalBytes: apps.reduce((n, a) => n + a.bytes, 0), apps },
         images: { totalBytes: imageApps.reduce((n, a) => n + a.bytes, 0), apps: imageApps },
+        volumes: { totalBytes: Number(volumeTotal[0].bytes), measuredAt: volumeTotal[0].measured_at ?? null, apps: volumeApps },
         disk,
       });
     } catch (err) { next(err); }

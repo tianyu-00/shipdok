@@ -143,6 +143,12 @@ mounts, so the files survive redeploys, rollbacks, restarts and image clean-ups.
 - **Deleting an app keeps its volumes by default.** They stay listed on the **Storage** page as "Volumes kept without an app". Tick "Also permanently
   delete its volumes" in the delete dialog to remove them with the app, or delete one later from the Storage page. Deleting is permanent.
 - **Image clean-up and log deletion never touch volumes.**
+- **How big they are.** Press **Measure sizes** (on the **Storage** page, or in an app's Settings → Persistent storage). Docker has to walk every file to
+  add a volume up, which takes seconds (more for a big volume or a slow disk such as a Raspberry Pi's SD card), so Shipdok never does it by itself: the
+  worker measures in the background, beside the deployments (it never holds one up), and the page says *Measured 5 min ago*. The figures then appear in the
+  **Volumes** column of the Storage page (included in each app's total), under each path in Settings, and for the volumes kept without an app. A volume
+  that was never measured says *not measured*; a path added since the last measurement is not counted until you measure again. The figures are a
+  snapshot, not live: measure again to refresh them.
 
 **Back up a volume.** Shipdok does not back up your apps' volumes. The Docker name of each volume (`shipdok-vol-...`) is shown under its path in
 Settings. Stop the app first if it writes continuously, then, in a folder you control:

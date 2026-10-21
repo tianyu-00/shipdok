@@ -13,7 +13,12 @@ const shape = (r) => ({
   id: r.id, path: r.container_path, state: r.state, dockerName: r.docker_name,
   appId: r.app_id, appName: r.app_name_now ?? r.app_name,
   createdAt: r.created_at, stateChangedAt: r.state_changed_at, removeError: r.remove_error,
+  // The last measurement (null until the administrator asked for one, or when Docker has no such volume yet).
+  sizeBytes: r.size_bytes == null ? null : Number(r.size_bytes), measuredAt: r.measured_at ?? null,
 });
+
+// A measurement that was asked for and never reported back (the worker died) stops blocking new requests after this long.
+const STALE_MINUTES = 30;
 
 export function appVolumesRouter({ db }) {
   const r = Router({ mergeParams: true });
@@ -89,6 +94,31 @@ export function volumesRouter({ db, queue }) {
         `SELECT v.*, a.name AS app_name_now FROM app_volumes v LEFT JOIN apps a ON a.id = v.app_id
           WHERE v.state IN ('detached', 'orphaned') ORDER BY v.state_changed_at DESC, v.container_path`);
       res.json({ volumes: rows.map(shape) });
+    } catch (err) { next(err); }
+  });
+
+  // Sizes are measured on request only (Docker is slow at adding a volume up). The worker does it; the API just records the request and says how it stands.
+  r.get('/sizes', async (req, res, next) => {
+    try {
+      const { rows } = await db.query(
+        `SELECT s.finished_at, s.last_error, (s.requested_at IS NOT NULL AND s.requested_at > now() - make_interval(mins => $1)) AS measuring,
+                (SELECT COALESCE(sum(size_bytes), 0)::bigint FROM app_volumes) AS total_bytes,
+                (SELECT count(*)::int FROM app_volumes WHERE measured_at IS NOT NULL AND size_bytes IS NOT NULL) AS measured
+           FROM (SELECT 1) one LEFT JOIN volume_sizing s ON s.id = 1`, [STALE_MINUTES]);
+      const s = rows[0];
+      res.json({ measuring: s?.measuring === true, finishedAt: s?.finished_at ?? null, error: s?.last_error ?? null, totalBytes: Number(s?.total_bytes ?? 0), measured: s?.measured ?? 0 });
+    } catch (err) { next(err); }
+  });
+
+  r.post('/sizes', async (req, res, next) => {
+    try {
+      // One measurement at a time: the row says one is waiting or running, and the database decides if two requests race.
+      const { rowCount } = await db.query(
+        `INSERT INTO volume_sizing (id, requested_at) VALUES (1, now())
+         ON CONFLICT (id) DO UPDATE SET requested_at = now()
+           WHERE volume_sizing.requested_at IS NULL OR volume_sizing.requested_at <= now() - make_interval(mins => $1)`, [STALE_MINUTES]);
+      if (rowCount === 0) return res.status(409).json({ error: 'The sizes are already being measured', code: 'already_measuring' });
+      res.status(202).json({ queued: true });
     } catch (err) { next(err); }
   });
 

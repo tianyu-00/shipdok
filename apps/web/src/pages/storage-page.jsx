@@ -18,6 +18,7 @@ import { storageRows } from '@/lib/storage'
 import { Empty, ListSkeleton, LoadError } from '@/components/states'
 import KeptVolumes from '@/components/kept-volumes'
 import BuildCacheCard from '@/components/build-cache-card'
+import { MeasureSizes } from '@/components/measure-sizes'
 
 const LEVEL = {
   ok: { label: 'Plenty of space', className: 'border-success/40 bg-success/10 text-success' },
@@ -95,15 +96,17 @@ export default function StoragePage() {
               <CardTitle className="text-base">What each app takes</CardTitle>
               <CardDescription>
                 Logs are kept until you delete them. Image sizes are upper bounds: versions of one app share files, so cleaning up usually frees less.
-                Total: {formatBytes(storage.data.logs.totalBytes)} of logs, {formatBytes(storage.data.images.totalBytes)} of images.
+                Volumes are the files your apps keep (persistent storage); Docker is slow at adding them up, so they are only measured when you ask.
+                Total: {formatBytes(storage.data.logs.totalBytes)} of logs, {formatBytes(storage.data.images.totalBytes)} of images, {formatBytes(storage.data.volumes.totalBytes)} of volumes.
               </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-3">
+              <MeasureSizes />
               {rows.length === 0 ? <Empty title="Nothing stored yet">Logs and images appear here after the first deployment.</Empty> : (
                 <div className="overflow-x-auto rounded-lg border">
                   <Table>
                     <TableHeader>
-                      <TableRow><TableHead>App</TableHead><TableHead>Logs</TableHead><TableHead>Images (up to)</TableHead><TableHead>Total</TableHead><TableHead className="text-right">Actions</TableHead></TableRow>
+                      <TableRow><TableHead>App</TableHead><TableHead>Logs</TableHead><TableHead>Images (up to)</TableHead><TableHead>Volumes</TableHead><TableHead>Total</TableHead><TableHead className="text-right">Actions</TableHead></TableRow>
                     </TableHeader>
                     <TableBody>
                       {rows.map((r) => (
@@ -111,6 +114,10 @@ export default function StoragePage() {
                           <TableCell className="font-medium"><Link to={`/apps/${r.appId}`} className="hover:underline">{r.name}</Link></TableCell>
                           <TableCell className="whitespace-nowrap">{formatBytes(r.logBytes)} <span className="text-muted-foreground">({r.logFiles} file{r.logFiles === 1 ? '' : 's'})</span></TableCell>
                           <TableCell className="whitespace-nowrap">{formatBytes(r.imageBytes)} <span className="text-muted-foreground">({r.images} image{r.images === 1 ? '' : 's'})</span></TableCell>
+                          <TableCell className="whitespace-nowrap">
+                            {r.volumes === 0 ? <span className="text-muted-foreground">none</span> : r.volumesMeasured === 0 ? <span className="text-muted-foreground">not measured</span> : formatBytes(r.volumeBytes)}
+                            {r.volumes > 0 && <span className="text-muted-foreground"> ({r.volumesMeasured < r.volumes && r.volumesMeasured > 0 ? `${r.volumesMeasured} of ${r.volumes} measured` : `${r.volumes} volume${r.volumes === 1 ? '' : 's'}`})</span>}
+                          </TableCell>
                           <TableCell className="whitespace-nowrap">{formatBytes(r.total)}</TableCell>
                           <TableCell>
                             <div className="flex justify-end gap-1">

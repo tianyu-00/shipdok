@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { api } from '@/lib/api'
 import { useKeptVolumes } from '@/lib/queries'
-import { timeAgo } from '@/lib/format'
+import { formatBytes, timeAgo } from '@/lib/format'
 import { Empty, LoadError } from '@/components/states'
 
 const origin = (v) => (v.state === 'orphaned' ? `Left behind by the deleted app ${v.appName}` : `Removed from ${v.appName}`)
@@ -60,7 +60,7 @@ export default function KeptVolumes() {
         {volumes.length > 0 && (
           <div className="overflow-x-auto rounded-lg border">
             <Table>
-              <TableHeader><TableRow><TableHead>Path</TableHead><TableHead>Where from</TableHead><TableHead>Docker name</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
+              <TableHeader><TableRow><TableHead>Path</TableHead><TableHead>Where from</TableHead><TableHead>Size</TableHead><TableHead>Docker name</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
               <TableBody>
                 {volumes.map((v) => (
                   <TableRow key={v.id}>
@@ -69,6 +69,10 @@ export default function KeptVolumes() {
                       <p>{origin(v)}</p>
                       <p className="text-xs text-muted-foreground">{timeAgo(v.stateChangedAt)}</p>
                       {v.removeError && <p role="status" className="text-xs text-destructive">{v.removeError}</p>}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      {v.sizeBytes === null ? <span className="text-muted-foreground">not measured</span> : formatBytes(v.sizeBytes)}
+                      {v.measuredAt && <p className="text-xs text-muted-foreground">{timeAgo(v.measuredAt)}</p>}
                     </TableCell>
                     <TableCell className="font-mono text-xs">{v.dockerName}</TableCell>
                     <TableCell className="text-right"><DeleteVolume volume={v} /></TableCell>

@@ -9,6 +9,8 @@ import { Label } from '@/components/ui/label'
 import { api } from '@/lib/api'
 import { useAppVolumes } from '@/lib/queries'
 import { codeFolderWarning, normalizeVolumePath, volumePathsProblem } from '@/lib/volumes'
+import { formatBytes, timeAgo } from '@/lib/format'
+import { MeasureSizes } from '@/components/measure-sizes'
 
 /** The container paths an app keeps (Docker volumes that outlive every deployment). Saving only changes the NEXT deployment. */
 export default function VolumesCard({ app }) {
@@ -25,6 +27,7 @@ export default function VolumesCard({ app }) {
   const paths = edited ?? serverPaths
   const dirty = edited !== null && JSON.stringify(edited) !== JSON.stringify(serverPaths)
   const dockerName = (path) => mounted.find((v) => v.path === path)?.dockerName
+  const sizeOf = (path) => mounted.find((v) => v.path === path)
 
   const add = () => {
     const one = normalizeVolumePath(typed)
@@ -65,6 +68,13 @@ export default function VolumesCard({ app }) {
                 <div className="min-w-0 flex-1">
                   <p className="font-mono text-sm">{p}</p>
                   {dockerName(p) && <p className="truncate font-mono text-xs text-muted-foreground">{dockerName(p)}</p>}
+                  {sizeOf(p) && (
+                    <p className="text-xs text-muted-foreground">
+                      {sizeOf(p).sizeBytes === null
+                        ? (sizeOf(p).measuredAt ? 'Not created in Docker yet (the first deployment creates it)' : 'Size not measured yet')
+                        : `${formatBytes(sizeOf(p).sizeBytes)}, measured ${timeAgo(sizeOf(p).measuredAt)}`}
+                    </p>
+                  )}
                   {codeFolderWarning(p) && <p role="status" className="mt-1 text-xs text-warning">{codeFolderWarning(p)}</p>}
                 </div>
                 <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${p}`} onClick={() => setEdited(paths.filter((x) => x !== p))}><X className="size-4" /></Button>
@@ -72,6 +82,7 @@ export default function VolumesCard({ app }) {
             ))}
           </ul>
         )}
+        {mounted.length + detached.length > 0 && <MeasureSizes />}
         <form className="space-y-2" onSubmit={(e) => { e.preventDefault(); add() }}>
           <Label htmlFor="volume-path">Add a path</Label>
           <div className="flex gap-2">

@@ -26,6 +26,8 @@ export const useDeployments = (id) => useQuery({
 
 // An app's persistent storage (volumes mounted, and detached ones whose data is kept), and every volume kept without being mounted.
 export const useAppVolumes = (id) => useQuery({ queryKey: ['volumes', id], queryFn: () => api(`/apps/${id}/volumes`), retry: false })
+// Whether the sizes of the persistent volumes are being measured (asked for with a button; Docker needs seconds, so it is polled only meanwhile).
+export const useVolumeSizing = () => useQuery({ queryKey: ['volume-sizing'], queryFn: () => api('/volumes/sizes'), refetchInterval: (q) => (q.state.data?.measuring ? 2000 : false) })
 export const useKeptVolumes = () => useQuery({ queryKey: ['kept-volumes'], queryFn: () => api('/volumes'), refetchInterval: 5000 })
 
 // Docker's build cache: shared by every app. Checked often while a clean-up is waiting or running, rarely otherwise.

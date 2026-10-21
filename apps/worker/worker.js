@@ -14,6 +14,7 @@ import { processPruneJob } from './src/prune.js';
 import { processDeleteJob } from './src/deleteapp.js';
 import { processRemoveVolumeJob } from './src/removevolume.js';
 import { processCleanCacheJob, createCacheSampler } from './src/buildcache.js';
+import { createVolumeMeasurer } from './src/volumesize.js';
 import { jobProcessor } from './src/dispatch.js';
 import { createActivity } from './src/activity.js';
 import { createMonitor } from './src/monitor.js';
@@ -54,6 +55,8 @@ const sampler = createSampler({ intervalMs: Number(process.env.STATS_INTERVAL_MS
 
 const cacheSampler = createCacheSampler(); // size of Docker's build cache
 
+const volumeMeasurer = createVolumeMeasurer(); // sizes of the persistent volumes, measured when the administrator asks
+
 const worker = new Worker(
   DEPLOY_QUEUE,
   jobProcessor({
@@ -90,6 +93,7 @@ async function shutdown(signal) {
   await monitor.stop();
   await sampler.stop();
   await cacheSampler.stop();
+  await volumeMeasurer.stop();
   await collector.stopAll(); // close every runtime log and record its size
   await worker.close();
   await connection.quit();
@@ -102,6 +106,7 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 await reconcile();
 sampler.start();
 cacheSampler.start();
+volumeMeasurer.start();
 monitor.start(); // crashes, health, and recovery after a host or Docker restart
 worker.run().catch((err) => {
   console.error('Worker crashed:', err);

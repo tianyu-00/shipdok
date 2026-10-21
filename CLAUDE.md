@@ -32,12 +32,12 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 025_github_apps
+  migrations/    001_init ... 026_volume_sizes
   src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), recovery.js (recovery codes), resetpassword.js (host-side reset), authutil.js, settings.js + publicurl.js (public-access settings), visitor.js (local or outside), middleware/ (originCheck, publicAccess, requireAuth), routes/ (auth, recovery, settings, apps, env, webhooks, github, logs, volumes, buildcache)
   openapi/       API documentation: operations/*.js (one description per route), schemas.js, build.js, inventory.js (real routes), generate.js, openapi.json (generated, committed)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`), reset-password.js (host-side password reset; `npm run reset-password`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
-  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), deleteapp.js (removing an app), stats.js (CPU and memory samples), monitor.js, activity.js, buildlog.js (the log sink), buildcache.js (Docker's build cache: size and clean-up), buildenv.js (build-time variables for docker build), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
+  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), deleteapp.js (removing an app), stats.js (CPU and memory samples), monitor.js, activity.js, buildlog.js (the log sink), buildcache.js (Docker's build cache: size and clean-up), buildenv.js (build-time variables for docker build), volumesize.js (sizes of the persistent volumes, measured on request), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
   worker.js      entry point; cli.js: manual deploy
 apps/web/        Vite + React (JavaScript) dashboard, Tailwind v4 + shadcn/ui (copied into src/components/ui); Vitest + Testing Library
   src/           App.jsx, pages/ (auth, apps list, create app, app detail), components/ (tabs, log viewer, actions), lib/ (api client, queries, format)
@@ -75,7 +75,7 @@ test projects do): `POSTGRES_USER`/`POSTGRES_DB` (default `shipdok`), `API_HOST_
 requests from whatever address it is opened at), `MONITOR_INTERVAL_MS`, `STATS_INTERVAL_MS`, and the four secrets below (your value wins).
 `LOG_DIR` is set by compose to the `shipdok_logs` volume (outside Docker it defaults to `~/.shipdok/logs`). **`DOCKER_GID` is gone.**
 
-Tests: API 1132, worker 637, shared 252, web 989. Worker tests reuse the `_test` database the API tests create and
+Tests: API 1152, worker 652, shared 252, web 1022. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` is now needed only for development with npm (`POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY`: 64 hex, losing
 it makes stored secrets unrecoverable) and for the optional settings above. **The GitHub App is NOT configured here any more** (dashboard,
@@ -151,6 +151,7 @@ feature. Below: what exists, the administrator's decisions (do not re-litigate),
 - **Persistent storage:** Docker named volumes `shipdok-vol-<uuid>` per container path (Settings tab only). The candidate gets THROWAWAY volumes; the real ones are created only
   after it passed. Removing a path DETACHES (data kept); a volume is deleted only on an explicit request; `removeVolumeStrict` requires our name AND the `shipdok.managed` label.
   Persisting the code folder (`/app`) hides new code: a soft warning, not a block. Adopting an orphaned volume into another app is out of scope.
+- **Volume sizes:** measured ON REQUEST only (Docker walks every file, seconds on a Pi): `POST /api/volumes/sizes` records the request (`volume_sizing`, one row, an unanswered request stops blocking after 30 min), the worker's `volumesize.js` notices it (a 3 s poll, NOT a queue job, so it never holds a deployment up), asks Docker once (`GET /system/df?type=volume`) and writes `app_volumes.size_bytes/measured_at`; `GET /api/volumes/sizes` says how it stands; the sizes show on the Storage page (Volumes column, in each total), in Settings under each path and for kept volumes. **Decision: on demand, not continuous.**
 - **Build time limit:** per-app `build_timeout_minutes` (5 min to 7 days, NULL = unlimited, the default); covers clone and build only; a timeout is a failure.
 - **Build cache:** shared by all builds, so one row (`build_cache`) and global actions: the worker samples its size every 5 min and cleans on request (`cleancache` job: "unused" =
   not used for 24 h, or everything unused); only build cache is touched. `noCache: true` on a deployment request builds that one deployment with `--no-cache` (not a setting, not for
@@ -191,7 +192,6 @@ account, no two-factor login (strong password policy, lockout, recent logins, re
 Candidates (the administrator picks):
 - Caddy compose profile (optional).
 - Railpack / custom build commands (deploy repos without a Dockerfile; needs a design discussion first).
-- Volume sizes on the Storage page (Docker measures slowly, so on demand only).
 
 Known gaps: old `shipdok/*` images pile up until pruned (or `auto_prune`); DB backup is a documented manual recipe only. The portfolio backend (`tianyu-00/TianYuSiteV2`, `backend/`,
 port 9090) is not yet deployed through the platform.

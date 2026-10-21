@@ -131,7 +131,9 @@ export const schemas = {
     appId: { ...uuid('The app, or `null` once it is gone.'), nullable: true }, appName: str('The app\'s name (remembered after the app is deleted).'),
     createdAt: time('Created.'), stateChangedAt: time('When the state last changed.'),
     removeError: nstr('Why the last request to delete it did not work.'),
+    sizeBytes: { type: 'integer', nullable: true, description: 'Its size at the last measurement (`POST /api/volumes/sizes`), or `null` if it was never measured or Docker has no such volume yet.' }, measuredAt: { type: 'string', format: 'date-time', nullable: true, description: 'When that measurement was made.' },
   }),
+  VolumeSizing: obj({ measuring: bool('A measurement was asked for and has not finished (an unanswered request stops counting after 30 minutes).'), finishedAt: { type: 'string', format: 'date-time', nullable: true, description: 'When the last one finished.' }, error: nstr('Why the last one failed, in plain words.'), totalBytes: int('The sum of every volume\'s last measured size.'), measured: int('How many volumes have a measured size.') }),
   VolumePaths: { type: 'object', required: ['paths'], properties: { paths: { type: 'array', maxItems: 10, items: { type: 'string', maxLength: 200 }, description: 'The container paths to keep (absolute; letters, digits, dot, dash, underscore, slash; not `/`, not under `/proc`, `/sys` or `/dev`; no duplicates and none inside another). The whole list: a path that is left out is detached, never deleted.' } } },
   VolumeList: obj({ volumes: arr(ref('Volume')) }),
 
@@ -171,6 +173,7 @@ export const schemas = {
   Storage: obj({
     logs: obj({ totalBytes: int('All logs.'), apps: arr(obj({ appId: uuid('App.'), slug: str('Slug.'), bytes: int('Log bytes.'), files: int('Log files.') })) }),
     images: obj({ totalBytes: int('All images (an upper bound).'), apps: arr(obj({ appId: uuid('App.'), slug: str('Slug.'), images: int('Images.'), bytes: int('Bytes.') })) }),
+    volumes: obj({ totalBytes: int('Every persistent volume as last measured (including those whose app is gone). `0` until a measurement was made.'), measuredAt: { type: 'string', format: 'date-time', nullable: true, description: 'The newest measurement.' }, apps: arr(obj({ appId: uuid('App.'), slug: str('Slug.'), count: int('Volumes (mounted and detached).'), measured: int('How many have a measured size.'), bytes: int('Their measured bytes.') })) }),
     disk: ref('Disk'),
   }),
 

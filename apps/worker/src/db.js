@@ -387,3 +387,22 @@ export const recordCacheClean = ({ all, freedBytes, error = null }) => pool.quer
   `INSERT INTO build_cache (id, last_run_at, last_all, last_freed_bytes, last_error) VALUES (1, now(), $1, $2, $3)
    ON CONFLICT (id) DO UPDATE SET last_run_at = now(), last_all = $1, last_freed_bytes = $2, last_error = $3, requested_at = NULL, requested_all = NULL`,
   [all, freedBytes, error]);
+
+// Sizes of the persistent volumes, measured when the administrator asks (Docker is slow at it). The API records the request in volume_sizing; the worker
+// answers it with one look at every volume.
+export const volumeMeasureRequested = async () => (await pool.query('SELECT 1 FROM volume_sizing WHERE id = 1 AND requested_at IS NOT NULL')).rowCount === 1;
+
+/** `sizes`: Map of Docker volume name -> bytes. Every volume Shipdok keeps gets the time; one Docker reports no size for (not created yet) gets none. */
+export async function recordVolumeSizes(sizes) {
+  const { rows } = await pool.query('SELECT docker_name FROM app_volumes');
+  const names = rows.map((r) => r.docker_name);
+  const bytes = names.map((n) => (sizes.has(n) ? sizes.get(n) : null));
+  await pool.query(
+    `UPDATE app_volumes v SET size_bytes = u.size, measured_at = now()
+       FROM unnest($1::text[], $2::bigint[]) AS u(name, size) WHERE v.docker_name = u.name`, [names, bytes]);
+}
+
+// Ends the "asked for" state the API set, and says how it went.
+export const recordVolumeMeasured = ({ error = null } = {}) => pool.query(
+  `INSERT INTO volume_sizing (id, finished_at, last_error) VALUES (1, now(), $1)
+   ON CONFLICT (id) DO UPDATE SET finished_at = now(), last_error = $1, requested_at = NULL`, [error]);

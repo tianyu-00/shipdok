@@ -481,3 +481,20 @@ export async function pruneBuildCache({ olderThanHours = null } = {}, { docker: 
   });
   return { freedBytes: Number(result?.SpaceReclaimed) || 0 };
 }
+
+/**
+ * The size in bytes of every Docker volume, by name (a Map; only those Docker reports a size for). Docker has to walk every file of every volume to add
+ * them up, so this takes several seconds, longer on a big volume or a slow disk: it is only called when the administrator asks.
+ * `?type=volume` asks Docker to add up volumes only (an older Docker ignores it and answers with everything, which is slower but the same figures).
+ */
+export async function volumeSizes({ docker: d = docker } = {}) {
+  const result = await new Promise((resolve, reject) => {
+    d.modem.dial({ path: '/system/df?', method: 'GET', options: { type: 'volume' }, statusCodes: { 200: true, 500: 'server error' } }, (err, data) => (err ? reject(err) : resolve(data)));
+  });
+  const sizes = new Map();
+  for (const v of result?.Volumes ?? []) {
+    const size = Number(v.UsageData?.Size);
+    if (typeof v.Name === 'string' && Number.isFinite(size) && size >= 0) sizes.set(v.Name, size); // -1: Docker could not say
+  }
+  return sizes;
+}

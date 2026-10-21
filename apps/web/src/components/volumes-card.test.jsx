@@ -12,7 +12,8 @@ beforeEach(() => vi.clearAllMocks())
 const URL = `/api/apps/${APP_ID}/volumes`
 const GET = `GET ${URL}`
 const PUT = `PUT ${URL}`
-const card = (volumes = []) => { const api = mockApi({ [GET]: { volumes }, [PUT]: { volumes } }); renderWithProviders(<VolumesCard app={makeApp()} />); return api }
+const IDLE = { measuring: false, finishedAt: null, error: null, totalBytes: 0, measured: 0 }
+const card = (volumes = []) => { const api = mockApi({ [GET]: { volumes }, [PUT]: { volumes }, 'GET /api/volumes/sizes': IDLE }); renderWithProviders(<VolumesCard app={makeApp()} />); return api }
 const save = () => screen.getByRole('button', { name: 'Save storage' })
 
 describe('persistent storage', () => {
@@ -126,5 +127,59 @@ describe('persistent storage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Add path' }))
     await userEvent.click(save())
     await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('This app is being deleted'))
+  })
+})
+
+describe('the size of each path', () => {
+  const m = (min) => new Date(Date.now() - min * 60_000).toISOString()
+
+  test('a measured volume shows its size and when it was measured', async () => {
+    card([makeVolume({ path: '/data', sizeBytes: 5 * 1024 * 1024, measuredAt: m(3) })])
+    expect(await screen.findByText('5.0 MB, measured 3 min ago')).toBeInTheDocument()
+  })
+
+  test('one that was never measured says so', async () => {
+    card([makeVolume({ path: '/data' })])
+    expect(await screen.findByText('Size not measured yet')).toBeInTheDocument()
+  })
+
+  test('one that was measured while Docker had no such volume yet says it is not created yet', async () => {
+    card([makeVolume({ path: '/data', sizeBytes: null, measuredAt: m(1) })])
+    expect(await screen.findByText(/Not created in Docker yet/)).toBeInTheDocument()
+  })
+
+  test('zero bytes is a size, not "not measured"', async () => {
+    card([makeVolume({ path: '/data', sizeBytes: 0, measuredAt: m(1) })])
+    expect(await screen.findByText('0 B, measured 1 min ago')).toBeInTheDocument()
+  })
+
+  test('each path has its own', async () => {
+    card([makeVolume({ id: 'a', path: '/a', sizeBytes: 1024, measuredAt: m(1) }), makeVolume({ id: 'b', path: '/b', sizeBytes: 2048, measuredAt: m(1) })])
+    expect(await screen.findByText('1.0 KB, measured 1 min ago')).toBeInTheDocument()
+    expect(screen.getByText('2.0 KB, measured 1 min ago')).toBeInTheDocument()
+  })
+
+  test('a path typed but not saved yet has no size line', async () => {
+    card([])
+    await userEvent.type(await screen.findByLabelText('Add a path'), '/new')
+    await userEvent.click(screen.getByRole('button', { name: /add path/i }))
+    expect(screen.queryByText(/measured|Size not measured/)).toBeNull()
+  })
+
+  test('"Measure sizes" is offered when there are volumes (once it knows nothing is running)', async () => {
+    card([makeVolume({ path: '/data' })])
+    const button = await screen.findByRole('button', { name: 'Measure sizes' })
+    await waitFor(() => expect(button).toBeEnabled())
+  })
+
+  test('no volumes, nothing to measure', async () => {
+    card([])
+    await screen.findByLabelText('Add a path')
+    expect(screen.queryByRole('button', { name: /measure sizes/i })).toBeNull()
+  })
+
+  test('a volume that is only kept (detached) can be measured too', async () => {
+    card([makeVolume({ state: 'detached', path: '/kept' })])
+    expect(await screen.findByRole('button', { name: 'Measure sizes' })).toBeInTheDocument()
   })
 })
