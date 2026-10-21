@@ -112,6 +112,13 @@ export default Object.fromEntries([
     body: ref('PasswordOnly'), responses: { 204: nothing('Disconnected.') },
     errors: { 400: 'No password given.', 403: 'Wrong password, or the Origin is not allowed.', 404: 'No such GitHub app (`code: github_app_not_found`).', 429: 'Too many tries.' },
   })),
+  route('DELETE', '/api/github/refusals/{sender}', op({
+    tag: GH, summary: 'Dismiss the notice about a refused push',
+    parameters: [{ name: 'sender', in: 'path', required: true, description: 'GitHub\'s number for the app that sent the push (digits, as `appNumber` in `unknownSenders` and the App ID of a connected app), or `none` for a push that did not say which app sent it.', schema: { type: 'string' } }],
+    description: 'Forgets what was recorded (in memory) about refused pushes from that sender, so the warning on the GitHub page goes away. Nothing is deployed or changed; the next refused push from the same sender brings the warning back. Answers 204 whether or not there was anything recorded.',
+    responses: { 204: nothing('Dismissed.') },
+    errors: { 404: 'Not a number and not `none`.' },
+  })),
   route('POST', '/api/github/connect/start', op({
     tag: GH, summary: 'Start the "Connect GitHub" flow',
     description: 'Returns a prepared GitHub App definition (`manifest`) and the address (`postUrl`, always on github.com) the browser posts it to. Each run adds one more GitHub App, whether or not others are connected. Keeps a one-time `state` in the session for 10 minutes. The manifest asks only for read access to contents and metadata and the push event, and the app is created private. Needs an Origin that is one of the dashboard\'s own addresses, because GitHub sends the browser back there.',

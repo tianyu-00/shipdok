@@ -4,6 +4,8 @@ import { AlertCircle, ArrowLeft, Plus, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { api } from '@/lib/api'
 import { useGithub } from '@/lib/queries'
 import { errorMessage } from '@/lib/githubconnect'
 import { timeAgo } from '@/lib/format'
@@ -13,6 +15,12 @@ import { Empty, ListSkeleton, LoadError } from '@/components/states'
 
 export default function GithubPage() {
   const github = useGithub()
+  const client = useQueryClient()
+  const dismiss = useMutation({
+    mutationFn: (appNumber) => api(`/github/refusals/${appNumber ?? 'none'}`, { method: 'DELETE' }),
+    onSettled: () => client.invalidateQueries({ queryKey: ['github'] }),
+    onError: (err) => toast.error(err.message),
+  })
   const [params, setParams] = useSearchParams()
   const [notice, setNotice] = useState(null)
   const [adding, setAdding] = useState(null) // null, or which way to add one is open: { tab, appId }
@@ -59,7 +67,10 @@ export default function GithubPage() {
               It was refused {timeAgo(u.at)}{u.count > 1 ? ` (${u.count} times)` : ''} and nothing was deployed.
               {u.appNumber ? ' If that is your app, add it with its App ID, private key and webhook secret, then choose it in the project\'s settings.' : ''}
             </p>
-            {u.appNumber && <Button variant="outline" size="sm" onClick={() => setAdding({ tab: 'existing', appId: u.appNumber })}>Add this app</Button>}
+            <div className="flex flex-wrap gap-2">
+              {u.appNumber && <Button variant="outline" size="sm" onClick={() => setAdding({ tab: 'existing', appId: u.appNumber })}>Add this app</Button>}
+              <Button variant="ghost" size="sm" disabled={dismiss.isPending} onClick={() => dismiss.mutate(u.appNumber)}>Dismiss</Button>
+            </div>
           </AlertDescription>
         </Alert>
       ))}

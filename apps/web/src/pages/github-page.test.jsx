@@ -547,6 +547,26 @@ describe('pushes that were refused', () => {
     expect(box).toHaveTextContent(/add it with its App ID, private key and webhook secret/i)
   })
 
+  test('Dismiss asks the server to forget that sender, and the notice goes once the list is fetched again', async () => {
+    let list = [{ appNumber: '5403580', at: ago(7), count: 2 }]
+    const api = mockApi(routes(undefined, {
+      'GET /api/github': () => ({ apps: [APP], unknownSenders: list }),
+      'DELETE /api/github/refusals/5403580': () => { list = []; return null },
+    }))
+    page()
+    await screen.findByText(/GitHub App ID 5403580, which is not connected/)
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    await waitFor(() => expect(screen.queryByText(/GitHub App ID 5403580/)).toBeNull())
+    expect(api.called('DELETE', '/api/github/refusals/5403580')).toHaveLength(1)
+  })
+
+  test('a push that did not say who sent it is dismissed as "none"', async () => {
+    const api = mockApi(routes({ apps: [APP], unknownSenders: [{ appNumber: null, at: ago(2), count: 1 }] }, { 'DELETE /api/github/refusals/none': null }))
+    page()
+    await userEvent.click(await screen.findByRole('button', { name: 'Dismiss' }))
+    await waitFor(() => expect(api.called('DELETE', '/api/github/refusals/none')).toHaveLength(1))
+  })
+
   test('"Add this app" opens the form for an app you already have, with that number in App ID', async () => {
     mockApi(routes({ apps: [APP], unknownSenders: [{ appNumber: '5403580', at: ago(7), count: 1 }] }))
     page()

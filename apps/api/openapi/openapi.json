@@ -1202,6 +1202,56 @@
         ]
       }
     },
+    "/api/github/refusals/{sender}": {
+      "delete": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Dismiss the notice about a refused push",
+        "description": "Forgets what was recorded (in memory) about refused pushes from that sender, so the warning on the GitHub page goes away. Nothing is deployed or changed; the next refused push from the same sender brings the warning back. Answers 204 whether or not there was anything recorded.",
+        "parameters": [
+          {
+            "name": "sender",
+            "in": "path",
+            "required": true,
+            "description": "GitHub's number for the app that sent the push (digits, as `appNumber` in `unknownSenders` and the App ID of a connected app), or `none` for a push that did not say which app sent it.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Dismissed."
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not a number and not `none`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/volumes/{id}": {
       "delete": {
         "tags": [

@@ -65,6 +65,7 @@ const signed = (body, secret = SECRET) => {
   return request(app).post("/api/webhooks/github").set("Content-Type", "application/json").set("X-GitHub-Event", "ping").set("X-GitHub-Delivery", `d-${Math.random().toString(16).slice(2)}-${Date.now()}`.padEnd(20, "0"))
     .set("X-Hub-Signature-256", `sha256=${createHmac("sha256", secret).update(raw).digest("hex")}`).send(raw);
 };
+const dismiss = (sender, c = cookie) => request(app).delete(`/api/github/refusals/${sender}`).set("Cookie", c ?? []);
 const count = async () => (await testPool.query("SELECT count(*)::int AS n FROM github_apps")).rows[0].n;
 const addProject = (name, port, githubAppId, installation = null) =>
   testPool.query("INSERT INTO apps (name, slug, repo, container_port, host_port, github_app_id, github_installation_id) VALUES ($1, $1, 'o/r', 3000, $2, $3, $4)", [name, port, githubAppId, installation]);
@@ -355,6 +356,29 @@ describe("what a refused push leaves for the dashboard is cleared when the app i
     await refuse("123456");
     await disconnect(added.id, { password: PASSWORD });
     expect((await status()).body.unknownSenders).toEqual([]);
+  });
+
+  test("dismissing a notice forgets that sender only, and the next refusal brings it back", async () => {
+    await manual(good());
+    await refuse("888");
+    await refuse("777");
+    const gone = await dismiss("777");
+    expect(gone.status).toBe(204);
+    expect((await status()).body.unknownSenders).toMatchObject([{ appNumber: "888" }]);
+    await refuse("777");
+    expect((await status()).body.unknownSenders).toMatchObject([{ appNumber: "777", count: 1 }, { appNumber: "888" }]);
+  });
+
+  test("a push that did not say who sent it is dismissed as 'none'; anything else is a 404; signing in is needed", async () => {
+    await manual(good());
+    const raw = JSON.stringify({ zen: "x" }); // (no installation-target header at all)
+    await request(app).post("/api/webhooks/github").set("Content-Type", "application/json").set("X-GitHub-Event", "ping").set("X-GitHub-Delivery", `d-${Math.random().toString(16).slice(2)}-${Date.now()}`.padEnd(20, "0"))
+      .set("X-Hub-Signature-256", `sha256=${createHmac("sha256", "not-the-secret-0123456789").update(raw).digest("hex")}`).send(raw);
+    expect((await status()).body.unknownSenders).toMatchObject([{ appNumber: null }]);
+    expect((await dismiss("none")).status).toBe(204);
+    expect((await status()).body.unknownSenders).toEqual([]);
+    expect((await dismiss("12ab")).status).toBe(404);
+    expect((await dismiss("777", null)).status).toBe(401);
   });
 
   test("other senders' entries are left alone", async () => {

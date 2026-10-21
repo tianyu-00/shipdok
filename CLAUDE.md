@@ -75,7 +75,7 @@ test projects do): `POSTGRES_USER`/`POSTGRES_DB` (default `shipdok`), `API_HOST_
 requests from whatever address it is opened at), `MONITOR_INTERVAL_MS`, `STATS_INTERVAL_MS`, and the four secrets below (your value wins).
 `LOG_DIR` is set by compose to the `shipdok_logs` volume (outside Docker it defaults to `~/.shipdok/logs`). **`DOCKER_GID` is gone.**
 
-Tests: API 1152, worker 652, shared 252, web 1022. Worker tests reuse the `_test` database the API tests create and
+Tests: API 1154, worker 652, shared 252, web 1024. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` is now needed only for development with npm (`POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY`: 64 hex, losing
 it makes stored secrets unrecoverable) and for the optional settings above. **The GitHub App is NOT configured here any more** (dashboard,
@@ -120,7 +120,7 @@ feature. Below: what exists, the administrator's decisions (do not re-litigate),
   overwritten); every process loads `<NAME>_FILE` into `<NAME>` at start and **an environment value always wins**. The setup token is generated, printed in the API log and
   asked for on the setup screen only while no admin exists. The worker has no `DOCKER_GID`: its entry script reads the socket's group, sets `HOME=/home/node`, drops to `node`.
   Back up the database and `shipdok_secrets` together.
-- **Webhooks:** `POST /api/webhooks/github` raw-body HMAC (constant time; a refused signature leaves ONE log line a minute per sender naming GitHub's app number from `X-GitHub-Hook-Installation-Target-ID` and whether Shipdok has that app, nothing stored; the dashboard's GitHub page shows the same from an in-memory record: `refusedPush` on the app, `unknownSenders` for apps not connected here, cleared by a good delivery, by entering/removing the app, after a day), dedupe by delivery id, branch filtering, stopped apps skipped, exact-commit build with strict hex
+- **Webhooks:** `POST /api/webhooks/github` raw-body HMAC (constant time; a refused signature leaves ONE log line a minute per sender naming GitHub's app number from `X-GitHub-Hook-Installation-Target-ID` and whether Shipdok has that app, nothing stored; the dashboard's GitHub page shows the same from an in-memory record: `refusedPush` on the app, `unknownSenders` for apps not connected here, cleared by a good delivery, by entering/removing the app, after a day, or dismissed with `DELETE /api/github/refusals/:sender`: a Dismiss button on the unknown-sender notices), dedupe by delivery id, branch filtering, stopped apps skipped, exact-commit build with strict hex
   validation, 503 until an app is connected. A Cloudflare tunnel on the administrator's machine forwards only that path.
 
 **Apps, deployments and the worker**

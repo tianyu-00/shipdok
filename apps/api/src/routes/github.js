@@ -45,6 +45,15 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings, refusa
     }
   });
 
+  // Dismiss the notice about a refused push: forget what was recorded for that sender (`:sender` is GitHub's app number, digits, or `none` when it did
+  // not say). Nothing else changes; the next refused push from it makes the notice come back.
+  r.delete('/refusals/:sender', (req, res) => {
+    const { sender } = req.params;
+    if (sender !== 'none' && !/^\d{1,20}$/.test(sender)) return res.status(404).json(NOT_FOUND);
+    refusals.clear(sender); // ('none' is how the record itself names a sender that did not say)
+    return res.status(204).end();
+  });
+
   // The client of one app, or the answer that says why there is none (and null).
   async function clientOf(req, res) {
     const id = req.params.id ?? req.query.app;
