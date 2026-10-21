@@ -9,6 +9,7 @@
     "packages/shared"
   ],
   "scripts": {
-    "test": "npm test -w apps/api && npm test -w apps/worker && npm test -w packages/shared && npm test -w apps/web"
+    "test": "npm test -w apps/api && npm test -w apps/worker && npm test -w packages/shared && npm test -w apps/web",
+    "check-images": "sh scripts/check-images.sh"
   }
 }

@@ -88,6 +88,7 @@ GitHub page; see "What is built").
 - Real-Docker and browser checks run in an isolated compose project (`COMPOSE_PROJECT_NAME=...`, `--env-file /dev/null`, `env -u POSTGRES_PASSWORD`, other ports,
   images renamed with an override so the administrator's own `latest` tags and stack are never touched; anything that needs a Docker daemon the tests may wipe goes to a
   throwaway docker:dind). Compose's build override re-tags the published image names: never run it unprotected on this machine.
+- Before pushing to `publish`: `npm run check-images` (the workflow itself runs only there). If it fails with "error getting credentials", Docker's credential helper (a Windows one, through WSL) is unreachable, the same fault that breaks `git push`; it is not the Dockerfile.
 - After changing how the worker starts, check a real clone and a real `docker build`, not only `docker ps`.
 
 ## What is built
@@ -177,7 +178,7 @@ feature. Below: what exists, the administrator's decisions (do not re-litigate),
   repos and when NO app is connected; 404 `repo_not_found`, 502 `rate_limited`; good answers kept 60 s). The repo is asked of GitHub only after it has settled for 400 ms.
 - **API reference:** `/api/docs` (Scalar, served locally, signed-in only, `API_DOCS=false` turns it off). Descriptions live in `apps/api/openapi/operations/`; tests fail when a route has
   none or `openapi.json` is stale. Deviation from SPEC.md: swagger-autogen was rejected, `inventory.js` records the real routes instead.
-- **Images and releases:** `.github/workflows/images.yml` builds api, worker, web for amd64 + arm64; a push to `main` or a PR only builds, a push to `publish` also publishes to
+- **Images and releases:** `.github/workflows/images.yml` builds api, worker, web for amd64 + arm64; only a push to `publish` runs it (a push to `main` or a PR runs nothing: it only used up Actions minutes; run `npm run check-images` (scripts/check-images.sh: builds api, worker, web here and runs the same secret check; `-- worker` for one, `KEEP=1` keeps the images; this machine's architecture only) before publishing) and it publishes to
   `ghcr.io/tianyu-00/shipdok-*` (tags `latest`, the number in `VERSION`, `sha-<commit>`) and creates the GitHub Release `v<VERSION>`; bump `VERSION` for a new release. `check-image.sh`
   fails an image containing `.env*`, `*.pem`, `jar.txt`. Compose has only `image:` lines; `compose.build.yaml` adds `build:`.
 - **No `migrate` service:** the API runs migrations itself at start (advisory lock); the worker waits for a healthy API.

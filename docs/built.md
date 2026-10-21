@@ -452,7 +452,7 @@ Newest work is at the bottom of the Milestone 6 entries. SPEC.md is the target d
   will become public later; use whatever build method works.** `.github/workflows/images.yml` builds `api`, `worker`, `web` (one job
   each) for linux/amd64 + linux/arm64 with QEMU (native ARM runners are free only for public repos; switch once the repo is public). A push
   to `publish` also pushes to `ghcr.io/<owner>/shipdok-<name>` with tags `latest`, the number in the root `VERSION` file and `sha-<commit>`
-  (publishing the same VERSION again moves that tag; bump `VERSION` for a new release); a push to `main` or a pull request only builds.
+  (publishing the same VERSION again moves that tag; bump `VERSION` for a new release); a push to `main` or a pull request only built (changed afterwards: only a push to `publish` runs the workflow, to save Actions minutes; `npm run check-images` builds the three images locally and runs the same secret check first: checked by a clean run, a planted secret-looking file and a planted failing build step, each reported and the exit code non-zero; not checked: ARM64).
   Before any push each image is built for amd64 and checked by `.github/scripts/check-image.sh`, which fails on `.env*`, `*.pem`, `jar.txt`,
   `id_rsa*` anywhere in the image (outside node_modules and system certificates); checked on the real api, worker and web images (clean) and on
   an image with a planted `.env` and `.pem` (fails, listing both); an unknown image also fails. `infrastructure/compose.yaml` now has only

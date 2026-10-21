@@ -1,15 +1,14 @@
-# Builds the three Shipdok images (api, worker, web) for amd64 and ARM64.
-#   - A push to the `publish` branch builds AND publishes them to GitHub's container registry (ghcr.io), tagged `latest`, the number in the
-#     VERSION file, and sha-<commit>.
-#   - A push to `main` or a pull request only builds (nothing is published), so a broken Dockerfile shows up early.
+# Builds the three Shipdok images (api, worker, web) for amd64 and ARM64 and publishes them.
+#   - Only a push to the `publish` branch runs this: it builds AND publishes the images to GitHub's container registry (ghcr.io), tagged `latest`, the
+#     number in the VERSION file, and sha-<commit>, then creates the GitHub Release.
+#   - A push to `main` runs nothing (building the same images twice only used up the monthly allowance of Actions minutes). Check the images yourself
+#     before publishing: `npm run check-images` builds the three images here and runs the same secret check (this machine's architecture only).
 # Every image is checked first for files that must never be published (.env, private keys, jar.txt).
 name: images
 
 on:
   push:
-    branches: [main, publish]
-  pull_request:
-    branches: [main]
+    branches: [publish]
 
 permissions:
   contents: read
