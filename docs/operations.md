@@ -196,6 +196,7 @@ organisation you choose) or enter an app you already have. There is no limit on 
 - **Each app uses one GitHub app.** When you create an app, choose the GitHub app that has its repository (the repository list and the branch list are
   that app's). With exactly one connected it is chosen for you. **None** is for a public repository that you deploy by hand. Change it later in the
   app's **Settings → GitHub app**: it applies at once, Shipdok looks up the installation again, and says if the new app is not installed on the repository.
+  **Saving does not deploy** (a note on the card says so): your latest commit is picked up on the next push, or when you press Deploy.
 - **Pushes deploy only the apps of the GitHub app that sent them.** All GitHub apps send to the same webhook address; each has its own secret. An app with
   no GitHub app is never deployed by a push.
 - **Disconnecting one** (needs your password) lists the apps that use it first. They keep running, and are left with no GitHub app, so private repositories

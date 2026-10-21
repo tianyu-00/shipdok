@@ -59,8 +59,8 @@ export function GithubAppSetting({ app }) {
       <CardHeader>
         <CardTitle className="text-base">GitHub app</CardTitle>
         <CardDescription>
-          The connected GitHub app that has this repository: it clones a private repository and its pushes deploy this app. A change applies at once;
-          Shipdok then checks whether the new app is installed on the repository. Apps are connected on the <Link to="/github" className="underline">GitHub page</Link>.
+          Which GitHub app this project uses to read its repository. Saving does not deploy. Your latest commit is picked up on the next push, or when you press Deploy.
+          Manage apps on the <Link to="/github" className="underline">GitHub page</Link>.
         </CardDescription>
       </CardHeader>
       <CardContent>

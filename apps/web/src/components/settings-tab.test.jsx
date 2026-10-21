@@ -292,6 +292,26 @@ describe('the GitHub app of the project', () => {
     await waitFor(() => expect(api.called('GET', '/api/github').length).toBeGreaterThan(1)) // the projects under each GitHub app
   })
 
+  test('the text above the choice says saving does not deploy and when the latest commit is picked up, in plain text (not a box)', async () => {
+    mockApi({ 'GET /api/github': LIST })
+    tab()
+    const card = (await select()).closest('[data-slot=card]')
+    const text = card.querySelector('[data-slot=card-description]')
+    expect(text).toHaveTextContent('Which GitHub app this project uses to read its repository.')
+    expect(text).toHaveTextContent('Saving does not deploy. Your latest commit is picked up on the next push, or when you press Deploy.')
+    expect(within(text).getByRole('link', { name: 'GitHub page' })).toHaveAttribute('href', '/github')
+    expect(within(card).queryByRole('note')).toBeNull() // no separate info box
+  })
+
+  test('saving shows only the plain confirmation: the explanation lives on the card, not in a pop-up', async () => {
+    mockApi({ 'GET /api/github': LIST, [PUT]: makeApp({ github_app_id: ONE }) })
+    tab(makeApp({ github_app_id: TWO }))
+    await userEvent.selectOptions(await select(), ONE)
+    await userEvent.click(saveApp())
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('GitHub app saved'))
+    expect(toasts.success).toHaveBeenCalledTimes(1)
+  })
+
   test('None sends null', async () => {
     const api = mockApi({ 'GET /api/github': LIST, [PUT]: makeApp({ github_app_id: null }) })
     tab(makeApp({ github_app_id: ONE }))
