@@ -19,6 +19,7 @@ const logFrame = ({ at, stream, text }) => {
  * cfg.stopped         names (from cfg.previous) that are NOT running, like the containers of a stopped app
  * cfg.failOn          { 'start old': Error, 'create live': Error, ... } an action that should throw (matched on "<verb> <name suffix>")
  * cfg.head            the commit `git rev-parse HEAD` reports (default 'abc123def')
+ * cfg.railpackVersion  what `railpack --version` reports (default 0.43.0); cfg.railpackVersionOutput: the whole text instead
  * cfg.onRun(cmd, args, opts)   called for git/docker commands; may throw (e.g. a failed build or an abort)
  * cfg.health.candidate / cfg.health.live   async (opts) => void; may throw to simulate an unhealthy container
  */
@@ -60,7 +61,10 @@ export function fakeEngine(cfg = {}) {
       if (cmd === 'git') engine.workDir = args[0] === '-C' ? args[1] : args.at(-1);
       await cfg.onRun?.(cmd, args, opts);
     },
-    async capture() { return cfg.head ?? 'abc123def'; },
+    async capture(cmd, args) {
+      if (cmd === 'railpack') return cfg.railpackVersionOutput ?? `railpack version ${cfg.railpackVersion ?? '0.43.0'}`;
+      return cfg.head ?? 'abc123def';
+    },
     async findContainers(filter) { (engine.lookups ??= []).push(filter); return previous; },
     async createContainer(opts) { const { name, hostPort } = opts; failure('create', name); (engine.created ??= []).push(opts); ev(`create ${name} port=${hostPort || 'temp'}`); usingNewImage.add(name); return container(name); },
     async ensureVolume({ name, labels }) { failure('volume', name); (engine.volumes ??= []).push({ name, labels }); ev(`volume ${name}`); },

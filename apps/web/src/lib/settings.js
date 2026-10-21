@@ -1,9 +1,11 @@
 // The settings of an app that can be edited later, and the checks the server also makes (so a typo is caught before a request).
+import { commandProblem } from '@/lib/build-method'
 
 export const SETTING_LABELS = {
   name: 'Name', branch: 'Branch', root_dir: 'Root directory', container_port: 'Container port', host_port: 'Host port',
   health_path: 'Health check path', memory_mb: 'Memory limit', cpus: 'CPU limit', max_restarts: 'Automatic restarts',
   build_timeout_minutes: 'Build time limit', volumes: 'Persistent storage',
+  build_method: 'Build method', install_command: 'Install command', build_command: 'Build command', start_command: 'Start command',
 }
 
 /** The form's text values for an app. */
@@ -11,7 +13,11 @@ export const settingsToForm = (app) => ({
   name: app.name, branch: app.branch, root_dir: app.root_dir, container_port: String(app.container_port), host_port: String(app.host_port),
   health_path: app.health_path ?? '', memory_mb: String(app.memory_mb), cpus: String(Number(app.cpus)), max_restarts: String(app.max_restarts),
   build_timeout_minutes: app.build_timeout_minutes == null ? '' : String(app.build_timeout_minutes), // empty = no limit
+  build_method: app.build_method ?? 'dockerfile',
+  install_command: app.install_command ?? '', build_command: app.build_command ?? '', start_command: app.start_command ?? '', // empty = Railpack decides
 })
+
+const COMMAND_KEYS = ['install_command', 'build_command', 'start_command']
 
 const whole = (v) => /^\d+$/.test(v.trim()) ? Number(v) : null
 const decimal = (v) => /^\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : null
@@ -37,6 +43,8 @@ export function settingsProblems(f) {
   if (mr === null || mr > 50) p.max_restarts = 'A whole number from 0 to 50'
   const bt = f.build_timeout_minutes.trim()
   if (bt !== '') { const n = whole(bt); if (n === null || n < 5 || n > 10080) p.build_timeout_minutes = 'Empty for no limit, or a whole number of minutes from 5 to 10080' }
+  // (Only a Railpack app uses the commands, so only then are they checked; they are kept either way.)
+  if (f.build_method === 'railpack') for (const k of COMMAND_KEYS) { const m = commandProblem(f[k]); if (m) p[k] = m }
   return p
 }
 
@@ -49,6 +57,8 @@ export function settingsChanges(f, app) {
   for (const k of ['container_port', 'host_port', 'memory_mb', 'max_restarts']) if (Number(f[k]) !== Number(was[k])) out[k] = Number(f[k])
   if (Number(f.cpus) !== Number(was.cpus)) out.cpus = Number(f.cpus)
   if (f.build_timeout_minutes.trim() !== was.build_timeout_minutes) out.build_timeout_minutes = f.build_timeout_minutes.trim() === '' ? null : Number(f.build_timeout_minutes)
+  if (f.build_method !== was.build_method) out.build_method = f.build_method
+  for (const k of COMMAND_KEYS) if (f[k].trim() !== was[k]) out[k] = f[k].trim() === '' ? null : f[k].trim()
   if (f.health_path.trim() !== was.health_path) out.health_path = f.health_path.trim() === '' ? null : f.health_path.trim()
   return out
 }

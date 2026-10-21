@@ -2,7 +2,7 @@ const ID = '11111111-1111-4111-8111-111111111111'
 
 export const makeApp = (over = {}) => ({
   id: ID, name: 'My App', slug: 'my-app', repo: 'owner/my-app', branch: 'main', root_dir: '.', container_port: 3000, host_port: 8080,
-  health_path: '/health', memory_mb: 512, cpus: '1.00', desired_state: 'running', max_restarts: 5, keep_previous_images: 1, auto_prune: false, build_timeout_minutes: null,
+  health_path: '/health', memory_mb: 512, cpus: '1.00', desired_state: 'running', max_restarts: 5, keep_previous_images: 1, auto_prune: false, build_timeout_minutes: null, build_method: 'dockerfile', install_command: null, build_command: null, start_command: null,
   latest_deployment: { id: 'd1', status: 'successful', commit_sha: 'a'.repeat(40), queued_at: '2026-10-19T11:50:00Z', finished_at: '2026-10-19T11:51:00Z' },
   runtime: { state: 'running', last_action: 'deploy', last_error: null, last_exit_code: null, oom_killed: false, health_failures: 0, next_restart_at: null, updated_at: '2026-10-19T11:51:05Z' },
   cleanup: null, running_settings: null, settings_pending: null, stats: null,

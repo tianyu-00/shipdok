@@ -14,6 +14,18 @@ const vars = (...keys) => keys.map((key) => ({ key, value: '********', updated_a
 const idle = { deployed: true, pending: false, added: [], changed: [], removed: [] }
 const tab = () => renderWithProviders(<VariablesTab app={makeApp()} />)
 
+describe('the build method', () => {
+  test('a Railpack app is told that its build variables are always build secrets; a Dockerfile app is not', async () => {
+    mockApi({ [ENV]: { variables: [], pending: idle } })
+    const { unmount } = renderWithProviders(<VariablesTab app={makeApp({ build_method: 'railpack' })} />)
+    expect(await screen.findByText(/built with Railpack, so a variable that reaches the build is always passed as a build secret/i)).toBeInTheDocument()
+    unmount()
+    renderWithProviders(<VariablesTab app={makeApp({ build_method: 'dockerfile' })} />)
+    expect(await screen.findByText('No variables yet')).toBeInTheDocument()
+    expect(screen.queryByText(/built with Railpack/i)).toBeNull()
+  })
+})
+
 describe('the list', () => {
   test('shows names with a fixed mask, never a value', async () => {
     mockApi({ [ENV]: { variables: vars('DATABASE_URL', 'API_KEY'), pending: idle } })

@@ -4993,6 +4993,35 @@
             "minimum": 5,
             "maximum": 10080
           },
+          "build_method": {
+            "default": "dockerfile",
+            "type": "string",
+            "enum": [
+              "dockerfile",
+              "railpack"
+            ]
+          },
+          "install_command": {
+            "nullable": true,
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+          },
+          "build_command": {
+            "nullable": true,
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+          },
+          "start_command": {
+            "nullable": true,
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+          },
           "github_app_id": {
             "nullable": true,
             "type": "string",
@@ -5061,6 +5090,34 @@
             "type": "integer",
             "minimum": 5,
             "maximum": 10080
+          },
+          "build_method": {
+            "type": "string",
+            "enum": [
+              "dockerfile",
+              "railpack"
+            ]
+          },
+          "install_command": {
+            "nullable": true,
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+          },
+          "build_command": {
+            "nullable": true,
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+          },
+          "start_command": {
+            "nullable": true,
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "pattern": "^[^\\x00-\\x1f\\x7f]+$"
           },
           "github_app_id": {
             "nullable": true,
@@ -5353,6 +5410,29 @@
             "type": "integer",
             "nullable": true,
             "description": "Minutes the clone and the build may take before they are stopped (5 to 10080); `null` = no limit (the default). A build that hangs and has no limit blocks the queue until it is cancelled."
+          },
+          "build_method": {
+            "type": "string",
+            "enum": [
+              "dockerfile",
+              "railpack"
+            ],
+            "description": "How the image is made: `dockerfile` builds the repository's own Dockerfile (the default); `railpack` needs no Dockerfile: Railpack looks at the code, works out how to build it and Shipdok builds that plan, even when the repository has a Dockerfile."
+          },
+          "install_command": {
+            "type": "string",
+            "nullable": true,
+            "description": "Railpack only: replaces its install step (for example `npm ci`). `null`: Railpack decides. A custom one replaces the default entirely. Kept when the method is switched back to `dockerfile`."
+          },
+          "build_command": {
+            "type": "string",
+            "nullable": true,
+            "description": "Railpack only: replaces its build step. `null`: Railpack decides."
+          },
+          "start_command": {
+            "type": "string",
+            "nullable": true,
+            "description": "Railpack only: the command that starts the app. `null`: Railpack decides. The app is given `PORT` (the container port) to listen on."
           },
           "desired_state": {
             "type": "string",

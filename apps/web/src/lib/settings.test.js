@@ -75,3 +75,35 @@ describe('runningSetting', () => {
     expect(runningSetting(makeApp({ memory_mb: 256, running_settings: {} }), 'memory_mb')).toBe(256)
   })
 })
+
+describe('the build method and its commands', () => {
+  const rp = { build_method: 'railpack', install_command: '', build_command: '', start_command: '' }
+
+  test('the form starts from the app (an app from before this existed counts as the Dockerfile, with no commands)', () => {
+    expect(settingsToForm(makeApp({ build_method: 'railpack', install_command: 'npm ci', build_command: null }))).toMatchObject({ build_method: 'railpack', install_command: 'npm ci', build_command: '', start_command: '' })
+    const old = makeApp(); delete old.build_method; delete old.install_command
+    expect(settingsToForm(old)).toMatchObject({ build_method: 'dockerfile', install_command: '' })
+  })
+
+  test('only what differs is sent; an emptied command is null; spaces around a command do not count', () => {
+    const app = makeApp({ build_method: 'railpack', install_command: 'npm ci', start_command: 'node s.js' })
+    const f = { ...settingsToForm(app) }
+    expect(settingsChanges(f, app)).toEqual({})
+    expect(settingsChanges({ ...f, install_command: ' npm ci ' }, app)).toEqual({})
+    expect(settingsChanges({ ...f, install_command: '' }, app)).toEqual({ install_command: null })
+    expect(settingsChanges({ ...f, build_command: ' npm run b' }, app)).toEqual({ build_command: 'npm run b' })
+    expect(settingsChanges({ ...f, build_method: 'dockerfile' }, app)).toEqual({ build_method: 'dockerfile' })
+  })
+
+  test('a command is checked only for a Railpack app, and only for length and line breaks', () => {
+    expect(settingsProblems(form({ ...rp, start_command: 'x'.repeat(1000) })).start_command).toBeUndefined()
+    expect(settingsProblems(form({ ...rp, start_command: 'x'.repeat(1001) })).start_command).toBe('At most 1000 characters')
+    expect(settingsProblems(form({ ...rp, build_command: 'a\nb' })).build_command).toEqual(expect.any(String))
+    expect(settingsProblems(form({ ...rp, install_command: '' })).install_command).toBeUndefined()
+    expect(settingsProblems(form({ ...rp, build_method: 'dockerfile', start_command: 'x'.repeat(2000) })).start_command).toBeUndefined()
+  })
+
+  test('the pending list names them', () => {
+    expect(SETTING_LABELS).toMatchObject({ build_method: 'Build method', install_command: 'Install command', build_command: 'Build command', start_command: 'Start command' })
+  })
+})

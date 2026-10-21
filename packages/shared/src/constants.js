@@ -7,6 +7,7 @@ export const LABEL = {
   app: 'shipdok.app-id',
   deployment: 'shipdok.deployment-id',
   role: 'shipdok.role', // candidate | live
+  method: 'shipdok.build-method', // dockerfile | railpack: how the image was made (a rollback needs to know, to give a Railpack app its PORT)
 };
 
 // ---- Application environment variables ----
@@ -30,6 +31,9 @@ export const reachesRuntime = (scope) => scope === 'runtime' || scope === 'both'
 
 // How a variable that reaches the build is given to `docker build`: a build argument or a BuildKit secret. Must match the CHECK constraint in migration 024.
 export const BUILD_PASSES = ['arg', 'secret'];
+
+// How an app's image is made: its own Dockerfile, or Railpack (no Dockerfile needed; Shipdok builds Railpack's plan with `docker build`).
+export const BUILD_METHODS = ['dockerfile', 'railpack'];
 
 // A build variable is handed to `docker build --build-arg NAME`, which reads the value from the environment of the docker command itself.
 // So a name must not be one that changes how that command (or the BuildKit client) behaves.

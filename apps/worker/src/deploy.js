@@ -13,6 +13,7 @@ import * as realEngine from './docker.js';
 import { LABEL } from '@shipdok/shared';
 import { checkoutSource, gitEnvironment } from './git.js';
 import { dockerBuildEnvironment } from './buildenv.js';
+import { buildWithRailpack } from './railpack.js';
 
 /**
  * @param {object} opts
@@ -33,6 +34,8 @@ import { dockerBuildEnvironment } from './buildenv.js';
  * @param {string[]} [opts.env=[]]      ['KEY=VALUE', ...] for the container
  * @param {string[]} [opts.buildEnv=[]]  ['KEY=VALUE', ...] for `docker build --build-arg` ONLY (values travel in docker's environment, never on its command line, never in the container)
  * @param {string[]} [opts.buildSecretEnv=[]]  the same, for `docker build --secret` (a BuildKit secret: never stored in the image)
+ * @param {'dockerfile'|'railpack'} [opts.buildMethod='dockerfile']  how the image is made (railpack.js); with Railpack every build variable is a secret
+ * @param {string} [opts.installCommand]  Railpack only: replaces its install step (also opts.buildCommand, opts.startCommand); empty = Railpack decides
  * @param {Record<string,string>} [opts.gitEnv]  extra environment for GIT ONLY (a GitHub token). Never given to docker or the container.
  * @param {(container: object) => Promise<void>} [opts.onRetire]  called with each old container after the new one is live, before it is removed (save its output)
  * @param {{path: string, name: string}[]} [opts.volumes]  persistent storage: Docker named volumes the live container mounts (the candidate gets throwaway ones)
@@ -77,6 +80,11 @@ export async function deploy(opts, eng = realEngine) {
   const timeoutMessage = () => `The build took longer than ${o.buildTimeoutMinutes} minute${o.buildTimeoutMinutes === 1 ? '' : 's'} and was stopped (the limit is a setting of the app)`;
   const stopIfAborted = () => { if (signal?.aborted) throw eng.abortError(); };
 
+  // How the image was made. A Railpack app is started by a command that listens on $PORT, so it is told the port (unless the administrator set PORT
+  // themselves). A rollback reuses an old image, so there it is the IMAGE that says how it was made, not the app's current setting.
+  let builtWith = reused ? null : (o.buildMethod ?? 'dockerfile');
+  const runEnv = () => (builtWith === 'railpack' && !o.env.some((e) => e.startsWith('PORT=')) ? [...o.env, `PORT=${o.containerPort}`] : o.env);
+
   const make = (role, hostPort) => eng.createContainer({
     image,
     name: `shipdok-${name}-${deploymentId}-${role}`,
@@ -85,7 +93,7 @@ export async function deploy(opts, eng = realEngine) {
     hostPort,
     memoryMb: o.memoryMb,
     cpus: o.cpus,
-    env: o.env,
+    env: runEnv(),
     // The candidate runs while the old version still does, so it must not touch the real data: it gets throwaway volumes at the same paths.
     volumes: role === 'live' ? o.volumes : o.volumes.map(({ path }) => ({ path })),
   });
@@ -155,6 +163,7 @@ export async function deploy(opts, eng = realEngine) {
       const info = await eng.imageInfo(image);
       if (!info) throw new Error('The image of that version no longer exists (it was removed to free space), so it cannot be rolled back to');
       if (info.labels?.[LABEL.managed] !== 'true' || info.labels?.[LABEL.app] !== o.appId) throw new Error('That image does not belong to this app');
+      builtWith = info.labels?.[LABEL.method] ?? 'dockerfile';
     } else {
       startLimit();
       try {
@@ -165,19 +174,26 @@ export async function deploy(opts, eng = realEngine) {
         // Resolve symlinks AFTER cloning: the API validates the string, but only the real path is trustworthy.
         const buildDir = await resolveBuildDir(workDir, o.dir);
 
-        const build = dockerBuildEnvironment(o.buildEnv, o.buildSecretEnv); // throws, naming the variable, if a name cannot be used
-        if (build.names.length) log(`Build variables passed as build arguments: ${build.names.join(', ')} (the Dockerfile must declare them with ARG)`);
-        if (build.secretNames.length) log(`Build variables passed as build secrets: ${build.secretNames.join(', ')} (the Dockerfile must ask for them with RUN --mount=type=secret,id=NAME; a changed secret does not re-run a cached step)`);
-        log(o.noCache === true ? `Building ${image} without the build cache` : `Building ${image}`);
-        await eng.run('docker', [
-          'build', '--progress=plain', '-t', image, // plain: readable in a file, no terminal redrawing
-          ...(o.noCache === true ? ['--no-cache'] : []), // asked for with this one deployment: every step is run again
-          '--label', 'shipdok.managed=true',
-          '--label', `shipdok.app-id=${o.appId}`,
-          '--label', `shipdok.deployment-id=${deploymentId}`,
-          ...build.args,
-          buildDir,
-        ], { env: build.env, signal: buildSignal, sink: o.logSink });
+        const labels = { [LABEL.managed]: 'true', [LABEL.app]: o.appId, [LABEL.deployment]: deploymentId };
+        if (builtWith === 'railpack') {
+          await buildWithRailpack(eng, {
+            buildDir, image, labels, noCache: o.noCache, buildEnv: o.buildEnv, buildSecretEnv: o.buildSecretEnv,
+            installCommand: o.installCommand, buildCommand: o.buildCommand, startCommand: o.startCommand,
+            signal: buildSignal, sink: o.logSink, log,
+          });
+        } else {
+          const build = dockerBuildEnvironment(o.buildEnv, o.buildSecretEnv); // throws, naming the variable, if a name cannot be used
+          if (build.names.length) log(`Build variables passed as build arguments: ${build.names.join(', ')} (the Dockerfile must declare them with ARG)`);
+          if (build.secretNames.length) log(`Build variables passed as build secrets: ${build.secretNames.join(', ')} (the Dockerfile must ask for them with RUN --mount=type=secret,id=NAME; a changed secret does not re-run a cached step)`);
+          log(o.noCache === true ? `Building ${image} without the build cache` : `Building ${image}`);
+          await eng.run('docker', [
+            'build', '--progress=plain', '-t', image, // plain: readable in a file, no terminal redrawing
+            ...(o.noCache === true ? ['--no-cache'] : []), // asked for with this one deployment: every step is run again
+            ...Object.entries(labels).flatMap(([k, v]) => ['--label', `${k}=${v}`]),
+            ...build.args,
+            buildDir,
+          ], { env: build.env, signal: buildSignal, sink: o.logSink });
+        }
       } finally {
         stopLimit();
       }

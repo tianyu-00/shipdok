@@ -26,6 +26,68 @@ describe('persistent storage on the settings tab', () => {
   })
 })
 
+describe('the build method', () => {
+  const put = () => `/api/apps/${APP_ID}`
+
+  test('a Dockerfile app shows its method and no commands', () => {
+    tab(makeApp({ build_method: 'dockerfile' }))
+    expect(box('Build method')).toHaveValue('dockerfile')
+    expect(screen.queryByLabelText('Start command')).toBeNull()
+    expect(screen.getByText('Where the Dockerfile is, inside the repository.')).toBeInTheDocument()
+  })
+
+  test('a Railpack app shows its commands with their values, empty where Railpack decides', () => {
+    tab(makeApp({ build_method: 'railpack', install_command: 'npm ci', build_command: null, start_command: 'node s.js' }))
+    expect(box('Build method')).toHaveValue('railpack')
+    expect([box('Install command'), box('Build command'), box('Start command')].map((e) => e.value)).toEqual(['npm ci', '', 'node s.js'])
+  })
+
+  test('switching the method sends only the method, and it waits for the next deployment', async () => {
+    const api = mockApi({ [PUT]: makeApp({ build_method: 'railpack', settings_pending: ['build_method'] }) })
+    tab(makeApp({ install_command: 'npm ci' })) // (a command kept from earlier, hidden while the Dockerfile is used)
+    await userEvent.selectOptions(box('Build method'), 'railpack')
+    await userEvent.click(save())
+    await waitFor(() => expect(api.called('PUT', put())).toHaveLength(1))
+    expect(api.called('PUT', put())[0].body).toEqual({ build_method: 'railpack' })
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('Saved. Deploy to apply the changes.'))
+  })
+
+  test('editing a command sends that command, trimmed; emptying one sends null', async () => {
+    const api = mockApi({ [PUT]: makeApp({ build_method: 'railpack' }) })
+    tab(makeApp({ build_method: 'railpack', install_command: 'npm ci', build_command: 'npm run build' }))
+    await type('Start command', '  node server.js ')
+    await type('Build command', '')
+    await userEvent.click(save())
+    await waitFor(() => expect(api.called('PUT', put())).toHaveLength(1))
+    expect(api.called('PUT', put())[0].body).toEqual({ start_command: 'node server.js', build_command: null })
+  })
+
+  test('a command that is too long is caught first, next to its box; the Dockerfile ignores the commands', async () => {
+    const api = mockApi({ [PUT]: makeApp() })
+    tab(makeApp({ build_method: 'railpack' }))
+    await userEvent.click(box('Install command'))
+    await userEvent.paste('x'.repeat(1001))
+    await userEvent.click(save())
+    expect(await screen.findByText('At most 1000 characters')).toBeInTheDocument()
+    expect(box('Install command')).toHaveAttribute('aria-invalid', 'true')
+    expect(api.called('PUT', put())).toHaveLength(0)
+  })
+
+  test('discard puts the method and commands back', async () => {
+    tab(makeApp({ build_method: 'dockerfile' }))
+    await userEvent.selectOptions(box('Build method'), 'railpack')
+    await userEvent.type(box('Start command'), 'x')
+    await userEvent.click(screen.getByRole('button', { name: 'Discard changes' }))
+    expect(box('Build method')).toHaveValue('dockerfile')
+    expect(screen.queryByLabelText('Start command')).toBeNull()
+  })
+
+  test('nothing to save while nothing differs', () => {
+    tab(makeApp({ build_method: 'railpack', start_command: 'node s.js' }))
+    expect(save()).toBeDisabled()
+  })
+})
+
 describe('the build time limit', () => {
   test('is an empty box when there is no limit, and says what that means', () => {
     tab(makeApp({ build_timeout_minutes: null }))

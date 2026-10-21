@@ -32,12 +32,12 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 026_volume_sizes
+  migrations/    001_init ... 027_build_method
   src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), recovery.js (recovery codes), resetpassword.js (host-side reset), authutil.js, settings.js + publicurl.js (public-access settings), visitor.js (local or outside), middleware/ (originCheck, publicAccess, requireAuth), routes/ (auth, recovery, settings, apps, env, webhooks, github, logs, volumes, buildcache)
   openapi/       API documentation: operations/*.js (one description per route), schemas.js, build.js, inventory.js (real routes), generate.js, openapi.json (generated, committed)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`), reset-password.js (host-side password reset; `npm run reset-password`)
 apps/worker/     BullMQ worker, dockerode, Postgres; node:test
-  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), deleteapp.js (removing an app), stats.js (CPU and memory samples), monitor.js, activity.js, buildlog.js (the log sink), buildcache.js (Docker's build cache: size and clean-up), buildenv.js (build-time variables for docker build), volumesize.js (sizes of the persistent volumes, measured on request), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
+  src/           deploy.js, docker.js, git.js, gitauth.js, process-job.js, control.js, dispatch.js, supervisor.js (pure crash/health rules), prune.js (image clean-up), deleteapp.js (removing an app), stats.js (CPU and memory samples), monitor.js, activity.js, buildlog.js (the log sink), buildcache.js (Docker's build cache: size and clean-up), buildenv.js (build-time variables for docker build), volumesize.js (sizes of the persistent volumes, measured on request), railpack.js (apps built with Railpack: plan, docker build of the plan, labels), runtimelog.js (collects the app's output), dockerlogs.js (Docker log frames), envvars.js, db.js, reconcile.js, paths.js
   worker.js      entry point; cli.js: manual deploy
 apps/web/        Vite + React (JavaScript) dashboard, Tailwind v4 + shadcn/ui (copied into src/components/ui); Vitest + Testing Library
   src/           App.jsx, pages/ (auth, apps list, create app, app detail), components/ (tabs, log viewer, actions), lib/ (api client, queries, format)
@@ -140,6 +140,7 @@ feature. Below: what exists, the administrator's decisions (do not re-litigate),
   encrypts again for the new name in one transaction, 409 `name_taken`; the value never leaves the server). A variable that reaches the build is passed either as a build argument (`build_as` `arg`, the default) or as a **BuildKit secret** (`secret`: `--secret id=NAME,env=NAME`, value again only in docker's environment, never stored in the
   image; the Dockerfile asks with `RUN --mount=type=secret,id=NAME,env=NAME`; BuildKit does not put a secret in the cache key, so a changed one does not re-run a cached step: documented, use Deploy without cache).
   **Decisions: both ways exist (a second "Passed to the build as" choice, shown only when the variable reaches the build); an import is runtime-only and never changes either choice.**
+- **Build method (Dockerfile or Railpack):** `apps.build_method` (default `dockerfile`) plus optional `install_command`, `build_command`, `start_command` (Railpack only, one line each, kept when switching back; in the snapshot, so pending like other build settings). With Railpack (`worker/src/railpack.js`) `railpack prepare` writes a plan and the same `docker build` builds it through Railpack's BuildKit frontend (version taken from the installed binary); every build variable is a BuildKit secret (the plan gets a placeholder, never a value; so a variable cannot change the plan, and `RAILPACK_*` variables are left out); the install command travels as the secret `RAILPACK_INSTALL_CMD`; the frontend ignores `--label`, so a second instant build adds the ownership labels plus `shipdok.build-method=railpack` (first build under a temporary tag that is removed, else Docker's classic store leaks the unlabelled image); a Railpack app gets `PORT` = container port (a rollback decides by the OLD image's label). The binary is pinned and checksum-checked in `apps/worker/Dockerfile` (change the version AND both checksums). Commands run only inside the build. **Decisions: explicit per-app choice even when a Dockerfile exists; commands are fields of the Railpack method, no third engine; `PORT` set for Railpack apps; build variables are secrets.** Untested: ARM64 and the Pi.
 - **Start / stop / restart:** intent saved first (`desired_state`), then a `control` job; a stopped app stays stopped when deployed unless `start: true`.
 - **Crash handling:** the monitor (15 s) compares `desired_state` with Docker (pure rules in `supervisor.js`): crash restarts with back-off, `max_restarts` in 10 min = `crashed`,
   3 failed health checks = `unhealthy` (left running), a stop from outside Shipdok is NOT restarted, a removed container is `missing` (**decision: show it, do not recreate it**).
@@ -191,7 +192,6 @@ account, no two-factor login (strong password policy, lockout, recent logins, re
 
 Candidates (the administrator picks):
 - Caddy compose profile (optional).
-- Railpack / custom build commands (deploy repos without a Dockerfile; needs a design discussion first).
 
 Known gaps: old `shipdok/*` images pile up until pruned (or `auto_prune`); DB backup is a documented manual recipe only. The portfolio backend (`tianyu-00/TianYuSiteV2`, `backend/`,
 port 9090) is not yet deployed through the platform.

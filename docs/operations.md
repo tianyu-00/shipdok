@@ -267,6 +267,34 @@ RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN npm ci
   Only what the step itself prints could leak it: do not echo it.
 - A secret used by a step is still readable by that step's commands, so anything that step installs or runs can read it.
 
+## Apps without a Dockerfile (Railpack)
+
+An app's **Build method** (create form and **Settings**) is **Dockerfile** (the default: Shipdok builds the Dockerfile in the repository) or **Railpack**. Railpack looks
+at the code, works out how to build it (Node, Python, Go, PHP, Ruby, Java, Rust, static sites...) and Shipdok builds that, so the repository needs no Dockerfile. You can choose
+Railpack even when the repository has a Dockerfile: it is then not used.
+
+Under Railpack three optional commands appear: **Install command**, **Build command** and **Start command**. Empty means "let Railpack decide", which is usually right.
+A command replaces Railpack's own step completely (a custom install command that does not install what the build step needs will fail the build). Each is one line, run
+by a shell **inside the build** (the start command inside the running container), the same place a Dockerfile's `RUN` and `CMD` run. They are kept if you switch back to the
+Dockerfile, and a change waits for the next deployment like the other build settings.
+
+- **The port.** A Railpack app is given the environment variable `PORT`, set to the container port you chose, and must listen on it (most frameworks do by default). If you set
+  a variable named `PORT` yourself, yours is used. A rollback to an older version goes by how *that* version was built.
+- **Variables.** Every variable that reaches the build is passed as a **build secret** (the "Passed to the build as" choice does not apply), so nothing of it is stored in
+  the image. As with Dockerfile secrets, **a changed secret does not re-run a cached step**: use **Deploy without cache**.
+- **What a variable cannot do.** Railpack decides what to build *before* the build, and Shipdok never gives it a secret's value that early. So a variable cannot change that decision
+  (for example the Node version, or variables named `RAILPACK_...`, which are left out with a line in the build log). Put those in the repository: `engines` in `package.json`,
+  `.node-version`, `mise.toml` or a `railpack.json` (see railpack.com).
+- **The first build is slow** (it downloads the toolchain; about a minute here, more on a Raspberry Pi). Later builds use the build cache. The worker keeps a small cache for the
+  planning step under `/tmp/railpack` (about 150 MB), which is lost when the worker container is recreated.
+- **Needs the internet** while planning and building: it downloads a helper from github.com and Railpack's images from ghcr.io. A `docker login ghcr.io` with an old or wrong token on
+  the host can make that pull fail with "denied"; the worker has no login of its own.
+- **Images are bigger** than a hand-written one (a small Node app is a few hundred MB, a static site about 220 MB), and the app runs as root inside its container unless the
+  repository says otherwise, like a Dockerfile without `USER`.
+- **When it cannot work it out** (no language found, no way to start the app) the deployment fails with *Railpack could not plan the build*, and the build log has Railpack's own
+  explanation, including what it found in the repository. Give it a start command, or add a Dockerfile and switch back.
+- The worker image contains one pinned version of Railpack (checked against its published checksum when the image is built) and uses the matching images.
+
 ## Forgot the password
 
 Use a **recovery code** on the login screen: *Lost your password? Use a recovery code.* Each code works once.
@@ -310,7 +338,7 @@ app is assigned to another GitHub App than the one that sent the push (change it
 **An app shows "Container missing".** Its container was removed outside Shipdok (for example `docker rm`). Nothing is running. Press **Deploy** to
 bring it back.
 
-**A deployment fails.** Open the deployment's build log in the dashboard; the reason is almost always in the last lines. For problems before the
+**A deployment fails.** Open the deployment's build log in the dashboard; the reason is almost always in the last lines (for a Railpack app, [see above](#apps-without-a-dockerfile-railpack)). For problems before the
 build (cloning, GitHub access) also check `docker compose logs worker`.
 
 **A deployment never finishes.** A build that hangs blocks the other deployments until you press **Cancel** on it. To have a runaway clone or

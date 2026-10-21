@@ -128,8 +128,56 @@ describe('creating an app', () => {
     expect(await screen.findByText('detail page')).toBeInTheDocument()
     expect(api.called('POST', '/api/apps')[0].body).toEqual({
       name: 'site', repo: 'tianyu-00/site', branch: 'trunk', root_dir: '.', container_port: 3000, host_port: 9301, health_path: '/health',
-      memory_mb: 512, cpus: 1, max_restarts: 5, keep_previous_images: 1, auto_prune: false, github_app_id: APP,
+      memory_mb: 512, cpus: 1, max_restarts: 5, keep_previous_images: 1, auto_prune: false, build_method: 'dockerfile', github_app_id: APP,
     })
+  })
+
+  test('the Dockerfile is the default way to build, and then there are no commands to fill in', async () => {
+    mockApi({ ...connected })
+    page()
+    await chooseRepo('tianyu-00/site')
+    expect(screen.getByLabelText('Build method')).toHaveValue('dockerfile')
+    expect(screen.queryByLabelText('Install command')).toBeNull()
+    expect(screen.getByText('Where the Dockerfile is, inside the repository.')).toBeInTheDocument()
+  })
+
+  test('choosing Railpack shows the three commands (each optional) and stops talking about a Dockerfile', async () => {
+    mockApi({ ...connected })
+    page()
+    await chooseRepo('tianyu-00/site')
+    await userEvent.selectOptions(screen.getByLabelText('Build method'), 'railpack')
+    for (const label of ['Install command', 'Build command', 'Start command']) expect(screen.getByLabelText(label)).toHaveValue('')
+    expect(screen.getByText('The folder of the app inside the repository.')).toBeInTheDocument()
+    expect(screen.queryByText('Where the Dockerfile is, inside the repository.')).toBeNull()
+    expect(screen.getByText(/every build variable is passed as a build secret/i)).toBeInTheDocument()
+  })
+
+  test('Railpack is sent with the commands that were filled in (trimmed), and none that were left empty', async () => {
+    const api = mockApi({ ...connected, 'POST /api/apps': answer(201, { id: 'new-id', name: 'site' }) })
+    page()
+    await chooseRepo('tianyu-00/site')
+    await userEvent.selectOptions(screen.getByLabelText('Build method'), 'railpack')
+    await userEvent.type(screen.getByLabelText('Build command'), '  npm run build  ')
+    await userEvent.type(screen.getByLabelText('Start command'), 'node dist/server.js')
+    await userEvent.click(screen.getByRole('button', { name: 'Create app' }))
+    expect(await screen.findByText('detail page')).toBeInTheDocument()
+    const body = api.called('POST', '/api/apps')[0].body
+    expect(body).toMatchObject({ build_method: 'railpack', build_command: 'npm run build', start_command: 'node dist/server.js' })
+    expect('install_command' in body).toBe(false)
+  })
+
+  test('commands typed and then abandoned by going back to the Dockerfile are not sent', async () => {
+    const api = mockApi({ ...connected, 'POST /api/apps': answer(201, { id: 'new-id', name: 'site' }) })
+    page()
+    await chooseRepo('tianyu-00/site')
+    await userEvent.selectOptions(screen.getByLabelText('Build method'), 'railpack')
+    await userEvent.type(screen.getByLabelText('Install command'), 'npm ci')
+    await userEvent.selectOptions(screen.getByLabelText('Build method'), 'dockerfile')
+    await userEvent.click(screen.getByRole('button', { name: 'Create app' }))
+    expect(await screen.findByText('detail page')).toBeInTheDocument()
+    const body = api.called('POST', '/api/apps')[0].body
+    expect(body.build_method).toBe('dockerfile')
+    expect('install_command' in body).toBe(false)
   })
 
   test('the build time limit: empty means none (not sent), a number is sent', async () => {

@@ -49,6 +49,22 @@ const flag = (id, status, by = null) =>
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const T = { timeout: 15000 };
 
+describe('the build method reaches the deploy step', () => {
+  test('the method and the commands in the job are handed on as they are, and their absence stays absence', async () => {
+    const appId = await makeApp();
+    const railpack = fakeDeploy();
+    await processDeployJob(fakeJob({ ...jobFor(appId, await makeDeployment(appId)).data, buildMethod: 'railpack', installCommand: 'npm ci', buildCommand: 'npm run build', startCommand: 'node s.js' }), { secretsKey: KEY, deployFn: railpack });
+    assert.deepEqual(
+      [railpack.calls[0].buildMethod, railpack.calls[0].installCommand, railpack.calls[0].buildCommand, railpack.calls[0].startCommand],
+      ['railpack', 'npm ci', 'npm run build', 'node s.js'],
+    );
+    const plain = fakeDeploy();
+    await processDeployJob(jobFor(appId, await makeDeployment(appId)), { secretsKey: KEY, deployFn: plain });
+    assert.equal(plain.calls[0].buildMethod, undefined);
+    assert.equal(plain.calls[0].installCommand, undefined);
+  });
+});
+
 describe('the build time limit reaches the deploy step', () => {
   test('the limit in the job is handed on, and its absence means no limit', async () => {
     const appId = await makeApp();

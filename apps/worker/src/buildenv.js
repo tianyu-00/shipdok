@@ -18,6 +18,15 @@ const PASS_THROUGH = [
 ];
 const PASS_THROUGH_PREFIXES = ['DOCKER_', 'BUILDKIT_', 'BUILDX_', 'XDG_'];
 
+/** The few variables of the worker's own environment that a child command needs (see the list above); everything else, secrets included, is left out. */
+export function passThroughEnvironment(base = process.env) {
+  const env = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined && (PASS_THROUGH.includes(key) || PASS_THROUGH_PREFIXES.some((p) => key.startsWith(p)))) env[key] = value;
+  }
+  return env;
+}
+
 /**
  * @param {string[]} buildEnv        ['NAME=value', ...] passed as build arguments
  * @param {string[]} buildSecretEnv  ['NAME=value', ...] passed as build secrets
@@ -26,10 +35,7 @@ const PASS_THROUGH_PREFIXES = ['DOCKER_', 'BUILDKIT_', 'BUILDX_', 'XDG_'];
  * Throws (naming the variable, never its value) if a name cannot be used: the API refuses these, so this only guards against a bad row.
  */
 export function dockerBuildEnvironment(buildEnv = [], buildSecretEnv = [], base = process.env) {
-  const env = {};
-  for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && (PASS_THROUGH.includes(key) || PASS_THROUGH_PREFIXES.some((p) => key.startsWith(p)))) env[key] = value;
-  }
+  const env = passThroughEnvironment(base);
   env.DOCKER_BUILDKIT = '1';
   const args = [];
   const names = [];

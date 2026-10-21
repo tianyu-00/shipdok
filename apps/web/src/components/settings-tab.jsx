@@ -8,6 +8,8 @@ import { api, ApiError } from '@/lib/api'
 import { settingsChanges, settingsProblems, settingsToForm } from '@/lib/settings'
 import { BranchPicker } from '@/components/branch-picker'
 import { Field } from '@/components/field'
+import { BuildMethodFields } from '@/components/build-method-fields'
+import { rootDirHint } from '@/lib/build-method'
 import { PendingSettings } from '@/components/pending-settings'
 import { RepoLink } from '@/components/repo-link'
 import { DeleteApp } from '@/components/delete-app'
@@ -66,9 +68,10 @@ function SettingsForm({ app }) {
         <Field id="s-health_path" label="Health check path" error={err('health_path')} hint="Leave empty for no health check: any answer counts as healthy.">
           <Input id="s-health_path" placeholder="/health" aria-invalid={bad('health_path')} value={f.health_path} onChange={set('health_path')} />
         </Field>
-        <Field id="s-root_dir" label="Root directory" error={err('root_dir')} hint="Where the Dockerfile is, inside the repository.">
+        <Field id="s-root_dir" label="Root directory" error={err('root_dir')} hint={rootDirHint(f.build_method)}>
           <Input id="s-root_dir" aria-invalid={bad('root_dir')} value={f.root_dir} onChange={set('root_dir')} />
         </Field>
+        <BuildMethodFields idPrefix="s-" values={f} errors={shown} onChange={(k, v) => set(k)({ target: { value: v } })} />
         <Field id="s-memory_mb" label="Memory limit (MB)" error={err('memory_mb')}><Input id="s-memory_mb" inputMode="numeric" aria-invalid={bad('memory_mb')} value={f.memory_mb} onChange={set('memory_mb')} /></Field>
         <Field id="s-cpus" label="CPU limit" error={err('cpus')}><Input id="s-cpus" inputMode="decimal" aria-invalid={bad('cpus')} value={f.cpus} onChange={set('cpus')} /></Field>
         <Field id="s-build_timeout_minutes" label="Build time limit (minutes)" error={err('build_timeout_minutes')}

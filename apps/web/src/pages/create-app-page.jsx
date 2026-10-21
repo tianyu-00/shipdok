@@ -15,6 +15,8 @@ import { BranchPicker } from '@/components/branch-picker'
 import { RepoPicker } from '@/components/repo-picker'
 import { GithubAppSelect } from '@/components/github-app-select'
 import { Field } from '@/components/field'
+import { BuildMethodFields } from '@/components/build-method-fields'
+import { rootDirHint } from '@/lib/build-method'
 
 const num = (v) => (v === '' ? undefined : Number(v))
 
@@ -29,6 +31,7 @@ export default function CreateAppPage() {
   const [f, setF] = useState({
     repo: '', name: '', branch: 'main', root_dir: '.', container_port: '3000', host_port: '', health_path: '',
     memory_mb: '512', cpus: '1', max_restarts: '5', build_timeout_minutes: '', keep_previous_images: '1', auto_prune: false,
+    build_method: 'dockerfile', install_command: '', build_command: '', start_command: '',
   })
   const [nameTouched, setNameTouched] = useState(false)
   const [branchTouched, setBranchTouched] = useState(false) // once the branch is chosen by hand, the repository's default no longer replaces it
@@ -55,6 +58,8 @@ export default function CreateAppPage() {
         memory_mb: num(f.memory_mb), cpus: num(f.cpus), max_restarts: num(f.max_restarts),
         keep_previous_images: num(f.keep_previous_images), auto_prune: f.auto_prune,
         ...(f.build_timeout_minutes.trim() ? { build_timeout_minutes: num(f.build_timeout_minutes.trim()) } : {}),
+        build_method: f.build_method,
+        ...(f.build_method === 'railpack' ? Object.fromEntries(['install_command', 'build_command', 'start_command'].filter((k) => f[k].trim()).map((k) => [k, f[k].trim()])) : {}),
         ...githubAppBody(apps, githubApp),
       },
     }),
@@ -72,7 +77,7 @@ export default function CreateAppPage() {
       <Card>
         <CardHeader>
           <CardTitle>New app</CardTitle>
-          <CardDescription>Shipdok clones the repository, builds its Dockerfile and runs it in a container.</CardDescription>
+          <CardDescription>Shipdok clones the repository, builds it (with its Dockerfile, or with Railpack when it has none) and runs it in a container.</CardDescription>
         </CardHeader>
         <CardContent>
           <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); create.mutate() }} noValidate>
@@ -100,9 +105,10 @@ export default function CreateAppPage() {
               <Field id="health_path" label="Health check path" hint="Optional, for example /health. Without it, any answer counts as healthy.">
                 <Input id="health_path" placeholder="/health" value={f.health_path} onChange={(e) => set({ health_path: e.target.value })} />
               </Field>
-              <Field id="root_dir" label="Root directory" hint="Where the Dockerfile is, inside the repository.">
+              <Field id="root_dir" label="Root directory" hint={rootDirHint(f.build_method)}>
                 <Input id="root_dir" value={f.root_dir} onChange={(e) => set({ root_dir: e.target.value })} />
               </Field>
+              <BuildMethodFields values={f} onChange={(k, v) => set({ [k]: v })} />
             </div>
 
             <details className="rounded-md border p-3">

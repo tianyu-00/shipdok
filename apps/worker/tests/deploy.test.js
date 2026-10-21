@@ -445,6 +445,26 @@ describe('build-time variables', () => {
   });
 });
 
+describe('the image carries the ownership labels', () => {
+  test('a Dockerfile build is labelled with the app and the deployment (rollback, clean-up and the Storage page find images by them)', async () => {
+    const eng = fakeEngine({ previous: [] });
+    await run({}, eng);
+    const b = eng.runs.find((r) => r.cmd === 'docker' && r.args[0] === 'build');
+    const labels = b.args.flatMap((a, i) => (a === '--label' ? [b.args[i + 1]] : []));
+    assert.deepEqual(labels, ['shipdok.managed=true', 'shipdok.app-id=app-1', 'shipdok.deployment-id=dep-1']);
+  });
+});
+
+describe('the build method decides how the app is started', () => {
+  const reuseImage = 'shipdok/my-app:11111111-1111-4111-8111-111111111111';
+  test('an image whose method label says something this worker does not know is not given a PORT', async () => {
+    const images = { [reuseImage]: { labels: { 'shipdok.managed': 'true', 'shipdok.app-id': 'app-1', 'shipdok.build-method': 'something-else' } } };
+    const eng = fakeEngine({ previous: [], appId: 'app-1', images });
+    await run({ reuseImage, env: ['A=1'] }, eng);
+    for (const c of eng.created) assert.deepEqual(c.env, ['A=1'], c.name);
+  });
+});
+
 describe('building without the cache', () => {
   const buildOf = (eng) => eng.runs.find((r) => r.cmd === 'docker' && r.args[0] === 'build');
 

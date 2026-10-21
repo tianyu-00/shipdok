@@ -53,6 +53,11 @@ below exists to make signing in hard for anyone but you, and to limit the damage
   repositories you trust. App containers can reach your local network and the internet like any container on the default Docker network.
 - **No build time limit by default.** A build that never finishes blocks the queue until cancelled. Set a **Build time limit** on each app
   (Settings) to have a runaway clone or build stopped.
+- **Railpack (apps without a Dockerfile) adds code you did not write to the build.** Its install, build and start commands run inside the build like a Dockerfile's steps (same
+  trust as above). The *planning* step (`railpack prepare`) runs inside the **worker**, the one container that has the Docker socket, and reads the repository's files to decide
+  what to build; a repository with a `mise.toml` containing command templates, hooks and tasks did not make it run anything in a test, but that is one test, not a proof. It
+  also downloads a helper from github.com and builds on images from ghcr.io (`railpack-frontend`, `railpack-builder`, `railpack-runtime`) that Railpack's authors publish: you trust
+  them as you trust any base image. Prefer the Dockerfile method for a repository you do not trust.
 - **Build arguments are baked into the image.** A variable set to "Build only" or "Build and runtime" and passed as a *build argument* that the Dockerfile uses with `ARG`
   ends up in the image's layers and history, readable by anyone who can read the image (anyone who controls Docker on the host). Use arguments for public settings.
   For tokens and passwords choose **Build secret**: BuildKit mounts it for one `RUN` step and stores nothing in the image. A secret is still readable by the commands of

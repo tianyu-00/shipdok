@@ -8,7 +8,7 @@ It is made for **one administrator on one machine**: a Raspberry Pi, a home serv
 multi-user system, no cluster and no hosted service. It is meant to be installed with Docker Compose and then managed from a web
 dashboard.
 
-- Deploys any repository that has a `Dockerfile`, from GitHub (private repositories too), with a GitHub App that you create from the dashboard in one click. Connect one for each GitHub account or organisation, and choose which one each app uses.
+- Deploys any repository that has a `Dockerfile` (or, with Railpack, code that has none), from GitHub (private repositories too), with a GitHub App that you create from the dashboard in one click. Connect one for each GitHub account or organisation, and choose which one each app uses.
 - Every push to the tracked branch builds and deploys automatically. The newest push wins.
 - A new version replaces the old one only after it starts and passes its health check. Roll back to the previous version in one click.
 - Persistent storage: keep an app's files across redeploys (Docker volumes), with safe defaults when you delete things.
@@ -67,7 +67,7 @@ take over the account, so keep them private.
    github.com). Then press **Install on repositories** and choose which repositories Shipdok may read. It only ever asks for read-only access to
    code.
 2. Press **Check again** on the GitHub page. Your repositories appear.
-3. Create an app: pick the GitHub app (if you connected more than one), the repository, the branch and the port your app listens on. The repository must contain a `Dockerfile` (in its root, or in a root directory you set); that is what Shipdok builds.
+3. Create an app: pick the GitHub app (if you connected more than one), the repository, the branch and the port your app listens on. By default the repository must contain a `Dockerfile` (in its root, or in a root directory you set); that is what Shipdok builds. For code without one, choose **Railpack** as the build method ([how it works](docs/operations.md#apps-without-a-dockerfile-railpack)).
 4. Press **Deploy**. Watch the build log, then open the app's address.
 
 Pushes to the tracked branch now deploy automatically once GitHub can reach Shipdok: set a public address under **Security → Public

@@ -4,7 +4,7 @@ import { requestDeployment, cancelDeployment } from '../deployments.js';
 import { requestControl, CONTROL_ACTIONS } from '../control.js';
 import { diskStatus, defaultDiskUsage } from '../disk.js';
 import { listVersions, prunableBytes } from '../images.js';
-import { removeDeploymentLogs } from '@shipdok/shared';
+import { removeDeploymentLogs, BUILD_METHODS } from '@shipdok/shared';
 import { nextFreePort, parsePortRange } from '../ports.js';
 import { mountedVolumes } from '../volumes.js';
 
@@ -18,6 +18,9 @@ export const slugify = (name) =>
 const rootDir = z.string().trim().min(1).max(200)
   .regex(/^[A-Za-z0-9._\/-]+$/, 'Use letters, numbers, dot, dash, underscore and slash')
   .refine((p) => !p.startsWith('/') && !p.split('/').includes('..'), 'Must be a relative path inside the repository');
+
+// One line for a shell inside the build (Railpack's install, build and start commands): no line breaks or other control characters.
+const command = z.string().trim().min(1).max(1000).regex(/^[^\x00-\x1f\x7f]+$/, 'Must be a single line');
 
 export const createSchema = z.object({
   name: z.string().trim().min(1).max(64),
@@ -38,6 +41,12 @@ export const createSchema = z.object({
   auto_prune: z.boolean().default(false),
   // Minutes the clone and the build may take before they are stopped; empty (null) = no limit.
   build_timeout_minutes: z.number().int().min(5).max(10080).nullish(),
+  // How the image is made: the repository's own Dockerfile (the default), or Railpack, which needs none. The three commands only apply to Railpack;
+  // empty (null) = let Railpack decide. They are kept if the method is switched back.
+  build_method: z.enum(BUILD_METHODS).default('dockerfile'),
+  install_command: command.nullish(),
+  build_command: command.nullish(),
+  start_command: command.nullish(),
   // The GitHub App (one of those connected on the GitHub page) that lists this repository, clones it when it is private and whose webhooks deploy it.
   // Empty (null): none, which is fine for a public repository that is only deployed by hand.
   github_app_id: z.string().regex(UUID_RE, 'Must be the id of a connected GitHub app').nullish(),
@@ -56,12 +65,16 @@ export const updateSchema = z.object({
   cpus: createSchema.shape.cpus.unwrap(),
   max_restarts: createSchema.shape.max_restarts.unwrap(),
   build_timeout_minutes: z.number().int().min(5).max(10080).nullable(),
+  build_method: createSchema.shape.build_method.unwrap(),
+  install_command: command.nullable(),
+  build_command: command.nullable(),
+  start_command: command.nullable(),
   github_app_id: z.string().regex(UUID_RE, 'Must be the id of a connected GitHub app').nullable(),
 }).partial().strict().refine((v) => Object.keys(v).length > 0, 'Give at least one setting to change');
 
 // The settings a deployment bakes into its container. An edit to one of these is "pending" until the next deployment; the name
 // and the restart limit are read live, so they never are.
-const SNAPSHOT_SETTINGS = ['branch', 'root_dir', 'container_port', 'host_port', 'health_path', 'memory_mb', 'cpus', 'build_timeout_minutes'];
+const SNAPSHOT_SETTINGS = ['branch', 'root_dir', 'container_port', 'host_port', 'health_path', 'memory_mb', 'cpus', 'build_timeout_minutes', 'build_method', 'install_command', 'build_command', 'start_command'];
 
 export const retentionSchema = z.object({
   keep_previous_images: z.number().int().min(0).max(10).optional(),
@@ -170,9 +183,9 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
           }
           try {
             ({ rows } = await db.query(
-              `INSERT INTO apps (name, slug, repo, branch, root_dir, container_port, host_port, health_path, memory_mb, cpus, max_restarts, keep_previous_images, auto_prune, build_timeout_minutes, github_app_id)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
-              [a.name, slug, a.repo, a.branch, a.root_dir, a.container_port, hostPort, a.health_path ?? null, a.memory_mb, a.cpus, a.max_restarts, a.keep_previous_images, a.auto_prune, a.build_timeout_minutes ?? null, a.github_app_id ?? null],
+              `INSERT INTO apps (name, slug, repo, branch, root_dir, container_port, host_port, health_path, memory_mb, cpus, max_restarts, keep_previous_images, auto_prune, build_timeout_minutes, github_app_id, build_method, install_command, build_command, start_command)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
+              [a.name, slug, a.repo, a.branch, a.root_dir, a.container_port, hostPort, a.health_path ?? null, a.memory_mb, a.cpus, a.max_restarts, a.keep_previous_images, a.auto_prune, a.build_timeout_minutes ?? null, a.github_app_id ?? null, a.build_method, a.install_command ?? null, a.build_command ?? null, a.start_command ?? null],
             ));
             break;
           } catch (err) {
