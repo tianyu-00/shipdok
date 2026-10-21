@@ -1,4 +1,5 @@
 import request from "supertest";
+import { jest } from "@jest/globals";
 import { createHmac, generateKeyPairSync } from "node:crypto";
 import { makeApp, resetDb, closeDb, testPool, PASSWORD } from "./helpers.js";
 import { createGithubProvider, parseMasterKey, saveGithubApp, loadGithubApp, listGithubApps } from "@shipdok/shared";
@@ -76,7 +77,7 @@ describe("the list of connected apps", () => {
   test("nothing connected yet", async () => {
     const res = await status();
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ apps: [] });
+    expect(res.body).toEqual({ apps: [], unknownSenders: [] });
   });
 
   test("once connected it describes each app and never a secret", async () => {
@@ -312,6 +313,56 @@ describe("the webhook uses the stored secrets, live", () => {
     const a = (await manual(good())).body.app;
     await disconnect(a.id, { password: PASSWORD });
     expect((await signed({ zen: "x" })).status).toBe(503);
+  });
+});
+
+describe("what a refused push leaves for the dashboard is cleared when the app is dealt with", () => {
+  const refuse = (appNumber) => {
+    const raw = JSON.stringify({ zen: "x" });
+    return request(app).post("/api/webhooks/github").set("Content-Type", "application/json").set("X-GitHub-Event", "ping").set("X-GitHub-Delivery", `d-${Math.random().toString(16).slice(2)}-${Date.now()}`.padEnd(20, "0"))
+      .set("X-GitHub-Hook-Installation-Target-ID", appNumber).set("X-Hub-Signature-256", `sha256=${createHmac("sha256", "not-the-secret-0123456789").update(raw).digest("hex")}`).send(raw);
+  };
+  const first = async () => (await status()).body.apps[0];
+  beforeEach(() => { jest.spyOn(console, "warn").mockImplementation(() => {}); });
+
+  test("entering the app again, with its secret, clears the warning", async () => {
+    await manual(good());
+    await refuse("123456");
+    expect((await first()).refusedPush).toMatchObject({ count: 1 });
+    await manual(good({ webhookSecret: "second-secret-0123456789" }));
+    expect((await first()).refusedPush).toBeNull();
+  });
+
+  test("a refused attempt to enter it leaves the warning", async () => {
+    await manual(good());
+    await refuse("123456");
+    await manual(good({ password: "not-the-password-xx" }));
+    expect((await first()).refusedPush).not.toBeNull();
+  });
+
+  test("a push from an app that was not connected stops being unknown once it is connected", async () => {
+    await manual(other()); // (with no app connected at all a delivery is a 503, not a wrong signature)
+    await refuse("123456");
+    expect((await status()).body.unknownSenders).toMatchObject([{ appNumber: "123456" }]);
+    await manual(good());
+    const body = (await status()).body;
+    expect(body.unknownSenders).toEqual([]);
+    expect(body.apps.map((x) => x.refusedPush)).toEqual([null, null]);
+  });
+
+  test("disconnecting the app forgets what was refused for it, and does not make it an unknown sender", async () => {
+    const added = (await manual(good())).body.app;
+    await refuse("123456");
+    await disconnect(added.id, { password: PASSWORD });
+    expect((await status()).body.unknownSenders).toEqual([]);
+  });
+
+  test("other senders' entries are left alone", async () => {
+    await manual(good());
+    await refuse("123456");
+    await refuse("777");
+    await manual(good({ webhookSecret: "second-secret-0123456789" }));
+    expect((await status()).body.unknownSenders).toMatchObject([{ appNumber: "777" }]);
   });
 });
 

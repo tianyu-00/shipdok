@@ -497,6 +497,116 @@ describe('the webhook status on the card', () => {
   })
 })
 
+describe('pushes that were refused', () => {
+  const ago = (min) => new Date(Date.now() - min * 60_000).toISOString()
+  const withRefusal = (over = {}) => ({ apps: [{ ...APP, refusedPush: { at: ago(3), count: 1 } }], unknownSenders: [], ...over })
+
+  test('an app whose secret did not match says so on its card, with when, and what to do', async () => {
+    mockApi(routes(withRefusal()))
+    page()
+    const c = await card('Shipdok-ab12')
+    const note = await c.findByRole('note')
+    expect(note).toHaveTextContent('A push from this app was refused 3 min ago')
+    expect(note).toHaveTextContent(/did not match the webhook secret Shipdok has stored for this app, so nothing was deployed/)
+    expect(note).toHaveTextContent(/same webhook secret on the app's page on GitHub and in Shipdok.*Redeliver/)
+    expect(note).not.toHaveTextContent(/times/)
+  })
+
+  test('how many times, when it is more than once', async () => {
+    mockApi(routes(withRefusal({ apps: [{ ...APP, refusedPush: { at: ago(3), count: 4 } }] })))
+    page()
+    expect(await (await card('Shipdok-ab12')).findByRole('note')).toHaveTextContent('refused 3 min ago (4 times)')
+  })
+
+  test('no warning on a card with nothing refused, and only that card has one', async () => {
+    mockApi(routes({ apps: [{ ...APP, refusedPush: { at: ago(1), count: 1 } }, { ...ORG, refusedPush: null }], unknownSenders: [] }))
+    page()
+    const first = await card('Shipdok-ab12')
+    const second = await card('Shipdok-cd34')
+    expect(await first.findByRole('note')).toBeInTheDocument()
+    expect(second.queryByRole('note')).toBeNull()
+  })
+
+  test('"Enter the secret again" opens the form for an app you already have, with its App ID filled in', async () => {
+    mockApi(routes(withRefusal()))
+    page()
+    const c = await card('Shipdok-ab12')
+    await userEvent.click(await c.findByRole('button', { name: 'Enter the secret again' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    expect(dialog.getByRole('tab', { name: 'I already have one' })).toHaveAttribute('aria-selected', 'true')
+    expect(dialog.getByLabelText('App ID')).toHaveValue('424242')
+    expect(dialog.getByLabelText('Webhook secret')).toHaveValue('') // never filled in
+  })
+
+  test('a push from an app that is not connected is a notice at the top, with its number and when', async () => {
+    mockApi(routes({ apps: [APP], unknownSenders: [{ appNumber: '5403580', at: ago(7), count: 2 }] }))
+    page()
+    const note = await screen.findByText(/GitHub App ID 5403580, which is not connected to this Shipdok/)
+    const box = note.closest('[role=note]')
+    expect(box).toHaveTextContent('refused 7 min ago (2 times) and nothing was deployed')
+    expect(box).toHaveTextContent(/add it with its App ID, private key and webhook secret/i)
+  })
+
+  test('"Add this app" opens the form for an app you already have, with that number in App ID', async () => {
+    mockApi(routes({ apps: [APP], unknownSenders: [{ appNumber: '5403580', at: ago(7), count: 1 }] }))
+    page()
+    await userEvent.click(await screen.findByRole('button', { name: 'Add this app' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    expect(dialog.getByRole('tab', { name: 'I already have one' })).toHaveAttribute('aria-selected', 'true')
+    expect(dialog.getByLabelText('App ID')).toHaveValue('5403580')
+  })
+
+  test('the ordinary "Add a GitHub app" button still opens the first way with an empty App ID, after one of those', async () => {
+    mockApi(routes({ apps: [APP], unknownSenders: [{ appNumber: '5403580', at: ago(7), count: 1 }] }))
+    page()
+    await userEvent.click(await screen.findByRole('button', { name: 'Add this app' }))
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    const dialog = await openAdd()
+    expect(dialog.getByRole('tab', { name: 'Create one for me' })).toHaveAttribute('aria-selected', 'true')
+    await userEvent.click(dialog.getByRole('tab', { name: 'I already have one' }))
+    expect(dialog.getByLabelText('App ID')).toHaveValue('')
+  })
+
+  test('a push that did not say who sent it has no number and no button to add anything', async () => {
+    mockApi(routes({ apps: [APP], unknownSenders: [{ appNumber: null, at: ago(2), count: 1 }] }))
+    page()
+    expect(await screen.findByText(/GitHub did not say which app sent it/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add this app' })).toBeNull()
+    expect(screen.getByText(/refused 2 min ago and nothing was deployed/)).toBeInTheDocument()
+  })
+
+  test('several senders each have their own notice', async () => {
+    mockApi(routes({ apps: [APP], unknownSenders: [{ appNumber: '111', at: ago(1), count: 1 }, { appNumber: '222', at: ago(2), count: 1 }] }))
+    page()
+    expect(await screen.findByText(/GitHub App ID 111/)).toBeInTheDocument()
+    expect(screen.getByText(/GitHub App ID 222/)).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Add this app' })).toHaveLength(2)
+  })
+
+  test('nothing refused: no notice anywhere', async () => {
+    mockApi(routes({ apps: [APP], unknownSenders: [] }))
+    page()
+    await card('Shipdok-ab12')
+    expect(screen.queryByText(/refused/i)).toBeNull()
+  })
+
+  test('with nothing connected a notice about an unknown sender can still show, next to the empty state', async () => {
+    mockApi(routes({ apps: [], unknownSenders: [{ appNumber: '5403580', at: ago(1), count: 1 }] }))
+    page()
+    expect(await screen.findByText(/GitHub App ID 5403580/)).toBeInTheDocument()
+    expect(screen.getByText('No GitHub app is connected')).toBeInTheDocument()
+  })
+
+  test('the page asks again every 30 seconds, so a refusal shows up without a reload', async () => {
+    mockApi(routes(CONNECTED))
+    const view = page()
+    await card('Shipdok-ab12')
+    const query = view.client.getQueryCache().find({ queryKey: ['github'] })
+    expect(query.observers[0].options.refetchInterval).toBe(30_000)
+  })
+})
+
 describe('disconnecting', () => {
   const open = async (name = 'Shipdok-ab12') => {
     const c = await card(name)

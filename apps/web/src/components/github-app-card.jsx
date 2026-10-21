@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { api } from '@/lib/api'
 import { installUrl } from '@/lib/githubconnect'
 import { useGithubWebhook } from '@/lib/queries'
+import { timeAgo } from '@/lib/format'
 import { GithubDisconnectDialog } from '@/components/github-disconnect-dialog'
 
 const SOURCE = { manifest: "Created by Shipdok's Connect GitHub button", manual: 'Entered by hand' }
@@ -33,7 +34,7 @@ function WebhookStatus({ hook, fix }) {
 }
 
 /** One connected GitHub app: its webhook status, the projects that use it, where it is installed (asked on demand) and Disconnect. */
-export function GithubAppCard({ app }) {
+export function GithubAppCard({ app, onEnterAgain }) {
   const client = useQueryClient()
   const [disconnecting, setDisconnecting] = useState(false)
   const unreadable = app.problem === 'cannot_decrypt'
@@ -62,6 +63,13 @@ export function GithubAppCard({ app }) {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {app.refusedPush && (
+          <div role="note" className="space-y-2 rounded-md border border-warning/50 p-3 text-sm text-warning">
+            <p className="font-medium">A push from this app was refused {timeAgo(app.refusedPush.at)}{app.refusedPush.count > 1 ? ` (${app.refusedPush.count} times)` : ''}</p>
+            <p>Its signature did not match the webhook secret Shipdok has stored for this app, so nothing was deployed. Set the same webhook secret on the app's page on GitHub and in Shipdok, then use Redeliver on GitHub.</p>
+            {onEnterAgain && <Button variant="outline" size="sm" onClick={() => onEnterAgain(app.appId)}>Enter the secret again</Button>}
+          </div>
+        )}
         {unreadable && (
           <Alert variant="destructive" role="alert">
             <AlertCircle className="size-4" />

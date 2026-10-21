@@ -3,6 +3,7 @@ import { verify } from '@node-rs/argon2';
 import { GithubError, createGithubClient, parsePrivateKeyPem, saveGithubApp, deleteGithubApp, githubAppSummary, listRepoBranches, REPO_FULL_NAME_RE } from '@shipdok/shared';
 import { limiter } from '../authutil.js';
 import { addressOf, recordAttempt } from '../lockout.js';
+import { createRefusals } from '../webhookrefusals.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -12,7 +13,7 @@ const BRANCH_CACHE_MAX = 100;
 const NOT_FOUND = { error: 'No such GitHub app. Connect it on the GitHub page first.', code: 'github_app_not_found' };
 
 // Never returns a secret: the app's details, repositories and installations only.
-export function githubRouter({ db, provider, secretsKey, fetch, settings }) {
+export function githubRouter({ db, provider, secretsKey, fetch, settings, refusals = createRefusals() }) {
   const r = Router();
 
   async function checkPassword(req, res, password) {
@@ -24,12 +25,21 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings }) {
     return rows[0];
   }
 
-  // Every connected GitHub App with the projects assigned to it (what the Disconnect warning lists).
+  // Every connected GitHub App with the projects assigned to it (what the Disconnect warning lists), and what the webhook receiver has refused
+  // lately: `refusedPush` on the app whose secret did not match, `unknownSenders` for pushes from a GitHub App that is not connected here (or that did
+  // not say which app it was). Kept in memory, newest first, gone after a day or when the problem is fixed.
   r.get('/', async (req, res, next) => {
     try {
       const { apps } = await provider.status();
       const { rows } = await db.query('SELECT id, name, slug, github_app_id FROM apps WHERE github_app_id IS NOT NULL ORDER BY name');
-      res.json({ apps: apps.map((a) => ({ ...a, projects: rows.filter((p) => p.github_app_id === a.id).map(({ id, name, slug }) => ({ id, name, slug })) })) });
+      const refused = refusals.list().map((e) => ({ appNumber: e.appNumber, at: new Date(e.at).toISOString(), count: e.count }));
+      res.json({
+        apps: apps.map((a) => {
+          const hit = refused.find((e) => e.appNumber === a.appId);
+          return { ...a, projects: rows.filter((p) => p.github_app_id === a.id).map(({ id, name, slug }) => ({ id, name, slug })), refusedPush: hit ? { at: hit.at, count: hit.count } : null };
+        }),
+        unknownSenders: refused.filter((e) => !apps.some((a) => a.appId === e.appNumber)),
+      });
     } catch (err) {
       next(err);
     }
@@ -90,6 +100,7 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings }) {
         privateKeyPem: key.export({ type: 'pkcs8', format: 'pem' }).toString(), webhookSecret, source: 'manual',
       });
       provider.invalidate();
+      refusals.clear(id.trim()); // entered (again): whatever was refused before is for the old secret
       await recordAttempt(db, { kind: 'github', username: user.username, address: addressOf(req), success: true });
       res.status(saved.created ? 201 : 200).json({ app: await githubAppSummary(db, saved.id), created: saved.created });
     } catch (err) {
@@ -106,9 +117,11 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings }) {
       if (!UUID_RE.test(req.params.id)) return res.status(404).json(NOT_FOUND);
       const user = await checkPassword(req, res, password);
       if (!user) return undefined;
+      const gone = await githubAppSummary(db, req.params.id);
       const projects = await deleteGithubApp(db, req.params.id);
       provider.invalidate();
       if (projects === null) return res.status(404).json(NOT_FOUND);
+      if (gone) refusals.clear(gone.appId);
       await recordAttempt(db, { kind: 'github', username: user.username, address: addressOf(req), success: true });
       res.status(204).end();
     } catch (err) {

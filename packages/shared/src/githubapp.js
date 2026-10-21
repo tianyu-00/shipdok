@@ -155,10 +155,10 @@ export function createGithubProvider(db, key, { ttlMs = 5000, fetch, apiBase, no
       const { apps } = await state();
       return apps.filter((a) => clients.has(a.id)).map((a) => ({ id: a.id, name: a.name, client: clients.get(a.id).client }));
     },
-    /** [{ id, secret }] of every app whose secret can be read: a webhook is believed if one of them signed it. */
+    /** [{ id, secret, appId, name }] of every app whose secret can be read: a webhook is believed if one of them signed it. (`appId` is GitHub's number, `name` for a log line.) */
     async webhookSecrets() {
       const { apps } = await state();
-      return apps.filter((a) => !a.problem).map((a) => ({ id: a.id, secret: a.webhookSecret }));
+      return apps.filter((a) => !a.problem).map((a) => ({ id: a.id, secret: a.webhookSecret, appId: a.appId, name: a.name }));
     },
     /** { apps: [summary + problem] } with no secrets. */
     async status() {

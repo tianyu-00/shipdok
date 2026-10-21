@@ -8,6 +8,7 @@ import rateLimit from 'express-rate-limit';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { requestDeployment } from '../deployments.js';
 import { diskStatus, defaultDiskUsage } from '../disk.js';
+import { createRefusals } from '../webhookrefusals.js';
 
 const MAX_BODY = '5mb'; // GitHub allows up to 25 MB; real push payloads are far smaller
 const SIGNATURE_RE = /^sha256=[0-9a-f]{64}$/;
@@ -64,8 +65,30 @@ const finish = (db, id, outcome, reason, { repo = null, ref = null, sha = null, 
       WHERE delivery_id = $1`,
     [id, outcome, reason, repo, ref && ref.slice(0, 200), sha, details ? JSON.stringify(details) : null]);
 
-export function webhookReceiver({ db, queue, secrets, rateLimitPerMinute = 120, logDir = '', diskUsage = defaultDiskUsage }) {
+const APP_NUMBER_RE = /^\d{1,20}$/;
+const WRONG_SIGNATURE_LOG_MS = 60_000; // one line per sender per minute, so a flood of bad requests cannot flood the log
+
+export function webhookReceiver({ db, queue, secrets, rateLimitPerMinute = 120, logDir = '', diskUsage = defaultDiskUsage, log = (line) => console.warn(line), refusals = createRefusals() }) {
   const r = Router();
+  const lastLogged = new Map(); // sender (GitHub's app number or 'none') -> when a line was last written
+
+  // A delivery was refused because no stored secret signed it. The only record of that is this line, so it says what is most useful to know: which
+  // GitHub App GitHub says sent it (the header is not trusted for anything but this sentence: it is checked to be digits and nothing else is logged
+  // from the request) and whether Shipdok has an app with that number. Never the signature, the body or a secret.
+  function logWrongSignature(req, candidates) {
+    const header = req.get('x-github-hook-installation-target-id');
+    const sender = typeof header === 'string' && APP_NUMBER_RE.test(header) ? header : null;
+    refusals.record(sender); // for the dashboard: every refusal counts, the log line below is the throttled part
+    const key = sender ?? 'none';
+    const now = Date.now();
+    if (now - (lastLogged.get(key) ?? 0) < WRONG_SIGNATURE_LOG_MS) return;
+    if (lastLogged.size >= 100) lastLogged.clear();
+    lastLogged.set(key, now);
+    const known = sender === null ? undefined : candidates.find((c) => c.appId === sender);
+    if (sender === null) log('Refused a webhook delivery: its signature does not match any connected GitHub app, and GitHub did not say which app sent it.');
+    else if (known) log(`Refused a webhook delivery from GitHub App ID ${sender}: its signature does not match the webhook secret stored for ${known.name ?? 'that app'}. Set the same webhook secret on GitHub and in Shipdok (GitHub page: Add a GitHub app, I already have one, same App ID).`);
+    else log(`Refused a webhook delivery from GitHub App ID ${sender}: Shipdok has no connected GitHub app with that ID. Add it on the GitHub page (Add a GitHub app, I already have one).`);
+  }
   r.use(rateLimit({
     windowMs: 60_000,
     limit: rateLimitPerMinute,
@@ -85,7 +108,11 @@ export function webhookReceiver({ db, queue, secrets, rateLimitPerMinute = 120, 
       // one that signed this delivery says which app sent it. What is learned is only which GitHub App it is.
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
       const sender = candidates.find((c) => validSignature(c.secret, raw, req.get('x-hub-signature-256')));
-      if (sender === undefined) return res.status(401).json({ error: 'Invalid signature' });
+      if (sender === undefined) {
+        logWrongSignature(req, candidates);
+        return res.status(401).json({ error: 'Invalid signature' });
+      }
+      if (sender.appId) refusals.clear(sender.appId); // a good delivery from this app: whatever was wrong with it is over
 
       // 3. Only now look at anything else.
       const event = req.get('x-github-event');

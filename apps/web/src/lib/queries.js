@@ -81,7 +81,8 @@ export const useRecovery = () => useQuery({ queryKey: ['recovery'], queryFn: () 
 export const usePublicAccess = () => useQuery({ queryKey: ['public-access'], queryFn: () => api('/settings/public'), retry: false })
 
 // The connected GitHub Apps (`apps`, empty when none), each with its details and the projects assigned to it (never a secret).
-export const useGithub = () => useQuery({ queryKey: ['github'], queryFn: () => api('/github'), retry: false })
+// (Read again every 30 seconds: a refused push shows up on its own.)
+export const useGithub = () => useQuery({ queryKey: ['github'], queryFn: () => api('/github'), retry: false, refetchInterval: 30_000 })
 
 // Does GitHub send this app's webhooks to the address Shipdok expects?
 // (`enabled` false for an app whose credentials cannot be read: GitHub cannot be asked as that app.)

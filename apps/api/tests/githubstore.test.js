@@ -184,7 +184,7 @@ describe("the provider the API and the worker use", () => {
     const cb = await p.client(b.id);
     expect(typeof ca.getApp).toBe("function");
     expect(cb).not.toBe(ca);
-    expect(await p.webhookSecrets()).toEqual([{ id: a.id, secret: SECRET }, { id: b.id, secret: SECOND }]);
+    expect(await p.webhookSecrets()).toEqual([{ id: a.id, secret: SECRET, appId: "123456", name: "Shipdok-ab12" }, { id: b.id, secret: SECOND, appId: "654321", name: "Shipdok-cd34" }]);
     expect((await p.clients()).map((c) => [c.id, c.name])).toEqual([[a.id, "Shipdok-ab12"], [b.id, "Shipdok-cd34"]]);
   });
 
@@ -205,7 +205,7 @@ describe("the provider the API and the worker use", () => {
     const { id } = await saveGithubApp(testPool, KEY, app());
     expect(await p.webhookSecrets()).toEqual([]); // still cached
     t += 5001;
-    expect(await p.webhookSecrets()).toEqual([{ id, secret: SECRET }]);
+    expect(await p.webhookSecrets()).toEqual([{ id, secret: SECRET, appId: "123456", name: "Shipdok-ab12" }]);
     await deleteGithubApp(testPool, id);
     t += 5001;
     expect(await p.webhookSecrets()).toEqual([]);
@@ -217,7 +217,7 @@ describe("the provider the API and the worker use", () => {
     expect(await p.webhookSecrets()).toEqual([]);
     const { id } = await saveGithubApp(testPool, KEY, app());
     p.invalidate();
-    expect(await p.webhookSecrets()).toEqual([{ id, secret: SECRET }]);
+    expect(await p.webhookSecrets()).toEqual([{ id, secret: SECRET, appId: "123456", name: "Shipdok-ab12" }]);
   });
 
   test("the same client (and its token cache) is kept while an app does not change, and replaced when it is saved again", async () => {
@@ -240,7 +240,7 @@ describe("the provider the API and the worker use", () => {
     const p = createGithubProvider(testPool, KEY, { ttlMs: 0, onProblem: (e) => seen.push(e.code) });
     const st = await p.status();
     expect(st.apps.map((a) => [a.name, a.problem])).toEqual([["Shipdok-ab12", "cannot_decrypt"], ["Shipdok-cd34", null]]);
-    expect(await p.webhookSecrets()).toEqual([{ id: good.id, secret: SECOND }]);
+    expect(await p.webhookSecrets()).toEqual([{ id: good.id, secret: SECOND, appId: "654321", name: "Shipdok-cd34" }]);
     expect((await p.clients()).map((c) => c.id)).toEqual([good.id]);
     expect(await p.client((await listGithubApps(testPool))[0].id)).toBeNull();
     expect(seen).toContain("cannot_decrypt");
@@ -251,9 +251,9 @@ describe("the provider the API and the worker use", () => {
     let broken = false;
     const flaky = { query: (...a) => (broken ? Promise.reject(new Error("db down")) : testPool.query(...a)) };
     const p = createGithubProvider(flaky, KEY, { ttlMs: 0 });
-    expect(await p.webhookSecrets()).toEqual([{ id, secret: SECRET }]);
+    expect(await p.webhookSecrets()).toEqual([{ id, secret: SECRET, appId: "123456", name: "Shipdok-ab12" }]);
     broken = true;
-    expect(await p.webhookSecrets()).toEqual([{ id, secret: SECRET }]);
+    expect(await p.webhookSecrets()).toEqual([{ id, secret: SECRET, appId: "123456", name: "Shipdok-ab12" }]);
   });
 
   test("when the database fails and nothing was known, the error is passed on", async () => {

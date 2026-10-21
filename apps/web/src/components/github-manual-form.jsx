@@ -9,9 +9,9 @@ import { api } from '@/lib/api'
 import { manualProblem } from '@/lib/githubconnect'
 
 /** For someone who already has a GitHub App: enter its ID, private key and webhook secret. Shipdok checks them with GitHub first. `onDone` runs after it was saved. */
-export function GithubManualForm({ onDone }) {
+export function GithubManualForm({ onDone, initialAppId = '' }) {
   const client = useQueryClient()
-  const [f, setF] = useState({ appId: '', privateKey: '', webhookSecret: '', password: '' })
+  const [f, setF] = useState({ appId: initialAppId, privateKey: '', webhookSecret: '', password: '' })
   const [problem, setProblem] = useState(null)
   const set = (k) => (e) => setF((old) => ({ ...old, [k]: e.target.value }))
   const connect = useMutation({

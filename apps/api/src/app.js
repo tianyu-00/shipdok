@@ -16,6 +16,7 @@ import { appsRouter, deploymentsRouter } from './routes/apps.js';
 import { envRouter } from './routes/env.js';
 import { webhookReceiver, deliveriesRouter } from './routes/webhooks.js';
 import { githubRouter } from './routes/github.js';
+import { createRefusals } from './webhookrefusals.js';
 import { githubConnectRouter } from './routes/githubconnect.js';
 import { createGithubProvider, logRoot } from '@shipdok/shared';
 import { deploymentLogsRouter, appLogsRouter, storageRouter } from './routes/logs.js';
@@ -49,6 +50,7 @@ export function createApp({
   const provider = githubProvider ?? (github !== undefined || webhookSecret !== undefined
     ? fixedGithub({ github, webhookSecret })
     : createGithubProvider(db, secretsKey, { fetch: githubFetch, onProblem: (err) => console.warn(`Warning: ${err.message}`) }));
+  const refusals = createRefusals(); // pushes refused for a wrong signature, shared by the receiver (writes) and the GitHub routes (reads)
   const app = express();
   app.disable('x-powered-by');
   // Believe X-Forwarded-For only when the connection itself comes from a proxy we run: by default this machine (the
@@ -65,7 +67,7 @@ export function createApp({
 
   // The GitHub webhook is public and signature-protected. It is mounted BEFORE the JSON parser, the session
   // and the origin check: it needs the raw bytes to verify the signature, and it has no cookies or Origin.
-  app.use('/api/webhooks/github', webhookReceiver({ db, queue, secrets: () => provider.webhookSecrets(), rateLimitPerMinute: webhookRateLimit, logDir, diskUsage }));
+  app.use('/api/webhooks/github', webhookReceiver({ db, queue, secrets: () => provider.webhookSecrets(), refusals, rateLimitPerMinute: webhookRateLimit, logDir, diskUsage }));
 
   app.use(express.json({ limit: '100kb' }));
 
@@ -102,7 +104,7 @@ export function createApp({
   app.use('/api/apps', requireAuth, appsRouter({ db, queue, github: (id) => provider.client(id), logDir, diskUsage, portRange }));
   app.use('/api/apps', requireAuth, appLogsRouter({ db, logDir }));
   app.use('/api/github/connect', githubConnectRouter({ db, provider, secretsKey, settings, fetch: githubFetch })); // before the router below: the callback is a page navigation and answers with redirects
-  app.use('/api/github', requireAuth, githubRouter({ db, provider, secretsKey, fetch: githubFetch, settings }));
+  app.use('/api/github', requireAuth, githubRouter({ db, provider, secretsKey, fetch: githubFetch, settings, refusals }));
   app.use('/api/deployments', requireAuth, deploymentsRouter({ db, queue, logDir }));
   app.use('/api/deployments', requireAuth, deploymentLogsRouter({ db, logDir }));
   app.use('/api/storage', requireAuth, storageRouter({ db, logDir, diskUsage }));

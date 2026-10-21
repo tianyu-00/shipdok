@@ -128,3 +128,171 @@ describe('a push deploys the projects of the app that sent it', () => {
     expect(queue.add.mock.calls[0][1].githubAppId).toBe(b);
   });
 });
+
+describe('a refused delivery leaves one line in the log saying who sent it', () => {
+  let warn;
+  beforeEach(() => { warn = jest.spyOn(console, 'warn').mockImplementation(() => {}); });
+  const bad = (headers = {}, secret = 'a-secret-nobody-has-0123456789') => {
+    const raw = JSON.stringify(push());
+    let req = request(app).post(PATH).set('Content-Type', 'application/json').set('X-GitHub-Event', 'push').set('X-GitHub-Delivery', randomUUID()).set('X-Hub-Signature-256', sign(raw, secret));
+    for (const [k, v] of Object.entries(headers)) req = req.set(k, v);
+    return req.send(raw);
+  };
+  const lines = () => warn.mock.calls.map((c) => String(c[0]));
+
+  test('an app Shipdok has, whose secret does not match: names the app and says what to do', async () => {
+    const res = await bad({ 'X-GitHub-Hook-Installation-Target-ID': '111' });
+    expect(res.status).toBe(401);
+    expect(lines()).toHaveLength(1);
+    expect(lines()[0]).toMatch(/GitHub App ID 111/);
+    expect(lines()[0]).toMatch(/does not match the webhook secret stored for First/);
+    expect(lines()[0]).toMatch(/same webhook secret on GitHub and in Shipdok/);
+  });
+
+  test('an app Shipdok does not have: says so and says where to add it', async () => {
+    await bad({ 'X-GitHub-Hook-Installation-Target-ID': '999' });
+    expect(lines()).toHaveLength(1);
+    expect(lines()[0]).toMatch(/GitHub App ID 999/);
+    expect(lines()[0]).toMatch(/no connected GitHub app with that ID/);
+    expect(lines()[0]).toMatch(/Add a GitHub app/);
+  });
+
+  test('no header at all: still one line, saying GitHub did not say which app', async () => {
+    await bad();
+    expect(lines()).toHaveLength(1);
+    expect(lines()[0]).toMatch(/did not say which app sent it/);
+  });
+
+  test.each([['not-a-number'], ['12 34'], ['1'.repeat(21)], ['111; DROP TABLE'], ['<script>x</script>']])('a header that is not a plain number (%j) is treated as no header, and never appears in the log', async (value) => {
+    await bad({ 'X-GitHub-Hook-Installation-Target-ID': value });
+    expect(lines()).toHaveLength(1);
+    expect(lines()[0]).toMatch(/did not say which app sent it/);
+    expect(lines()[0]).not.toContain(value);
+  });
+
+  test('never the signature, the body or a secret', async () => {
+    await bad({ 'X-GitHub-Hook-Installation-Target-ID': '111' }, 'a-secret-nobody-has-0123456789');
+    const all = lines().join('\n');
+    expect(all).not.toContain('a-secret-nobody-has-0123456789');
+    expect(all).not.toContain(SECRET_A);
+    expect(all).not.toContain(SECRET_B);
+    expect(all).not.toMatch(/sha256=|refs\/heads|tianyu-00/);
+  });
+
+  test('a flood from one sender is one line a minute; another sender has its own line; later the first speaks again', async () => {
+    const real = Date.now();
+    let offset = 0;
+    jest.spyOn(Date, 'now').mockImplementation(() => real + offset);
+    for (let i = 0; i < 5; i += 1) await bad({ 'X-GitHub-Hook-Installation-Target-ID': '111' });
+    expect(lines()).toHaveLength(1);
+    await bad({ 'X-GitHub-Hook-Installation-Target-ID': '222' });
+    await bad();
+    expect(lines()).toHaveLength(3);
+    offset = 61_000;
+    await bad({ 'X-GitHub-Hook-Installation-Target-ID': '111' });
+    expect(lines()).toHaveLength(4);
+  });
+
+  test('the memory of who was logged is bounded: after 100 different senders it starts again, so it cannot grow without end', async () => {
+    for (let i = 1; i <= 101; i += 1) await bad({ 'X-GitHub-Hook-Installation-Target-ID': String(1000 + i) });
+    expect(lines()).toHaveLength(101);
+    await bad({ 'X-GitHub-Hook-Installation-Target-ID': '1001' }); // the first sender again, within the minute: forgotten, so it is logged again
+    expect(lines()).toHaveLength(102);
+    await bad({ 'X-GitHub-Hook-Installation-Target-ID': '1001' }); // but now remembered again
+    expect(lines()).toHaveLength(102);
+  })
+
+  test('a delivery that is signed properly is not logged', async () => {
+    await deliver(push(), SECRET_A);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test('with no GitHub app connected at all (503) nothing is logged: that is not a wrong signature', async () => {
+    await testPool.query('DELETE FROM github_apps');
+    const res = await bad({ 'X-GitHub-Hook-Installation-Target-ID': '111' });
+    expect(res.status).toBe(503);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test('the answer to GitHub is the same plain 401 whatever the header says (the log is the only difference)', async () => {
+    const a = await bad({ 'X-GitHub-Hook-Installation-Target-ID': '111' });
+    const b = await bad({ 'X-GitHub-Hook-Installation-Target-ID': '999' });
+    expect([a.status, b.status]).toEqual([401, 401]);
+    expect(a.body).toEqual(b.body);
+  });
+});
+
+describe('what the dashboard is told about refused pushes (GET /api/github)', () => {
+  beforeEach(() => { jest.spyOn(console, 'warn').mockImplementation(() => {}); });
+  const bad = (id, secret = 'a-secret-nobody-has-0123456789') => {
+    const raw = JSON.stringify(push());
+    let req = request(app).post(PATH).set('Content-Type', 'application/json').set('X-GitHub-Event', 'push').set('X-GitHub-Delivery', randomUUID()).set('X-Hub-Signature-256', sign(raw, secret));
+    if (id !== undefined) req = req.set('X-GitHub-Hook-Installation-Target-ID', id);
+    return req.send(raw);
+  };
+  const status = async () => (await agent.get('/api/github')).body;
+  const appOf = (body, name) => body.apps.find((x) => x.name === name);
+
+  test('nothing refused: no warning anywhere', async () => {
+    const body = await status();
+    expect(body.unknownSenders).toEqual([]);
+    expect(body.apps.map((x) => x.refusedPush)).toEqual([null, null]);
+  });
+
+  test('a push refused from a connected app shows on that app, with how many and when, and nowhere else', async () => {
+    await bad('111');
+    await bad('111');
+    const body = await status();
+    expect(appOf(body, 'First').refusedPush).toMatchObject({ count: 2 });
+    expect(new Date(appOf(body, 'First').refusedPush.at).getTime()).toBeGreaterThan(Date.now() - 60_000);
+    expect(appOf(body, 'Second').refusedPush).toBeNull();
+    expect(body.unknownSenders).toEqual([]);
+  });
+
+  test('a push from an app that is not connected is an unknown sender, by its number', async () => {
+    await bad('999');
+    const body = await status();
+    expect(body.unknownSenders).toMatchObject([{ appNumber: '999', count: 1 }]);
+    expect(body.apps.map((x) => x.refusedPush)).toEqual([null, null]);
+  });
+
+  test('a push that did not say who sent it is an unknown sender with no number', async () => {
+    await bad(undefined);
+    expect((await status()).unknownSenders).toMatchObject([{ appNumber: null, count: 1 }]);
+  });
+
+  test('a good push from that app clears its warning; the others stay', async () => {
+    await bad('111');
+    await bad('222');
+    await bad('999');
+    await deliver(push({ ref: 'refs/heads/other' }), SECRET_A, { event: 'push' });
+    const body = await status();
+    expect(appOf(body, 'First').refusedPush).toBeNull();
+    expect(appOf(body, 'Second').refusedPush).not.toBeNull();
+    expect(body.unknownSenders).toHaveLength(1);
+  });
+
+  test('a ping signed properly also clears it', async () => {
+    await bad('222');
+    await deliver({ zen: 'x' }, SECRET_B, { event: 'ping' });
+    expect(appOf(await status(), 'Second').refusedPush).toBeNull();
+  });
+
+  test('a refused push is not recorded when no GitHub app is connected at all (that is a 503, not a wrong signature)', async () => {
+    await testPool.query('DELETE FROM github_apps');
+    await bad('111');
+    expect((await status()).unknownSenders).toEqual([]);
+  });
+
+  test('it needs a login', async () => {
+    await bad('999');
+    expect((await request(app).get('/api/github')).status).toBe(401);
+  });
+
+  test('what is shown holds only a number, a time and a count: nothing from the request', async () => {
+    await bad('999');
+    const body = JSON.stringify((await status()).unknownSenders);
+    expect(body).not.toMatch(/sha256|refs\/heads|tianyu-00|a-secret/);
+    expect(Object.keys(JSON.parse(body)[0]).sort()).toEqual(['appNumber', 'at', 'count']);
+  });
+});

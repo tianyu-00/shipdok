@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { AlertCircle, ArrowLeft, Plus } from 'lucide-react'
+import { AlertCircle, ArrowLeft, Plus, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { useGithub } from '@/lib/queries'
 import { errorMessage } from '@/lib/githubconnect'
+import { timeAgo } from '@/lib/format'
 import { GithubAddDialog } from '@/components/github-add-dialog'
 import { GithubAppCard } from '@/components/github-app-card'
 import { Empty, ListSkeleton, LoadError } from '@/components/states'
@@ -14,7 +15,7 @@ export default function GithubPage() {
   const github = useGithub()
   const [params, setParams] = useSearchParams()
   const [notice, setNotice] = useState(null)
-  const [adding, setAdding] = useState(false)
+  const [adding, setAdding] = useState(null) // null, or which way to add one is open: { tab, appId }
 
   // GitHub sends the browser back here with ?connected=<the new app's id> or ?error=<reason>: say it once and tidy the address.
   useEffect(() => {
@@ -25,6 +26,7 @@ export default function GithubPage() {
   }, [params, setParams])
 
   const apps = github.data?.apps ?? []
+  const unknown = github.data?.unknownSenders ?? []
   return (
     <div className="space-y-6">
       <Link to="/" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:underline"><ArrowLeft className="size-4" />All apps</Link>
@@ -36,7 +38,7 @@ export default function GithubPage() {
             then choose which one each app uses.
           </p>
         </div>
-        {github.data && <Button onClick={() => setAdding(true)}><Plus className="size-4" aria-hidden="true" />Add a GitHub app</Button>}
+        {github.data && <Button onClick={() => setAdding({ tab: 'create', appId: '' })}><Plus className="size-4" aria-hidden="true" />Add a GitHub app</Button>}
       </div>
       {notice && (
         <Alert variant="destructive" role="alert">
@@ -44,6 +46,23 @@ export default function GithubPage() {
           <AlertDescription>{notice}</AlertDescription>
         </Alert>
       )}
+      {unknown.map((u) => (
+        <Alert key={u.appNumber ?? 'none'} role="note" className="border-warning/50 text-warning">
+          <TriangleAlert className="size-4" aria-hidden="true" />
+          <AlertDescription className="space-y-2">
+            <p className="font-medium">
+              {u.appNumber
+                ? `A push came from GitHub App ID ${u.appNumber}, which is not connected to this Shipdok.`
+                : 'A push was refused: GitHub did not say which app sent it, and its signature matches none of the connected apps.'}
+            </p>
+            <p>
+              It was refused {timeAgo(u.at)}{u.count > 1 ? ` (${u.count} times)` : ''} and nothing was deployed.
+              {u.appNumber ? ' If that is your app, add it with its App ID, private key and webhook secret, then choose it in the project\'s settings.' : ''}
+            </p>
+            {u.appNumber && <Button variant="outline" size="sm" onClick={() => setAdding({ tab: 'existing', appId: u.appNumber })}>Add this app</Button>}
+          </AlertDescription>
+        </Alert>
+      ))}
       {github.isPending && <ListSkeleton rows={2} />}
       {github.isError && <LoadError error={github.error} title="Could not load the GitHub settings" onRetry={() => github.refetch()} />}
       {github.data && apps.length === 0 && (
@@ -51,8 +70,8 @@ export default function GithubPage() {
           Public repositories can be deployed by hand without one. For private repositories, and to deploy on every push, add a GitHub app.
         </Empty>
       )}
-      {apps.map((app) => <GithubAppCard key={app.id} app={app} />)}
-      <GithubAddDialog open={adding} onOpenChange={setAdding} />
+      {apps.map((app) => <GithubAppCard key={app.id} app={app} onEnterAgain={(appId) => setAdding({ tab: 'existing', appId })} />)}
+      <GithubAddDialog open={adding !== null} onOpenChange={(open) => !open && setAdding(null)} initialTab={adding?.tab} initialAppId={adding?.appId} />
     </div>
   )
 }

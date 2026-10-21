@@ -199,10 +199,14 @@ export const schemas = {
   GithubAppListed: {
     allOf: [ref('GithubApp'), obj({
       problem: { type: 'string', nullable: true, enum: ['cannot_decrypt', null], description: '`cannot_decrypt`: the stored credentials do not fit the platform key.' },
+      refusedPush: { type: 'object', nullable: true, description: 'Set when a push that GitHub says this app sent was refused lately because its signature did not match the stored webhook secret. Gone after a day, after a good delivery from this app, or when its credentials are entered again. Kept in memory: also gone when the API restarts.', properties: { at: time('When the newest one was refused.'), count: int('How many since it began.') } },
       projects: { type: 'array', description: 'The projects assigned to this GitHub App.', items: obj({ id: uuid('The project\'s id.'), name: str('Its name.'), slug: str('Its slug.') }) },
     })],
   },
-  GithubStatus: obj({ apps: { type: 'array', items: ref('GithubAppListed'), description: 'Every connected GitHub App, oldest first.' } }),
+  GithubStatus: obj({
+    apps: { type: 'array', items: ref('GithubAppListed'), description: 'Every connected GitHub App, oldest first.' },
+    unknownSenders: { type: 'array', description: 'Pushes refused lately because they were signed by nothing Shipdok has: from a GitHub App that is not connected here (`appNumber` is its number) or that did not say which app it was (`appNumber` is `null`). Newest first, kept in memory for a day or until that app is connected.', items: obj({ appNumber: { type: 'string', nullable: true, description: 'GitHub\'s number for the sending app (digits), or `null`.' }, at: time('When the newest one was refused.'), count: int('How many since it began.') }) },
+  }),
   GithubAppAdded: obj({ created: bool('`true` for a new GitHub App, `false` when an app that was already connected had its credentials replaced.'), app: ref('GithubApp') }),
   GithubManual: obj({
     password: str('The administrator\'s current password.'), appId: { oneOf: [{ type: 'string' }, { type: 'integer' }], description: 'The App ID (a number; not the Client ID).' },

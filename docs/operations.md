@@ -293,7 +293,12 @@ the dashboard's.
 
 **GitHub says the webhook delivery failed.** In **Security → Public access** the mode must be *Webhook only* or *Full access* and the public address
 must be right. Check the webhook status on the app's card on the GitHub page (*Webhook OK*, or *Webhook address differs* with an **Update on GitHub** button), and `docker compose logs api`. A delivery that arrived appears in the app's history.
-A `503` means no GitHub App is connected yet. If a push arrives but nothing deploys, the history says why: *uses a different GitHub app* means the
+A `503` means no GitHub App is connected yet. A `401` ("Invalid signature") means the push was signed with a secret Shipdok does not have; `docker compose logs api` then has a line
+*Refused a webhook delivery from GitHub App ID …*, which says whether Shipdok has that app (then the webhook secret on GitHub and in Shipdok differ) or does not
+(then add it on the GitHub page). At most one such line a minute per sender; it never contains the signature, the body or a secret.
+The dashboard shows the same on the **GitHub** page: a warning on the app's card (*A push from this app was refused …*, with an **Enter the secret again** button) or a notice at
+the top for an app that is not connected (*A push came from GitHub App ID …*, with an **Add this app** button that fills in the App ID). It is kept in memory, so it is gone after a day, when a good
+delivery from that app arrives, when you enter the app again, or when the API restarts. If a push arrives but nothing deploys, the history says why: *uses a different GitHub app* means the
 app is assigned to another GitHub App than the one that sent the push (change it in the app's **Settings → GitHub app**).
 
 **An app shows "Container missing".** Its container was removed outside Shipdok (for example `docker rm`). Nothing is running. Press **Deploy** to

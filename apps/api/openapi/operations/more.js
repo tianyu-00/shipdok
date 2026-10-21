@@ -85,7 +85,7 @@ export default Object.fromEntries([
   // ---------------------------------------------------------------- github
   route('GET', '/api/github', op({
     tag: GH, summary: 'The connected GitHub Apps',
-    description: 'Every connected GitHub App, oldest first, never a secret, each with the projects assigned to it (`projects`, what the Disconnect warning lists). `problem: cannot_decrypt` on an app means its stored credentials do not fit the platform key; the others are not affected.',
+    description: 'Every connected GitHub App, oldest first, never a secret, each with the projects assigned to it (`projects`, what the Disconnect warning lists). It also says what the webhook receiver refused lately for a wrong signature, from memory and with nothing but a number, a time and a count: `refusedPush` on the app whose secret did not match, and `unknownSenders` for pushes from an app that is not connected here. `problem: cannot_decrypt` on an app means its stored credentials do not fit the platform key; the others are not affected.',
     responses: { 200: ok('The apps.', ref('GithubStatus')) },
   })),
   route('POST', '/api/github/apps', op({
