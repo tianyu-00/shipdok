@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
 
-/** What the version says, and how to update. Shipdok never updates itself: the commands are run on the machine that hosts it. */
+/** What the version says. An update is announced and pointed at the release notes; Shipdok never updates itself. */
 export function UpdateDetails({ version }) {
   const client = useQueryClient()
   const again = useMutation({
@@ -17,11 +17,11 @@ export function UpdateDetails({ version }) {
       {!updateAvailable && !error && latest && <p className="text-muted-foreground">You are up to date (newest is {latest}).</p>}
       {error && <p className="text-muted-foreground">{error === 'unreachable' ? 'Could not look for updates just now. Is this machine online?' : 'No published version was found.'}</p>}
       {updateAvailable && (
-        <div className="space-y-2">
-          <p className="text-muted-foreground">Back up first. Then, on the machine that runs Shipdok, in the folder with compose.yaml (if you pinned SHIPDOK_VERSION, change it to {latest} first):</p>
-          <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs">docker compose pull</pre>
-          <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs">docker compose up -d</pre>
-        </div>
+        <p className="text-muted-foreground">
+          A new update is available. See{' '}
+          <a href="https://github.com/tianyu-00/shipdok/releases" target="_blank" rel="noreferrer" className="font-medium text-foreground underline">GitHub releases</a>{' '}
+          for what changed.
+        </p>
       )}
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs text-muted-foreground">Checked {new Date(checkedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>

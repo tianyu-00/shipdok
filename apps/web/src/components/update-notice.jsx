@@ -21,7 +21,7 @@ export function UpdateNotice() {
         <p>You are running {v.current ?? 'an unknown version'}.</p>
         <div className="mt-2 flex flex-wrap gap-2">
           <Popover>
-            <PopoverTrigger asChild><Button variant="outline" size="sm">How to update</Button></PopoverTrigger>
+            <PopoverTrigger asChild><Button variant="outline" size="sm">Details</Button></PopoverTrigger>
             <PopoverContent align="start" className="w-80 text-foreground"><UpdateDetails version={v} /></PopoverContent>
           </Popover>
           <Button variant="ghost" size="sm" onClick={() => { dismissUpdate(v.latest); setDismissed(v.latest) }}>Dismiss</Button>

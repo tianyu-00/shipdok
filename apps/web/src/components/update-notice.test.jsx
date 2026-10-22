@@ -16,12 +16,13 @@ describe('the update notice on the apps list', () => {
     expect(screen.getByText(/You are running 0\.1\.14/)).toBeInTheDocument()
   })
 
-  test('How to update shows the two commands, each on its own', async () => {
+  test('Details says a new update is available and points at the release notes on GitHub, with no commands', async () => {
     mockApi({ 'GET /api/version': v() })
     renderWithProviders(<UpdateNotice />)
-    await userEvent.click(await screen.findByRole('button', { name: 'How to update' }))
-    expect(await screen.findByText('docker compose pull')).toBeInTheDocument()
-    expect(screen.getByText('docker compose up -d')).toBeInTheDocument()
+    await userEvent.click(await screen.findByRole('button', { name: 'Details' }))
+    expect(await screen.findByText(/A new update is available/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'GitHub releases' })).toHaveAttribute('href', 'https://github.com/tianyu-00/shipdok/releases')
+    expect(screen.queryByText(/docker compose/)).toBeNull()
   })
 
   test.each([
