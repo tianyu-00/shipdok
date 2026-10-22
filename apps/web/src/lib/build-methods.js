@@ -6,7 +6,6 @@ export const DEFAULT_METHOD = 'railpack'
 export const METHOD_CARDS = [
   { id: 'dockerfile', title: 'Dockerfile', available: true, text: 'Builds the Dockerfile in your repository, so you decide exactly how the image is made.' },
   { id: 'railpack', title: 'Railpack', available: true, text: 'No Dockerfile needed. It looks at your code (Node, Python, Go, PHP, Ruby, Java, Rust and more), works out how to build it, and builds that.' },
-  { id: 'nixpacks', title: 'Nixpacks', available: false, text: 'Another way to build straight from your code, without a Dockerfile.' },
   { id: 'static', title: 'Static site', available: true, text: 'Serves HTML, CSS and JavaScript files with a small web server (nginx or Caddy). It can run your build command first, for example for a Vite or React site.' },
 ]
 

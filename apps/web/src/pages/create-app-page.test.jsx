@@ -431,18 +431,15 @@ describe('step 2: where the app is and how to build it', () => {
     expect(api.called('POST', '/api/apps')[0].body.build_method).toBe('dockerfile')
   })
 
-  test('Nixpacks is on the list as coming soon and cannot be chosen; Static site can', async () => {
+  test('there are three cards, all of them can be chosen, and none says "Coming soon" (Nixpacks is not offered)', async () => {
     mockApi({ ...connected, ...checks() })
     page()
     await toMethod('tianyu-00/site')
-    expect(card('Nixpacks')).toBeDisabled()
-    expect(within(card('Nixpacks')).getByText('Coming soon')).toBeInTheDocument()
-    await userEvent.click(card('Nixpacks'))
-    expect(card('Nixpacks')).toHaveAttribute('aria-checked', 'false')
-    expect(card('Railpack')).toHaveAttribute('aria-checked', 'true') // (still)
-    expect(card('Dockerfile')).toBeEnabled()
-    expect(card('Static site')).toBeEnabled()
-    expect(within(card('Static site')).queryByText('Coming soon')).toBeNull()
+    expect(screen.getAllByRole('radio').map((r) => r.textContent.split(/Default|Serves|No Dockerfile|Builds/)[0].trim())).toEqual(['Dockerfile', 'Railpack', 'Static site'])
+    for (const name of ['Dockerfile', 'Railpack', 'Static site']) expect(card(name)).toBeEnabled()
+    expect(screen.queryByText('Coming soon')).toBeNull()
+    expect(screen.queryByRole('radio', { name: /Nixpacks/ })).toBeNull()
+    expect(card('Railpack')).toHaveAttribute('aria-checked', 'true') // (still the default)
   })
 
   test('each card says in a line what the method is', async () => {

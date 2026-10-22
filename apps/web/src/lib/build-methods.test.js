@@ -2,8 +2,8 @@ import { describe, test, expect } from 'vitest'
 import { METHOD_CARDS, DEFAULT_METHOD, cardFor, methodChanges } from './build-methods'
 
 describe('the cards', () => {
-  test('Dockerfile, Railpack and Static site can be chosen; Nixpacks is coming soon', () => {
-    expect(METHOD_CARDS.map((c) => [c.id, c.available])).toEqual([['dockerfile', true], ['railpack', true], ['nixpacks', false], ['static', true]])
+  test('Dockerfile, Railpack and Static site are the cards, and all can be chosen (Nixpacks was dropped: it is in maintenance mode)', () => {
+    expect(METHOD_CARDS.map((c) => [c.id, c.available])).toEqual([['dockerfile', true], ['railpack', true], ['static', true]])
   })
   test('Railpack is the default, and it can be chosen (a default that cannot be chosen would trap the form)', () => {
     expect(DEFAULT_METHOD).toBe('railpack')
