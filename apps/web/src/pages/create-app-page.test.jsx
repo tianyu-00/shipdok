@@ -431,18 +431,18 @@ describe('step 2: where the app is and how to build it', () => {
     expect(api.called('POST', '/api/apps')[0].body.build_method).toBe('dockerfile')
   })
 
-  test('Nixpacks and Static site are on the list as coming soon, and cannot be chosen', async () => {
+  test('Nixpacks is on the list as coming soon and cannot be chosen; Static site can', async () => {
     mockApi({ ...connected, ...checks() })
     page()
     await toMethod('tianyu-00/site')
-    for (const name of ['Nixpacks', 'Static site']) {
-      expect(card(name)).toBeDisabled()
-      expect(within(card(name)).getByText('Coming soon')).toBeInTheDocument()
-      await userEvent.click(card(name))
-      expect(card(name)).toHaveAttribute('aria-checked', 'false')
-    }
+    expect(card('Nixpacks')).toBeDisabled()
+    expect(within(card('Nixpacks')).getByText('Coming soon')).toBeInTheDocument()
+    await userEvent.click(card('Nixpacks'))
+    expect(card('Nixpacks')).toHaveAttribute('aria-checked', 'false')
     expect(card('Railpack')).toHaveAttribute('aria-checked', 'true') // (still)
     expect(card('Dockerfile')).toBeEnabled()
+    expect(card('Static site')).toBeEnabled()
+    expect(within(card('Static site')).queryByText('Coming soon')).toBeNull()
   })
 
   test('each card says in a line what the method is', async () => {
@@ -537,6 +537,68 @@ describe('step 3: creating an app', () => {
     const body = api.called('POST', '/api/apps')[0].body
     expect(body).toMatchObject({ build_method: 'railpack', build_command: 'npm run build', start_command: 'node dist/server.js' })
     expect('install_command' in body).toBe(false)
+  })
+
+  describe('a static site', () => {
+    const toStaticDetails = async () => { await toMethod('tianyu-00/site'); await userEvent.click(card('Static site')); await next() }
+
+    test('starts with a small memory limit, port 8080, the npm commands and the dist folder, and shows its own fields (no start command)', async () => {
+      mockApi({ ...connected, ...checks() })
+      page()
+      await toStaticDetails()
+      expect(screen.getByLabelText('Container port')).toHaveValue('8080')
+      expect(screen.getByLabelText('Install command')).toHaveValue('npm ci')
+      expect(screen.getByLabelText('Build command')).toHaveValue('npm run build')
+      expect(screen.getByLabelText('Output folder')).toHaveValue('dist')
+      expect(screen.getByLabelText('Node version')).toHaveValue('')
+      expect(screen.getByLabelText('Web server')).toHaveValue('nginx')
+      expect(screen.getByRole('switch', { name: 'Single-page app' })).toBeChecked()
+      expect(screen.queryByLabelText('Start command')).toBeNull()
+      await userEvent.click(screen.getByText('Limits and clean-up'))
+      expect(screen.getByLabelText('Memory limit (MB)')).toHaveValue('128')
+    })
+
+    test('is sent with its settings: the commands, the folder, the Node version, the server and the fallback', async () => {
+      const api = mockApi({ ...connected, ...checks(), 'POST /api/apps': answer(201, { id: 'new-id', name: 'site' }) })
+      page()
+      await toStaticDetails()
+      await userEvent.type(screen.getByLabelText('Node version'), ' 20.11 ')
+      await userEvent.selectOptions(screen.getByLabelText('Web server'), 'caddy')
+      await userEvent.click(screen.getByRole('switch', { name: 'Single-page app' }))
+      await create()
+      expect(await screen.findByText('detail page')).toBeInTheDocument()
+      expect(api.called('POST', '/api/apps')[0].body).toMatchObject({
+        build_method: 'static', container_port: 8080, memory_mb: 128, install_command: 'npm ci', build_command: 'npm run build',
+        output_dir: 'dist', node_version: '20.11', static_server: 'caddy', spa_fallback: false,
+      })
+    })
+
+    test('with both commands emptied nothing is built: they are not sent, so the folder is served as it is', async () => {
+      const api = mockApi({ ...connected, ...checks(), 'POST /api/apps': answer(201, { id: 'new-id', name: 'site' }) })
+      page()
+      await toStaticDetails()
+      await userEvent.clear(screen.getByLabelText('Install command'))
+      await userEvent.clear(screen.getByLabelText('Build command'))
+      await create()
+      expect(await screen.findByText('detail page')).toBeInTheDocument()
+      const body = api.called('POST', '/api/apps')[0].body
+      expect('install_command' in body || 'build_command' in body).toBe(false)
+      expect(body).toMatchObject({ build_method: 'static', spa_fallback: true, static_server: 'nginx' })
+    })
+
+    test('the static settings are not sent for another method, even after going back', async () => {
+      const api = mockApi({ ...connected, ...checks(), 'POST /api/apps': answer(201, { id: 'new-id', name: 'site' }) })
+      page()
+      await toStaticDetails()
+      await userEvent.click(screen.getByRole('button', { name: 'Back' }))
+      await userEvent.click(card('Dockerfile'))
+      await next()
+      expect(screen.getByLabelText('Container port')).toHaveValue('3000') // what choosing a static site filled in is put back
+      await create()
+      expect(await screen.findByText('detail page')).toBeInTheDocument()
+      const body = api.called('POST', '/api/apps')[0].body
+      for (const k of ['output_dir', 'node_version', 'spa_fallback', 'static_server', 'install_command', 'build_command']) expect(k in body, k).toBe(false)
+    })
   })
 
   test('commands typed and then abandoned by going back and choosing the Dockerfile are not sent', async () => {

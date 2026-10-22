@@ -14,6 +14,7 @@ import { LABEL } from '@shipdok/shared';
 import { checkoutSource, gitEnvironment } from './git.js';
 import { dockerBuildEnvironment } from './buildenv.js';
 import { buildWithRailpack } from './railpack.js';
+import { buildStatic } from './static.js';
 
 /**
  * @param {object} opts
@@ -34,8 +35,9 @@ import { buildWithRailpack } from './railpack.js';
  * @param {string[]} [opts.env=[]]      ['KEY=VALUE', ...] for the container
  * @param {string[]} [opts.buildEnv=[]]  ['KEY=VALUE', ...] for `docker build --build-arg` ONLY (values travel in docker's environment, never on its command line, never in the container)
  * @param {string[]} [opts.buildSecretEnv=[]]  the same, for `docker build --secret` (a BuildKit secret: never stored in the image)
- * @param {'dockerfile'|'railpack'} [opts.buildMethod='dockerfile']  how the image is made (railpack.js); with Railpack every build variable is a secret
- * @param {string} [opts.installCommand]  Railpack only: replaces its install step (also opts.buildCommand, opts.startCommand); empty = Railpack decides
+ * @param {'dockerfile'|'railpack'|'static'} [opts.buildMethod='dockerfile']  how the image is made (railpack.js, static.js); with Railpack and static sites every build variable is a secret
+ * @param {string} [opts.installCommand]  Railpack: replaces its install step (also opts.buildCommand, opts.startCommand); empty = Railpack decides. Static site: the install and build steps (none = no build)
+ * @param {string} [opts.outputDir] / opts.nodeVersion / opts.spaFallback / opts.staticServer ('nginx'|'caddy')  static sites only (static.js)
  * @param {Record<string,string>} [opts.gitEnv]  extra environment for GIT ONLY (a GitHub token). Never given to docker or the container.
  * @param {(container: object) => Promise<void>} [opts.onRetire]  called with each old container after the new one is live, before it is removed (save its output)
  * @param {{path: string, name: string}[]} [opts.volumes]  persistent storage: Docker named volumes the live container mounts (the candidate gets throwaway ones)
@@ -180,6 +182,12 @@ export async function deploy(opts, eng = realEngine) {
             buildDir, image, labels, noCache: o.noCache, buildEnv: o.buildEnv, buildSecretEnv: o.buildSecretEnv,
             installCommand: o.installCommand, buildCommand: o.buildCommand, startCommand: o.startCommand,
             signal: buildSignal, sink: o.logSink, log,
+          });
+        } else if (builtWith === 'static') {
+          await buildStatic(eng, {
+            buildDir, image, labels, noCache: o.noCache, buildEnv: o.buildEnv, buildSecretEnv: o.buildSecretEnv,
+            installCommand: o.installCommand, buildCommand: o.buildCommand, outputDir: o.outputDir, nodeVersion: o.nodeVersion, spaFallback: o.spaFallback, server: o.staticServer,
+            containerPort: o.containerPort, signal: buildSignal, sink: o.logSink, log,
           });
         } else {
           const build = dockerBuildEnvironment(o.buildEnv, o.buildSecretEnv); // throws, naming the variable, if a name cannot be used

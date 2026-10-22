@@ -28,7 +28,7 @@ export function DetailsStep({ f, set, setNameTouched, branchTouched, setBranchTo
             onChange={(branch) => { setBranchTouched(true); set({ branch }) }}
             onDefaultKnown={(branch) => { if (!branchTouched) set({ branch }) }} />
         </Field>
-        <Field id="container_port" label="Container port" hint="The port the app listens on inside its container.">
+        <Field id="container_port" label="Container port" hint={f.build_method === 'static' ? 'The port the web server listens on inside its container: 1024 or higher, 8080 is usual.' : 'The port the app listens on inside its container.'}>
           <Input id="container_port" inputMode="numeric" value={f.container_port} onChange={(e) => set({ container_port: e.target.value })} />
         </Field>
         <Field id="host_port" label="Host port" hint="The port it is published on, 1024 or higher. Each app needs its own. Leave empty to pick a free one automatically.">

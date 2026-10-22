@@ -284,7 +284,7 @@ export default function VariablesTab({ app }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">Environment variables for the app: passed to the running container, to the build (as build arguments), or both. Values are stored encrypted and shown only when you ask. An imported .env file is added as runtime variables.
-          {app.build_method === 'railpack' && ' This app is built with Railpack, so a variable that reaches the build is always passed as a build secret, whatever is chosen below.'}</p>
+          {(app.build_method === 'railpack' || app.build_method === 'static') && ` This app is built ${app.build_method === 'static' ? 'as a static site' : 'with Railpack'}, so a variable that reaches the build is always passed as a build secret, whatever is chosen below.`}</p>
         <Button variant="outline" onClick={() => setImporting(true)}><FileUp className="size-4" />Import .env</Button>
       </div>
       {env.isPending && <ListSkeleton rows={2} />}

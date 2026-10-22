@@ -88,6 +88,75 @@ describe('the build method', () => {
   })
 })
 
+describe('a static site', () => {
+  const put = () => `/api/apps/${APP_ID}`
+  const stat = (over = {}) => makeApp({ build_method: 'static', container_port: 8080, install_command: 'npm ci', build_command: 'npm run build', output_dir: 'dist', node_version: '22', ...over })
+
+  test('shows its settings with their values, and no Railpack start command', () => {
+    tab(stat({ static_server: 'caddy', spa_fallback: false }))
+    expect(box('Build method')).toHaveValue('static')
+    expect(box('Install command')).toHaveValue('npm ci')
+    expect(box('Build command')).toHaveValue('npm run build')
+    expect(box('Output folder')).toHaveValue('dist')
+    expect(box('Node version')).toHaveValue('22')
+    expect(box('Web server')).toHaveValue('caddy')
+    expect(screen.getByRole('switch', { name: 'Single-page app' })).not.toBeChecked()
+    expect(screen.queryByLabelText('Start command')).toBeNull()
+    expect(screen.getByText('The folder of the site inside the repository.')).toBeInTheDocument()
+  })
+
+  test('the other methods do not show them', () => {
+    for (const build_method of ['dockerfile', 'railpack']) {
+      const { unmount } = tab(makeApp({ build_method }))
+      for (const label of ['Output folder', 'Node version', 'Web server']) expect(screen.queryByLabelText(label)).toBeNull()
+      unmount()
+    }
+  })
+
+  test('changing the folder, Node, server and fallback sends just those', async () => {
+    const api = mockApi({ [PUT]: stat() })
+    tab(stat())
+    await type('Output folder', 'build')
+    await type('Node version', '20.11')
+    await userEvent.selectOptions(box('Web server'), 'caddy')
+    await userEvent.click(screen.getByRole('switch', { name: 'Single-page app' }))
+    await userEvent.click(save())
+    await waitFor(() => expect(api.called('PUT', put())).toHaveLength(1))
+    expect(api.called('PUT', put())[0].body).toEqual({ output_dir: 'build', node_version: '20.11', static_server: 'caddy', spa_fallback: false })
+  })
+
+  test('a bad folder or Node version is caught first, next to its box', async () => {
+    const api = mockApi({ [PUT]: stat() })
+    tab(stat())
+    await type('Output folder', '../secrets')
+    await type('Node version', 'latest')
+    await userEvent.click(save())
+    expect(await screen.findByText(/relative folder inside the app/)).toBeInTheDocument()
+    expect(await screen.findByText('A number such as 22, 20.11 or 18.20.4')).toBeInTheDocument()
+    expect(box('Output folder')).toHaveAttribute('aria-invalid', 'true')
+    expect(api.called('PUT', put())).toHaveLength(0)
+  })
+
+  test('a port below 1024 is caught first', async () => {
+    const api = mockApi({ [PUT]: stat() })
+    tab(stat())
+    await type('Container port', '80')
+    await userEvent.click(save())
+    expect(await screen.findByText(/from 1024 up/)).toBeInTheDocument()
+    expect(api.called('PUT', put())).toHaveLength(0)
+  })
+
+  test('switching an app to a static site sends the method', async () => {
+    const api = mockApi({ [PUT]: stat() })
+    tab(makeApp({ build_method: 'dockerfile' }))
+    await userEvent.selectOptions(box('Build method'), 'static')
+    expect(box('Output folder')).toBeInTheDocument()
+    await userEvent.click(save())
+    await waitFor(() => expect(api.called('PUT', put())).toHaveLength(1))
+    expect(api.called('PUT', put())[0].body).toEqual({ build_method: 'static' })
+  })
+})
+
 describe('the build time limit', () => {
   test('is an empty box when there is no limit, and says what that means', () => {
     tab(makeApp({ build_timeout_minutes: null }))

@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { api } from '@/lib/api'
 import { useGithub, useRepoCheck, useRepos } from '@/lib/queries'
 import { githubAppBody, startingApp } from '@/lib/github-apps'
-import { DEFAULT_METHOD } from '@/lib/build-methods'
+import { DEFAULT_METHOD, methodChanges } from '@/lib/build-methods'
 import { clearDraft, loadDraft, saveDraft } from '@/lib/create-draft'
 import { useDebounced } from '@/lib/use-debounced'
 import { RepoStep } from '@/components/create/repo-step'
@@ -41,6 +41,7 @@ export default function CreateAppPage() {
     repo: draft?.repo ?? '', name: '', branch: 'main', root_dir: '.', container_port: '3000', host_port: '', health_path: '',
     memory_mb: '512', cpus: '1', max_restarts: '5', build_timeout_minutes: '', keep_previous_images: '1', auto_prune: true,
     build_method: DEFAULT_METHOD, install_command: '', build_command: '', start_command: '',
+    output_dir: '', node_version: '', spa_fallback: true, static_server: 'nginx',
   })
   const [nameTouched, setNameTouched] = useState(false)
   const [branchTouched, setBranchTouched] = useState(false) // once the branch is chosen by hand, the repository's default no longer replaces it
@@ -84,6 +85,9 @@ export default function CreateAppPage() {
         ...(f.build_timeout_minutes.trim() ? { build_timeout_minutes: num(f.build_timeout_minutes.trim()) } : {}),
         build_method: f.build_method,
         ...(f.build_method === 'railpack' ? Object.fromEntries(['install_command', 'build_command', 'start_command'].filter((k) => f[k].trim()).map((k) => [k, f[k].trim()])) : {}),
+        ...(f.build_method === 'static'
+          ? { ...Object.fromEntries(['install_command', 'build_command', 'output_dir', 'node_version'].filter((k) => f[k].trim()).map((k) => [k, f[k].trim()])), spa_fallback: f.spa_fallback, static_server: f.static_server }
+          : {}),
         ...githubAppBody(apps, githubApp),
       },
     }),
@@ -116,7 +120,7 @@ export default function CreateAppPage() {
           {step === 2 && (
             <MethodStep
               repo={repoText} rootDir={f.root_dir} onRootDir={(dir) => set({ root_dir: dir })}
-              method={f.build_method} onMethod={(id) => set({ build_method: id })}
+              method={f.build_method} onMethod={(id) => set(methodChanges(f, id))}
               onChangeRepo={() => setStep(1)} onBack={() => setStep(1)} onContinue={() => setStep(3)}
             />
           )}

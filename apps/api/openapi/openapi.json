@@ -5361,7 +5361,8 @@
             "type": "string",
             "enum": [
               "dockerfile",
-              "railpack"
+              "railpack",
+              "static"
             ]
           },
           "install_command": {
@@ -5384,6 +5385,30 @@
             "minLength": 1,
             "maxLength": 1000,
             "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+          },
+          "output_dir": {
+            "nullable": true,
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9._\\/-]+$"
+          },
+          "node_version": {
+            "nullable": true,
+            "type": "string",
+            "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){0,2}$"
+          },
+          "spa_fallback": {
+            "default": true,
+            "type": "boolean"
+          },
+          "static_server": {
+            "default": "nginx",
+            "type": "string",
+            "enum": [
+              "nginx",
+              "caddy"
+            ]
           },
           "github_app_id": {
             "nullable": true,
@@ -5458,7 +5483,8 @@
             "type": "string",
             "enum": [
               "dockerfile",
-              "railpack"
+              "railpack",
+              "static"
             ]
           },
           "install_command": {
@@ -5481,6 +5507,28 @@
             "minLength": 1,
             "maxLength": 1000,
             "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+          },
+          "output_dir": {
+            "nullable": true,
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9._\\/-]+$"
+          },
+          "node_version": {
+            "nullable": true,
+            "type": "string",
+            "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){0,2}$"
+          },
+          "spa_fallback": {
+            "type": "boolean"
+          },
+          "static_server": {
+            "type": "string",
+            "enum": [
+              "nginx",
+              "caddy"
+            ]
           },
           "github_app_id": {
             "nullable": true,
@@ -5741,7 +5789,7 @@
           },
           "root_dir": {
             "type": "string",
-            "description": "Where the Dockerfile is, inside the repository."
+            "description": "Where the app is inside the repository (where the Dockerfile is, for a Dockerfile app)."
           },
           "container_port": {
             "type": "integer",
@@ -5778,24 +5826,47 @@
             "type": "string",
             "enum": [
               "dockerfile",
-              "railpack"
+              "railpack",
+              "static"
             ],
-            "description": "How the image is made: `dockerfile` builds the repository's own Dockerfile (the default); `railpack` needs no Dockerfile: Railpack looks at the code, works out how to build it and Shipdok builds that plan, even when the repository has a Dockerfile."
+            "description": "How the image is made: `dockerfile` builds the repository's own Dockerfile (the default); `railpack` needs no Dockerfile: Railpack looks at the code, works out how to build it and Shipdok builds that plan, even when the repository has a Dockerfile; `static` serves files (HTML, CSS, JavaScript) with a small web server after an optional build, from a Dockerfile Shipdok writes itself (a Dockerfile in the repository is not used). A static site must listen on a `container_port` of 1024 or more."
           },
           "install_command": {
             "type": "string",
             "nullable": true,
-            "description": "Railpack only: replaces its install step (for example `npm ci`). `null`: Railpack decides. A custom one replaces the default entirely. Kept when the method is switched back to `dockerfile`."
+            "description": "Railpack: replaces its install step (for example `npm ci`); `null`: Railpack decides, and a custom one replaces the default entirely. Static site: the install step of the build; `null`: none. Kept when the method is switched."
           },
           "build_command": {
             "type": "string",
             "nullable": true,
-            "description": "Railpack only: replaces its build step. `null`: Railpack decides."
+            "description": "Railpack: replaces its build step; `null`: Railpack decides. Static site: the build step; `null` here and no install command means nothing is built and the output folder is served as it is."
           },
           "start_command": {
             "type": "string",
             "nullable": true,
             "description": "Railpack only: the command that starts the app. `null`: Railpack decides. The app is given `PORT` (the container port) to listen on."
+          },
+          "output_dir": {
+            "type": "string",
+            "nullable": true,
+            "description": "Static site only: the folder that is served, relative to the app's folder (`dist`, `build/web`); `null`: the app's folder itself. Kept when the method is switched."
+          },
+          "node_version": {
+            "type": "string",
+            "nullable": true,
+            "description": "Static site only: the Node image used for the build (`22`, `20.11`, `18.20.4`); `null`: 22. Only the build uses it."
+          },
+          "spa_fallback": {
+            "type": "boolean",
+            "description": "Static site only: an address with no file behind it shows `index.html` (a single-page app); `false`: a plain 404. Default `true`."
+          },
+          "static_server": {
+            "type": "string",
+            "enum": [
+              "nginx",
+              "caddy"
+            ],
+            "description": "Static site only: the web server. `nginx` (default) is nginx-unprivileged; `caddy` is Caddy. Both run as a normal user, so neither can use a port below 1024, and both refuse dot files such as `.env` and `.git`."
           },
           "desired_state": {
             "type": "string",

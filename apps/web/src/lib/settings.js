@@ -1,11 +1,12 @@
 // The settings of an app that can be edited later, and the checks the server also makes (so a typo is caught before a request).
-import { commandProblem } from '@/lib/build-method'
+import { commandProblem, outputDirProblem, nodeVersionProblem } from '@/lib/build-method'
 
 export const SETTING_LABELS = {
   name: 'Name', branch: 'Branch', root_dir: 'Root directory', container_port: 'Container port', host_port: 'Host port',
   health_path: 'Health check path', memory_mb: 'Memory limit', cpus: 'CPU limit', max_restarts: 'Automatic restarts',
   build_timeout_minutes: 'Build time limit', volumes: 'Persistent storage',
   build_method: 'Build method', install_command: 'Install command', build_command: 'Build command', start_command: 'Start command',
+  output_dir: 'Output folder', node_version: 'Node version', spa_fallback: 'Single-page app', static_server: 'Web server',
 }
 
 /** The form's text values for an app. */
@@ -15,6 +16,8 @@ export const settingsToForm = (app) => ({
   build_timeout_minutes: app.build_timeout_minutes == null ? '' : String(app.build_timeout_minutes), // empty = no limit
   build_method: app.build_method ?? 'dockerfile',
   install_command: app.install_command ?? '', build_command: app.build_command ?? '', start_command: app.start_command ?? '', // empty = Railpack decides
+  output_dir: app.output_dir ?? '', node_version: app.node_version ?? '', // empty = the app's folder / the default Node (static sites)
+  spa_fallback: app.spa_fallback ?? true, static_server: app.static_server ?? 'nginx',
 })
 
 const COMMAND_KEYS = ['install_command', 'build_command', 'start_command']
@@ -32,6 +35,7 @@ export function settingsProblems(f) {
   if (!root || !/^[A-Za-z0-9._/-]+$/.test(root) || root.startsWith('/') || root.split('/').includes('..')) p.root_dir = 'Use a relative folder inside the repository, for example . or web'
   const cp = whole(f.container_port)
   if (cp === null || cp < 1 || cp > 65535) p.container_port = 'A whole number from 1 to 65535'
+  else if (f.build_method === 'static' && cp < 1024) p.container_port = 'A static site listens on a port from 1024 up (8080 is usual)'
   const hp = whole(f.host_port)
   if (hp === null || hp < 1024 || hp > 65535) p.host_port = 'A whole number from 1024 to 65535'
   if (f.health_path.trim() && !/^\/[^\s]*$/.test(f.health_path.trim())) p.health_path = 'Start with / and use no spaces, for example /health'
@@ -45,6 +49,11 @@ export function settingsProblems(f) {
   if (bt !== '') { const n = whole(bt); if (n === null || n < 5 || n > 10080) p.build_timeout_minutes = 'Empty for no limit, or a whole number of minutes from 5 to 10080' }
   // (Only a Railpack app uses the commands, so only then are they checked; they are kept either way.)
   if (f.build_method === 'railpack') for (const k of COMMAND_KEYS) { const m = commandProblem(f[k]); if (m) p[k] = m }
+  if (f.build_method === 'static') {
+    for (const k of ['install_command', 'build_command']) { const m = commandProblem(f[k]); if (m) p[k] = m }
+    const od = outputDirProblem(f.output_dir); if (od) p.output_dir = od
+    const nv = nodeVersionProblem(f.node_version); if (nv) p.node_version = nv
+  }
   return p
 }
 
@@ -59,6 +68,8 @@ export function settingsChanges(f, app) {
   if (f.build_timeout_minutes.trim() !== was.build_timeout_minutes) out.build_timeout_minutes = f.build_timeout_minutes.trim() === '' ? null : Number(f.build_timeout_minutes)
   if (f.build_method !== was.build_method) out.build_method = f.build_method
   for (const k of COMMAND_KEYS) if (f[k].trim() !== was[k]) out[k] = f[k].trim() === '' ? null : f[k].trim()
+  for (const k of ['output_dir', 'node_version']) if (f[k].trim() !== was[k]) out[k] = f[k].trim() === '' ? null : f[k].trim()
+  for (const k of ['spa_fallback', 'static_server']) if (f[k] !== was[k]) out[k] = f[k]
   if (f.health_path.trim() !== was.health_path) out.health_path = f.health_path.trim() === '' ? null : f.health_path.trim()
   return out
 }

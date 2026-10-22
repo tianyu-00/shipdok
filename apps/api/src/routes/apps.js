@@ -4,7 +4,7 @@ import { requestDeployment, cancelDeployment } from '../deployments.js';
 import { requestControl, CONTROL_ACTIONS } from '../control.js';
 import { diskStatus, defaultDiskUsage } from '../disk.js';
 import { listVersions, prunableBytes } from '../images.js';
-import { removeDeploymentLogs, BUILD_METHODS } from '@shipdok/shared';
+import { removeDeploymentLogs, BUILD_METHODS, STATIC_SERVERS } from '@shipdok/shared';
 import { nextFreePort, parsePortRange } from '../ports.js';
 import { mountedVolumes } from '../volumes.js';
 
@@ -21,6 +21,11 @@ const rootDir = z.string().trim().min(1).max(200)
 
 // One line for a shell inside the build (Railpack's install, build and start commands): no line breaks or other control characters.
 const command = z.string().trim().min(1).max(1000).regex(/^[^\x00-\x1f\x7f]+$/, 'Must be a single line');
+// A static site: the folder that is served (a relative path inside the app's folder, like root_dir) and the Node version of its build ("22", "20.11").
+const outputDir = rootDir;
+const nodeVersion = z.string().trim().regex(/^[0-9]{1,3}(\.[0-9]{1,3}){0,2}$/, 'Use a number such as 22, 20.11 or 18.20.4');
+// Both web servers of a static site run as a normal user (nginx unprivileged, Caddy without root), so they cannot listen on a port below 1024.
+const staticPortProblem = (method, port) => (method === 'static' && port < 1024 ? 'A static site listens on a port from 1024 up (8080 is usual)' : null);
 
 export const createSchema = z.object({
   name: z.string().trim().min(1).max(64),
@@ -47,6 +52,11 @@ export const createSchema = z.object({
   install_command: command.nullish(),
   build_command: command.nullish(),
   start_command: command.nullish(),
+  // Static site only (empty = the app's folder itself / Shipdok's default Node version); kept if the method is switched.
+  output_dir: outputDir.nullish(),
+  node_version: nodeVersion.nullish(),
+  spa_fallback: z.boolean().default(true),
+  static_server: z.enum(STATIC_SERVERS).default('nginx'),
   // The GitHub App (one of those connected on the GitHub page) that lists this repository, clones it when it is private and whose webhooks deploy it.
   // Empty (null): none, which is fine for a public repository that is only deployed by hand.
   github_app_id: z.string().regex(UUID_RE, 'Must be the id of a connected GitHub app').nullish(),
@@ -69,12 +79,16 @@ export const updateSchema = z.object({
   install_command: command.nullable(),
   build_command: command.nullable(),
   start_command: command.nullable(),
+  output_dir: outputDir.nullable(),
+  node_version: nodeVersion.nullable(),
+  spa_fallback: z.boolean(),
+  static_server: createSchema.shape.static_server.unwrap(),
   github_app_id: z.string().regex(UUID_RE, 'Must be the id of a connected GitHub app').nullable(),
 }).partial().strict().refine((v) => Object.keys(v).length > 0, 'Give at least one setting to change');
 
 // The settings a deployment bakes into its container. An edit to one of these is "pending" until the next deployment; the name
 // and the restart limit are read live, so they never are.
-const SNAPSHOT_SETTINGS = ['branch', 'root_dir', 'container_port', 'host_port', 'health_path', 'memory_mb', 'cpus', 'build_timeout_minutes', 'build_method', 'install_command', 'build_command', 'start_command'];
+const SNAPSHOT_SETTINGS = ['branch', 'root_dir', 'container_port', 'host_port', 'health_path', 'memory_mb', 'cpus', 'build_timeout_minutes', 'build_method', 'install_command', 'build_command', 'start_command', 'output_dir', 'node_version', 'spa_fallback', 'static_server'];
 
 export const retentionSchema = z.object({
   keep_previous_images: z.number().int().min(0).max(10).optional(),
@@ -175,6 +189,8 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       const a = parsed.data;
       const slug = slugify(a.name);
       if (!slug) return res.status(400).json({ error: 'Name must contain letters or numbers' });
+      const portProblem = staticPortProblem(a.build_method, a.container_port);
+      if (portProblem) return res.status(400).json({ error: 'Invalid app settings', details: [`container_port: ${portProblem}`] });
       if (a.github_app_id && !(await githubAppExists(a.github_app_id))) return res.status(400).json(NO_GITHUB_APP);
 
       try {
@@ -188,9 +204,9 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
           }
           try {
             ({ rows } = await db.query(
-              `INSERT INTO apps (name, slug, repo, branch, root_dir, container_port, host_port, health_path, memory_mb, cpus, max_restarts, keep_previous_images, auto_prune, build_timeout_minutes, github_app_id, build_method, install_command, build_command, start_command)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
-              [a.name, slug, a.repo, a.branch, a.root_dir, a.container_port, hostPort, a.health_path ?? null, a.memory_mb, a.cpus, a.max_restarts, a.keep_previous_images, a.auto_prune, a.build_timeout_minutes ?? null, a.github_app_id ?? null, a.build_method, a.install_command ?? null, a.build_command ?? null, a.start_command ?? null],
+              `INSERT INTO apps (name, slug, repo, branch, root_dir, container_port, host_port, health_path, memory_mb, cpus, max_restarts, keep_previous_images, auto_prune, build_timeout_minutes, github_app_id, build_method, install_command, build_command, start_command, output_dir, node_version, spa_fallback, static_server)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING *`,
+              [a.name, slug, a.repo, a.branch, a.root_dir, a.container_port, hostPort, a.health_path ?? null, a.memory_mb, a.cpus, a.max_restarts, a.keep_previous_images, a.auto_prune, a.build_timeout_minutes ?? null, a.github_app_id ?? null, a.build_method, a.install_command ?? null, a.build_command ?? null, a.start_command ?? null, a.output_dir ?? null, a.node_version ?? null, a.spa_fallback, a.static_server],
             ));
             break;
           } catch (err) {
@@ -262,10 +278,12 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       }
       const v = parsed.data;
       if (v.name !== undefined && !slugify(v.name)) return res.status(400).json({ error: 'Name must contain letters or numbers' });
-      const { rows: found } = await db.query('SELECT id, deleting_at, repo, github_app_id FROM apps WHERE id = $1', [req.params.id]);
+      const { rows: found } = await db.query('SELECT id, deleting_at, repo, github_app_id, build_method, container_port FROM apps WHERE id = $1', [req.params.id]);
       if (!found[0]) return res.status(404).json({ error: 'App not found' });
       if (found[0].deleting_at) return res.status(409).json(DELETING);
       if (v.github_app_id && !(await githubAppExists(v.github_app_id))) return res.status(400).json(NO_GITHUB_APP);
+      const portProblem = staticPortProblem(v.build_method ?? found[0].build_method, v.container_port ?? found[0].container_port);
+      if (portProblem) return res.status(400).json({ error: 'Invalid app settings', details: [`container_port: ${portProblem}`] });
 
       const conflict = async (column, value) => {
         const { rows } = await db.query(`SELECT id, name FROM apps WHERE ${column} = $1 AND id <> $2`, [value, req.params.id]);

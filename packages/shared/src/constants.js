@@ -33,7 +33,9 @@ export const reachesRuntime = (scope) => scope === 'runtime' || scope === 'both'
 export const BUILD_PASSES = ['arg', 'secret'];
 
 // How an app's image is made: its own Dockerfile, or Railpack (no Dockerfile needed; Shipdok builds Railpack's plan with `docker build`).
-export const BUILD_METHODS = ['dockerfile', 'railpack'];
+export const BUILD_METHODS = ['dockerfile', 'railpack', 'static'];
+// The web server of a static site.
+export const STATIC_SERVERS = ['nginx', 'caddy'];
 
 // A build variable is handed to `docker build --build-arg NAME`, which reads the value from the environment of the docker command itself.
 // So a name must not be one that changes how that command (or the BuildKit client) behaves.

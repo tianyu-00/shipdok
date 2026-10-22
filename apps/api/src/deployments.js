@@ -31,8 +31,9 @@ export async function requestDeployment({ db, queue }, app, { trigger = 'manual'
     container_port: app.container_port, host_port: app.host_port,
     health_path: app.health_path, memory_mb: app.memory_mb, cpus: Number(app.cpus),
     build_timeout_minutes: app.build_timeout_minutes ?? null, // null = no limit
-    build_method: app.build_method ?? 'dockerfile', // 'dockerfile' or 'railpack'
-    install_command: app.install_command ?? null, build_command: app.build_command ?? null, start_command: app.start_command ?? null, // Railpack only; null = Railpack decides
+    build_method: app.build_method ?? 'dockerfile', // 'dockerfile', 'railpack' or 'static'
+    install_command: app.install_command ?? null, build_command: app.build_command ?? null, start_command: app.start_command ?? null, // Railpack and static sites; null = Railpack decides / no such step
+    output_dir: app.output_dir ?? null, node_version: app.node_version ?? null, spa_fallback: app.spa_fallback ?? true, static_server: app.static_server ?? 'nginx', // static sites only
     volumes: await mountedVolumes(db, app.id), // persistent storage: { path, name } for each volume the new container mounts
   };
   // Which variable versions this deployment is meant to use (names and numbers only, never values).
@@ -79,7 +80,8 @@ export async function requestDeployment({ db, queue }, app, { trigger = 'manual'
       cpus: snapshot.cpus,
       buildTimeoutMinutes: snapshot.build_timeout_minutes ?? undefined, // left out when there is no limit
       buildMethod: snapshot.build_method,
-      installCommand: snapshot.install_command ?? undefined, buildCommand: snapshot.build_command ?? undefined, startCommand: snapshot.start_command ?? undefined, // only used for Railpack
+      installCommand: snapshot.install_command ?? undefined, buildCommand: snapshot.build_command ?? undefined, startCommand: snapshot.start_command ?? undefined, // install and build: Railpack and static sites; start: Railpack only
+      outputDir: snapshot.output_dir ?? undefined, nodeVersion: snapshot.node_version ?? undefined, spaFallback: snapshot.spa_fallback, staticServer: snapshot.static_server, // static sites only
       volumes: snapshot.volumes,
       noCache: (noCache && !rollbackOf) || undefined, // only this deployment; left out when not asked
       startAfterDeploy: startAfter || undefined, // the worker applies it only if the deployment succeeds

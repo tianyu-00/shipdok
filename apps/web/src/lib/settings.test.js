@@ -107,3 +107,38 @@ describe('the build method and its commands', () => {
     expect(SETTING_LABELS).toMatchObject({ build_method: 'Build method', install_command: 'Install command', build_command: 'Build command', start_command: 'Start command' })
   })
 })
+
+describe('a static site', () => {
+  const stat = (over = {}) => makeApp({ build_method: 'static', container_port: 8080, install_command: 'npm ci', build_command: 'npm run build', output_dir: 'dist', node_version: '22', ...over })
+
+  test('its settings become text values; empty where there is none (the app\'s folder, the default Node)', () => {
+    expect(settingsToForm(stat())).toMatchObject({ output_dir: 'dist', node_version: '22', spa_fallback: true, static_server: 'nginx' })
+    expect(settingsToForm(stat({ output_dir: null, node_version: null, spa_fallback: false, static_server: 'caddy' }))).toMatchObject({ output_dir: '', node_version: '', spa_fallback: false, static_server: 'caddy' })
+    expect(settingsToForm({ ...makeApp(), output_dir: undefined, spa_fallback: undefined, static_server: undefined })).toMatchObject({ output_dir: '', spa_fallback: true, static_server: 'nginx' }) // an answer from an older API
+  })
+  test.each(['', 'dist', 'build/web', './dist', 'public_html', 'a.b-c'])('the output folder %j is allowed', (v) => expect(settingsProblems(form({ ...settingsToForm(stat()), output_dir: v })).output_dir).toBeUndefined())
+  test.each(['/etc', '..', '../x', 'a/../b', 'a b', 'a;b', '$(x)', 'x'.repeat(201)])('the output folder %j is flagged', (v) => expect(settingsProblems({ ...settingsToForm(stat()), output_dir: v }).output_dir).toEqual(expect.any(String)))
+  test.each(['', '22', '20.11', '18.20.4'])('the Node version %j is allowed', (v) => expect(settingsProblems({ ...settingsToForm(stat()), node_version: v }).node_version).toBeUndefined())
+  test.each(['latest', '22.', 'v22', '1.2.3.4', '22; rm', '1000'])('the Node version %j is flagged', (v) => expect(settingsProblems({ ...settingsToForm(stat()), node_version: v }).node_version).toEqual(expect.any(String)))
+  test('the port must be 1024 or more, for a static site only', () => {
+    expect(settingsProblems({ ...settingsToForm(stat()), container_port: '80' }).container_port).toMatch(/1024/)
+    expect(settingsProblems({ ...settingsToForm(stat()), container_port: '1023' }).container_port).toMatch(/1024/)
+    expect(settingsProblems({ ...settingsToForm(stat()), container_port: '1024' }).container_port).toBeUndefined()
+    expect(settingsProblems({ ...settingsToForm(makeApp({ build_method: 'dockerfile' })), container_port: '80' }).container_port).toBeUndefined()
+  })
+  test('the commands are checked for a static site too, and the folder and Node version are not checked for the others', () => {
+    expect(settingsProblems({ ...settingsToForm(stat()), build_command: 'x'.repeat(1001) }).build_command).toEqual(expect.any(String))
+    const other = { ...settingsToForm(makeApp({ build_method: 'dockerfile' })), output_dir: '../x', node_version: 'latest' }
+    expect(settingsProblems(other).output_dir).toBeUndefined()
+    expect(settingsProblems(other).node_version).toBeUndefined()
+  })
+  test('changes: only what differs, an emptied folder or version is null, the switch and the server as they are', () => {
+    const f = settingsToForm(stat())
+    expect(settingsChanges(f, stat())).toEqual({})
+    expect(settingsChanges({ ...f, output_dir: ' build ', node_version: '', spa_fallback: false, static_server: 'caddy' }, stat())).toEqual({ output_dir: 'build', node_version: null, spa_fallback: false, static_server: 'caddy' })
+    expect(settingsChanges({ ...f, output_dir: '' }, stat())).toEqual({ output_dir: null })
+  })
+  test('they have names for the list of changes that wait for the next deployment', () => {
+    for (const k of ['output_dir', 'node_version', 'spa_fallback', 'static_server']) expect(SETTING_LABELS[k]).toEqual(expect.any(String))
+  })
+})

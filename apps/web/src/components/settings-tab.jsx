@@ -58,7 +58,7 @@ function SettingsForm({ app }) {
         <Field id="s-branch" label="Branch" error={err('branch')} hint="Pushes to this branch deploy the app.">
           <BranchPicker id="s-branch" repo={app.repo} githubAppId={app.github_app_id ?? undefined} invalid={bad('branch')} value={f.branch} onChange={(branch) => set('branch')({ target: { value: branch } })} />
         </Field>
-        <Field id="s-container_port" label="Container port" error={err('container_port')} hint="The port the app listens on inside its container.">
+        <Field id="s-container_port" label="Container port" error={err('container_port')} hint={f.build_method === 'static' ? 'The port the web server listens on inside its container: 1024 or higher, 8080 is usual.' : 'The port the app listens on inside its container.'}>
           <Input id="s-container_port" inputMode="numeric" aria-invalid={bad('container_port')} value={f.container_port} onChange={set('container_port')} />
         </Field>
         <Field id="s-host_port" label="Host port" error={err('host_port')}

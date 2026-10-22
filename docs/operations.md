@@ -312,6 +312,19 @@ Dockerfile, and a change waits for the next deployment like the other build sett
   explanation, including what it found in the repository. Give it a start command, or add a Dockerfile and switch back.
 - The worker image contains one pinned version of Railpack (checked against its published checksum when the image is built) and uses the matching images.
 
+## Static sites (HTML, CSS, JavaScript)
+
+Choose **Static site** as the build method for a site that is just files: plain HTML, or a Vite, React or similar front end that is built first. Shipdok writes the
+Dockerfile itself (a Dockerfile in the repository is not used) and serves the files with a small web server: about 80 MB instead of the several hundred of a Node image.
+
+- **Install command** and **Build command** are optional. They run in a Node image of the **Node version** you give (empty = 22) and only inside the build. With neither, nothing is built and the **Output folder** is served as it is.
+- **Output folder** is where the build puts the site, inside the app's folder (`dist` for Vite, `build` for Create React App); empty means the app's folder itself.
+- **Single-page app**: an address with no file behind it shows `index.html`, which a React or Vite site needs when a page is refreshed. Off, it is a plain 404.
+- **Web server**: nginx (the unprivileged image, the default) or Caddy. Both run as a normal user, so the **container port** must be 1024 or higher (8080 is usual).
+  Files and folders whose names start with a dot (`.env`, `.git`) are never served, whatever the folder.
+- Build variables are passed as build secrets, readable only by the install and build steps. Anything the build writes into the files it produces is public, so keep secrets out of a front end.
+- Needs the internet while building: it pulls `node`, `nginxinc/nginx-unprivileged` or `caddy` from Docker Hub.
+
 ## Forgot the password
 
 Use a **recovery code** on the login screen: *Lost your password? Use a recovery code.* Each code works once.
