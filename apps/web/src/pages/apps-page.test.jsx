@@ -26,6 +26,15 @@ describe('old images on the apps list', () => {
   })
 })
 
+describe('an update on the apps list', () => {
+  test('a notice shows above the apps when a newer Shipdok is published', async () => {
+    mockApi({ 'GET /api/apps': [makeApp()], 'GET /api/storage': {}, 'GET /api/version': { current: '0.1.14', latest: '0.1.15', updateAvailable: true, checkedAt: '2026-10-22T10:00:00Z', error: null } })
+    page()
+    expect(await screen.findByText('Shipdok 0.1.15 is available')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'My App' })).toBeInTheDocument()
+  })
+})
+
 describe('the apps list', () => {
   test('shows each app with its repository, branch, runtime state and latest deployment', async () => {
     mockApi({ 'GET /api/apps': [makeApp()], 'GET /api/storage': { disk: { level: 'ok' } } })

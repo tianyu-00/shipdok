@@ -3144,6 +3144,53 @@
         ]
       }
     },
+    "/api/version": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "The running version and the newest published one",
+        "description": "The release number this Shipdok runs (the `VERSION` file in its image; `null` if it cannot be read) and the highest plain version (`1.2.3`) among the tags of the published image on ghcr.io, which needs no login. It is looked up only when this is asked, and the answer is kept for an hour (five minutes after a failure). Shipdok never updates itself: `updateAvailable` only says a newer image exists.",
+        "parameters": [
+          {
+            "name": "fresh",
+            "in": "query",
+            "required": false,
+            "description": "Send `1` to look again now instead of using the answer kept for an hour (allowed at most twice a minute; otherwise the kept answer is returned).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The versions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/volumes": {
       "get": {
         "tags": [
@@ -6514,6 +6561,41 @@
           "autoCleanup",
           "thresholdBytes",
           "exceeded"
+        ]
+      },
+      "VersionStatus": {
+        "type": "object",
+        "properties": {
+          "current": {
+            "type": "string",
+            "nullable": true,
+            "description": "The release this Shipdok runs, e.g. `0.1.14`; `null` when unknown."
+          },
+          "latest": {
+            "type": "string",
+            "nullable": true,
+            "description": "The newest published release; `null` when it could not be found out."
+          },
+          "updateAvailable": {
+            "type": "boolean",
+            "description": "`latest` is newer than `current`."
+          },
+          "checkedAt": {
+            "type": "string",
+            "description": "When the registry was last asked."
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "`unreachable`: the registry could not be reached; `no_versions`: it answered but listed no release."
+          }
+        },
+        "required": [
+          "current",
+          "latest",
+          "updateAvailable",
+          "checkedAt",
+          "error"
         ]
       },
       "ImagesNoticeRequest": {

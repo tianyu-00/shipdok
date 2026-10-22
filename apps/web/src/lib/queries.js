@@ -101,3 +101,6 @@ export const useGithub = () => useQuery({ queryKey: ['github'], queryFn: () => a
 // Does GitHub send this app's webhooks to the address Shipdok expects?
 // (`enabled` false for an app whose credentials cannot be read: GitHub cannot be asked as that app.)
 export const useGithubWebhook = (githubAppId, enabled = true) => useQuery({ queryKey: ['github-webhook', githubAppId], queryFn: () => api(`/github/apps/${githubAppId}/webhook`), enabled, retry: false })
+
+// The running version and the newest published one. The API keeps its answer for an hour, so asking on every page load costs nothing.
+export const useVersion = () => useQuery({ queryKey: ['version'], queryFn: () => api('/version'), staleTime: 10 * 60_000, retry: false })

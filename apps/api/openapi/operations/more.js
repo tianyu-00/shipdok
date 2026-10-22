@@ -118,6 +118,13 @@ export default Object.fromEntries([
     errors: { 400: 'Not null and not a whole number from 100 MB to 10 TB.' },
   })),
 
+  // ---------------------------------------------------------------- version
+  route('GET', '/api/version', op({
+    tag: SYS, summary: 'The running version and the newest published one', parameters: [query('fresh', 'Send `1` to look again now instead of using the answer kept for an hour (allowed at most twice a minute; otherwise the kept answer is returned).')],
+    description: 'The release number this Shipdok runs (the `VERSION` file in its image; `null` if it cannot be read) and the highest plain version (`1.2.3`) among the tags of the published image on ghcr.io, which needs no login. It is looked up only when this is asked, and the answer is kept for an hour (five minutes after a failure). Shipdok never updates itself: `updateAvailable` only says a newer image exists.',
+    responses: { 200: ok('The versions.', ref('VersionStatus')) },
+  })),
+
   // ---------------------------------------------------------------- github
   route('GET', '/api/github', op({
     tag: GH, summary: 'The connected GitHub Apps',

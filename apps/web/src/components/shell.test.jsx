@@ -93,3 +93,13 @@ describe('the header', () => {
     expect(screen.queryByRole('status', { name: /public access/i })).toBeNull()
   })
 })
+
+describe('the version beside the logo', () => {
+  test('is in the header, next to the name, with the update badge', async () => {
+    mockApi({ 'GET /api/version': { current: '0.1.14', latest: '0.1.15', updateAvailable: true, checkedAt: '2026-10-22T10:00:00Z', error: null } })
+    renderWithProviders(<Shell username="admin"><p>page</p></Shell>)
+    const header = await screen.findByRole('banner')
+    expect(await within(header).findByText('v0.1.14')).toBeInTheDocument()
+    expect(within(header).getByText('Update available')).toBeInTheDocument()
+  })
+})

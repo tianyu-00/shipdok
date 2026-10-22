@@ -25,6 +25,8 @@ import { docsGate, docsRouter } from './docs.js';
 import { appVolumesRouter, volumesRouter } from './routes/volumes.js';
 import { buildCacheRouter } from './routes/buildcache.js';
 import { imagesRouter } from './routes/images.js';
+import { versionRouter } from './routes/version.js';
+import { createVersionCheck } from './version.js';
 
 // What the API asks about GitHub: a client per GitHub App, the webhook secrets, a status. Normally read from the database (the apps are
 // connected in the dashboard); tests can pass one fixed client (answering for any app id) and secret instead.
@@ -47,6 +49,7 @@ export function createApp({
   trustProxy = process.env.TRUST_PROXY || 'loopback',
   settings = createSettings(db),
   apiDocs = config.apiDocs,
+  versionCheck = createVersionCheck(),
 } = {}) {
   const provider = githubProvider ?? (github !== undefined || webhookSecret !== undefined
     ? fixedGithub({ github, webhookSecret })
@@ -103,6 +106,7 @@ export function createApp({
   app.use('/api/volumes', requireAuth, volumesRouter({ db, queue }));
   app.use('/api/build-cache', requireAuth, buildCacheRouter({ db, queue }));
   app.use('/api/images', requireAuth, imagesRouter({ db, queue }));
+  app.use('/api/version', requireAuth, versionRouter({ check: versionCheck }));
   app.use('/api/apps', requireAuth, appsRouter({ db, queue, github: (id) => provider.client(id), logDir, diskUsage, portRange }));
   app.use('/api/apps', requireAuth, appLogsRouter({ db, logDir }));
   app.use('/api/github/connect', githubConnectRouter({ db, provider, secretsKey, settings, fetch: githubFetch })); // before the router below: the callback is a page navigation and answers with redirects

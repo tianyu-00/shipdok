@@ -183,6 +183,13 @@ export const schemas = {
     thresholdBytes: nint('The size of old images at which the dashboard says so; `null` (the default) means never.'),
     exceeded: bool('`reclaimableBytes` has reached `thresholdBytes` (always `false` when there is none).'),
   }),
+  VersionStatus: obj({
+    current: { type: 'string', nullable: true, description: 'The release this Shipdok runs, e.g. `0.1.14`; `null` when unknown.' },
+    latest: { type: 'string', nullable: true, description: 'The newest published release; `null` when it could not be found out.' },
+    updateAvailable: bool('`latest` is newer than `current`.'),
+    checkedAt: str('When the registry was last asked.'),
+    error: { type: 'string', nullable: true, description: '`unreachable`: the registry could not be reached; `no_versions`: it answered but listed no release.' },
+  }),
   ImagesNoticeRequest: obj({ thresholdBytes: nint('At least 100 MB and at most 10 TB, or `null` for never.') }),
   AutoCleanupRequest: obj({ enabled: bool('`true`: every app cleans up its old images after each successful deployment; `false`: none does.') }),
   CleanCacheRequest: { type: 'object', properties: { all: { type: 'boolean', default: false, description: '`true`: remove every unused entry, so the next builds start from nothing. Default `false`: only cache no build has used for 24 hours.' } }, additionalProperties: false },

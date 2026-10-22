@@ -9,6 +9,7 @@ import { DeploymentStatusBadge, RuntimeBadge } from '@/components/status-badge'
 import { Empty, ListSkeleton, LoadError } from '@/components/states'
 import { StorageBanner } from '@/components/storage-banner'
 import { OldImagesNotice } from '@/components/old-images-notice'
+import { UpdateNotice } from '@/components/update-notice'
 import { formatCpu, formatMemory } from '@/lib/stats'
 import { RepoLink } from '@/components/repo-link'
 
@@ -69,6 +70,7 @@ export default function AppsPage() {
         <Button asChild><Link to="/apps/new"><Plus className="size-4" />New app</Link></Button>
       </div>
       <StorageBanner disk={storage.data?.disk} />
+      <UpdateNotice />
       <OldImagesNotice />
       {apps.isPending && <ListSkeleton />}
       {apps.isError && <LoadError error={apps.error} onRetry={() => apps.refetch()} title="Could not load your apps" />}

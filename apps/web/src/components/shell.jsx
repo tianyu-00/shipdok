@@ -6,6 +6,7 @@ import { api } from '@/lib/api'
 import { usePublicAccess, useRecovery } from '@/lib/queries'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { forgetSession } from '@/lib/session'
+import { VersionIndicator } from '@/components/version-indicator'
 
 export function Shell({ username, children }) {
   const client = useQueryClient()
@@ -22,6 +23,7 @@ export function Shell({ username, children }) {
       <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-6xl items-center gap-4 px-4">
           <Link to="/" className="flex items-center gap-2 font-semibold"><Ship className="size-5 text-primary" aria-hidden="true" />Shipdok</Link>
+          <VersionIndicator />
           <div className="ml-auto flex items-center gap-1">
             <Button variant="ghost" size="sm" asChild><Link to="/storage" aria-label="Storage"><HardDrive className="size-4" aria-hidden="true" /><span className="hidden sm:inline">Storage</span></Link></Button>
             <Button variant="ghost" size="sm" asChild><Link to="/github" aria-label="GitHub"><GitBranch className="size-4" aria-hidden="true" /><span className="hidden sm:inline">GitHub</span></Link></Button>

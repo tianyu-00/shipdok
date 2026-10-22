@@ -19,6 +19,8 @@ the folder, so a different folder means an empty installation).
 
 Releases are published as versioned images. Upgrading is a pull and a restart, and it keeps all your data.
 
+The dashboard tells you when a newer release exists: the version beside the logo shows **Update available**, and the apps list shows a notice (which you can dismiss). Shipdok only tells you; it never updates itself.
+
 1. **Back up first** ([Backup](#backup)). Database changes only go forward: Shipdok cannot undo them, so the safe way back from a bad
    upgrade is a restore.
 2. Get the newest Compose file if the release notes say it changed (see the [releases page](https://github.com/tianyu-00/shipdok/releases)).
