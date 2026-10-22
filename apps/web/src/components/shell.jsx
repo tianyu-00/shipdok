@@ -21,14 +21,16 @@ export function Shell({ username, children }) {
   return (
     <div className="min-h-svh">
       <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-6xl items-center gap-4 px-4">
-          <Link to="/" className="flex items-center gap-2 font-semibold"><Ship className="size-5 text-primary" aria-hidden="true" />Shipdok</Link>
-          <VersionIndicator />
-          <div className="ml-auto flex items-center gap-1">
-            <Button variant="ghost" size="sm" asChild><Link to="/storage" aria-label="Storage"><HardDrive className="size-4" aria-hidden="true" /><span className="hidden sm:inline">Storage</span></Link></Button>
-            <Button variant="ghost" size="sm" asChild><Link to="/github" aria-label="GitHub"><GitBranch className="size-4" aria-hidden="true" /><span className="hidden sm:inline">GitHub</span></Link></Button>
-            <Button variant="ghost" size="sm" asChild><Link to="/security" aria-label="Security"><ShieldCheck className="size-4" aria-hidden="true" /><span className="hidden sm:inline">Security</span></Link></Button>
-            <Button variant="ghost" size="sm" asChild><a href="/api/docs" target="_blank" rel="noopener noreferrer" aria-label="API"><BookOpen className="size-4" aria-hidden="true" /><span className="hidden sm:inline">API</span></a></Button>
+        <div className="mx-auto flex h-14 max-w-6xl items-center gap-2 px-2 sm:gap-4 sm:px-4">
+          <div className="flex shrink-0 flex-col items-start sm:flex-row sm:items-center sm:gap-2">
+            <Link to="/" className="flex items-center gap-2 font-semibold"><Ship className="size-5 text-primary" aria-hidden="true" />Shipdok</Link>
+            <VersionIndicator />
+          </div>
+          <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1">
+            <Button variant="ghost" size="sm" className="px-2 has-[>svg]:px-1.5 sm:px-3 sm:has-[>svg]:px-2.5" asChild><Link to="/storage" aria-label="Storage"><HardDrive className="size-4" aria-hidden="true" /><span className="hidden sm:inline">Storage</span></Link></Button>
+            <Button variant="ghost" size="sm" className="px-2 has-[>svg]:px-1.5 sm:px-3 sm:has-[>svg]:px-2.5" asChild><Link to="/github" aria-label="GitHub"><GitBranch className="size-4" aria-hidden="true" /><span className="hidden sm:inline">GitHub</span></Link></Button>
+            <Button variant="ghost" size="sm" className="px-2 has-[>svg]:px-1.5 sm:px-3 sm:has-[>svg]:px-2.5" asChild><Link to="/security" aria-label="Security"><ShieldCheck className="size-4" aria-hidden="true" /><span className="hidden sm:inline">Security</span></Link></Button>
+            <Button variant="ghost" size="sm" className="hidden sm:inline-flex" asChild><a href="/api/docs" target="_blank" rel="noopener noreferrer" aria-label="API"><BookOpen className="size-4" aria-hidden="true" /><span className="hidden sm:inline">API</span></a></Button>
             <span className="mr-2 hidden text-sm text-muted-foreground sm:inline">{username}</span>
             <ThemeToggle />
             <Button variant="ghost" size="icon" aria-label="Log out" onClick={() => logout.mutate()}><LogOut className="size-4" /></Button>

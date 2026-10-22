@@ -20,7 +20,7 @@ describe('the update notice on the apps list', () => {
     mockApi({ 'GET /api/version': v() })
     renderWithProviders(<UpdateNotice />)
     await userEvent.click(await screen.findByRole('button', { name: 'Details' }))
-    expect(await screen.findByText(/A new update is available/)).toBeInTheDocument()
+    expect(await screen.findByText(/A new update \(/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'GitHub releases' })).toHaveAttribute('href', 'https://github.com/tianyu-00/shipdok/releases')
     expect(screen.queryByText(/docker compose/)).toBeNull()
   })

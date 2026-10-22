@@ -3,3 +3,4 @@ infrastructure/.env
 TEMP.md
 jar.txt
 *.pem
+state/screenshots/
