@@ -18,7 +18,7 @@ import { webhookReceiver, deliveriesRouter } from './routes/webhooks.js';
 import { githubRouter } from './routes/github.js';
 import { createRefusals } from './webhookrefusals.js';
 import { githubConnectRouter } from './routes/githubconnect.js';
-import { createGithubProvider, logRoot } from '@shipdok/shared';
+import { createGithubProvider, logRoot, backupRoot } from '@shipdok/shared';
 import { deploymentLogsRouter, appLogsRouter, storageRouter } from './routes/logs.js';
 import { defaultDiskUsage } from './disk.js';
 import { docsGate, docsRouter } from './docs.js';
@@ -26,6 +26,7 @@ import { appVolumesRouter, volumesRouter } from './routes/volumes.js';
 import { buildCacheRouter } from './routes/buildcache.js';
 import { imagesRouter } from './routes/images.js';
 import { versionRouter } from './routes/version.js';
+import { backupsRouter } from './routes/backups.js';
 import { createVersionCheck } from './version.js';
 
 // What the API asks about GitHub: a client per GitHub App, the webhook secrets, a status. Normally read from the database (the apps are
@@ -45,7 +46,7 @@ export function createApp({
   db = pool, queue, secretsKey = loadSecretsKey(),
   webhookSecret, webhookRateLimit = 120,
   github, githubProvider, githubFetch,
-  logDir = logRoot(), diskUsage = defaultDiskUsage, portRange = parsePortRange(config.portRangeText),
+  logDir = logRoot(), backupDir = backupRoot(), diskUsage = defaultDiskUsage, portRange = parsePortRange(config.portRangeText),
   trustProxy = process.env.TRUST_PROXY || 'loopback',
   settings = createSettings(db),
   apiDocs = config.apiDocs,
@@ -107,6 +108,7 @@ export function createApp({
   app.use('/api/build-cache', requireAuth, buildCacheRouter({ db, queue }));
   app.use('/api/images', requireAuth, imagesRouter({ db, queue }));
   app.use('/api/version', requireAuth, versionRouter({ check: versionCheck }));
+  app.use('/api/backups', requireAuth, backupsRouter({ db, backupDir, secretsKey }));
   app.use('/api/apps', requireAuth, appsRouter({ db, queue, github: (id) => provider.client(id), logDir, diskUsage, portRange }));
   app.use('/api/apps', requireAuth, appLogsRouter({ db, logDir }));
   app.use('/api/github/connect', githubConnectRouter({ db, provider, secretsKey, settings, fetch: githubFetch })); // before the router below: the callback is a page navigation and answers with redirects

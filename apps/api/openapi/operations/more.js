@@ -118,6 +118,43 @@ export default Object.fromEntries([
     errors: { 400: 'Not null and not a whole number from 100 MB to 10 TB.' },
   })),
 
+  // ---------------------------------------------------------------- backups of Shipdok itself
+  route('GET', '/api/backups', op({
+    tag: LOG, summary: 'Backups of Shipdok itself',
+    description: 'The backups that exist (newest first, at most 200) with how each went, their total size, the schedule and when the next scheduled backup is due (`nextRunAt`, `null` when the schedule is off), and whether they are encrypted (`encryption.enabled`: a passphrase is set). A backup is ONE file holding the database and the platform secrets (the key without which the database\'s encrypted data cannot be read). `persistent: false` means the backups folder is not a volume of its own, so the backups would be lost when the container is replaced.',
+    responses: { 200: ok('The backups and the settings.', ref('BackupsOverview')) },
+  })),
+  route('POST', '/api/backups', op({
+    tag: LOG, summary: 'Make a backup now',
+    description: 'Records a request; the worker notices within a few seconds and makes the backup beside the deployment queue (it does not wait behind a build). Poll `GET /api/backups` for the result. Only one backup may wait or run at a time.',
+    responses: { 202: ok('Asked for.', { type: 'object', properties: { id: { type: 'string', format: 'uuid' } } }) },
+    errors: { 409: 'A backup is already waiting or running (`code: already_running`).', 429: 'Too many requests.' },
+  })),
+  route('PUT', '/api/backups/settings', op({
+    tag: LOG, summary: 'Set the backup schedule', body: ref('BackupSchedule'),
+    description: 'How often a backup is made by itself (`off`, `daily` or `weekly`), at which hour (**UTC**, 0 to 23), on which weekday for weekly (0 = Sunday), and how many of the newest backups to keep (1 to 60; older ones are deleted after each backup). The default, until this is set, is daily at 03:00 UTC keeping 7. Changing the schedule does not make a backup at once for a time that has already passed today. Answers with the new overview.',
+    responses: { 200: ok('Saved.', ref('BackupsOverview')) },
+    errors: { 400: 'A field is missing or out of range.', 429: 'Too many requests.' },
+  })),
+  route('PUT', '/api/backups/passphrase', op({
+    tag: LOG, summary: 'Set or remove the backup passphrase', body: ref('BackupPassphraseRequest'),
+    description: 'With a passphrase (12 to 256 characters) every NEW backup is encrypted with it (AES-256-GCM); `null` turns encryption off for new backups. Backups already made keep the passphrase they were made with. The passphrase is stored encrypted with the platform key so that scheduled backups can use it, but **it is also what opens a backup on a new machine, where the platform key is not there: remember it**. Needs the current password and is recorded in the sign-ins list (`backup`).',
+    responses: { 200: ok('Saved.', ref('BackupsOverview')) },
+    errors: { 400: 'No password, or the passphrase is too short, too long or starts or ends with a space.', 403: 'Wrong password (`code: wrong_password`).', 429: 'Too many tries.' },
+  })),
+  route('POST', '/api/backups/{id}/download', op({
+    tag: LOG, summary: 'Download a backup', parameters: [idParam('id', 'The backup.')], body: ref('BackupDownloadRequest'),
+    description: 'The backup file (`application/octet-stream`). It holds every secret, so it needs the current password (a POST, so that the password is not in an address) and is recorded in the sign-ins list (`download`). A file that is encrypted is sent as it is, still encrypted.',
+    responses: { 200: { description: 'The file.', content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } } },
+    errors: { 400: 'No password.', 403: 'Wrong password (`code: wrong_password`).', 404: 'No such backup.', 409: 'That backup has no file (it failed, or is still being made; `code: no_file`).', 410: 'The file is gone from the backups folder (`code: file_missing`).', 429: 'Too many tries.' },
+  })),
+  route('DELETE', '/api/backups/{id}', op({
+    tag: LOG, summary: 'Delete a backup', parameters: [idParam('id', 'The backup.')],
+    description: 'Removes the file and the record. Refused while it is being made.',
+    responses: { 204: nothing('Deleted.') },
+    errors: { 404: 'No such backup.', 409: 'It is still being made (`code: in_progress`).' },
+  })),
+
   // ---------------------------------------------------------------- version
   route('GET', '/api/version', op({
     tag: SYS, summary: 'The running version and the newest published one', parameters: [query('fresh', 'Send `1` to look again now instead of using the answer kept for an hour (allowed at most twice a minute; otherwise the kept answer is returned).')],

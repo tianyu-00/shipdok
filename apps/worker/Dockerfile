@@ -44,10 +44,16 @@ RUN npm ci --omit=dev -w apps/worker && npm cache clean --force
 
 COPY packages/shared packages/shared
 COPY apps/worker apps/worker
+# The release number a backup records in its manifest.
+COPY VERSION VERSION
 
 # Where deployment logs live (a volume in compose). Owned by the non-root user so a fresh volume is writable.
 RUN mkdir -p /var/lib/shipdok/logs && chown node:node /var/lib/shipdok/logs
 ENV LOG_DIR=/var/lib/shipdok/logs
+
+# Where backups of Shipdok itself are made (a volume in compose; the API reads and deletes them). Owned by the non-root user so a fresh volume is writable.
+RUN mkdir -p /var/lib/shipdok/backups && chown node:node /var/lib/shipdok/backups && chmod 700 /var/lib/shipdok/backups
+ENV BACKUP_DIR=/var/lib/shipdok/backups
 
 # Starts as root ONLY to read the Docker socket's group (it differs per machine), then drops to the unprivileged `node` user with that
 # group; see docker-entrypoint.sh. Nothing of Shipdok runs as root.

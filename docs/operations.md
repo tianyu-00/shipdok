@@ -52,7 +52,36 @@ restarting and changes nothing else. Go back by restoring the backup you took in
 
 ## Backup
 
-Two things hold everything that matters, and **they must be backed up together**:
+**Backups from the dashboard.** The Storage page has a **Backups of Shipdok** card. A backup is ONE file that holds both things below (the database and the
+secrets volume), so it is a complete backup on its own. It is made by the worker, beside the build queue (it never waits behind a build), with
+`pg_dump` inside the Postgres container, and the dump is read back to check it before the backup counts as made.
+
+- **Back up now**, or let it run by itself: the schedule (off, every day, or every week; the hour is in **UTC**, the card shows what that is on your clock)
+  and how many of the newest backups to keep (1 to 60, default 7; older ones are deleted after each backup). By default a backup is made every day at
+  03:00 UTC, and the first one soon after the worker first starts (also after an upgrade to this release).
+- **Encrypt them with a passphrase** (recommended: a backup holds every secret and is meant to leave this machine). It applies to the NEXT backups.
+  Shipdok keeps the passphrase (encrypted with its own key) so that scheduled backups can use it, but **on a new machine it is the only way to open a
+  backup: write it down**. A backup made with a passphrase cannot be opened without it, by anyone.
+- **Download** needs your password again and is recorded in the sign-ins list on the Security page, as is setting or removing the passphrase.
+- **Copy backups off this machine.** They are stored on the same disk as Shipdok (the `shipdok_backups` volume), which does not protect you from losing
+  the disk or the machine. Download them, regularly.
+- **Not included:** your apps' own data volumes (see [Persistent storage](#persistent-storage-of-your-apps)), the job queue and the logs.
+- **Needs the `shipdok_backups` volume.** It is in the compose.yaml of this release: after an upgrade get the newest compose file ([Upgrade](#upgrade)),
+  or the card warns that the backups are not on a volume of their own and would be lost when the container is replaced.
+- If the worker cannot find Shipdok's own Postgres container (for example when Shipdok was started by something other than Docker Compose), the backup fails
+  with a message that says so; set `BACKUP_POSTGRES_CONTAINER` to its name.
+
+**Restoring from a dashboard backup.** Download the file, then on the machine you are restoring to, open it (this decrypts it if needed and unpacks
+`db.dump`, `secrets.tgz` and `manifest.json` into a new, empty folder; set the passphrase in the environment, or run with `-it` to be asked):
+
+```bash
+docker compose run --rm --no-deps -v "$PWD":/backup -e SHIPDOK_BACKUP_PASSPHRASE api node scripts/open-backup.js /backup/shipdok-backup-FILE.tar.enc /backup/opened
+```
+
+Then continue with [Restore](#restore) below, using `opened/db.dump` and `opened/secrets.tgz` in place of `shipdok-db.dump` and `shipdok-secrets.tgz`.
+(`SHIPDOK_BACKUP_PASSPHRASE` is passed through from your shell; leave the `-e` out for a plain backup.)
+
+**Backing up by hand** (the same two things, without the dashboard). Two things hold everything that matters, and **they must be backed up together**:
 
 - **The database** (`shipdok_pgdata`): your apps, settings, history, and your secrets, encrypted.
 - **The secrets volume** (`shipdok_secrets`): the encryption key and the other generated secrets. **Without this key the encrypted data in the

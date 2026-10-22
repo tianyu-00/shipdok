@@ -187,6 +187,27 @@ export const schemas = {
     thresholdBytes: nint('The size of old images at which the dashboard says so; `null` (the default) means never.'),
     exceeded: bool('`reclaimableBytes` has reached `thresholdBytes` (always `false` when there is none).'),
   }),
+  Backup: obj({
+    id: uuid('The backup.'), status: enumOf(['queued', 'running', 'ok', 'failed'], 'Waiting for the worker, being made, made, or failed (`error` says why).'),
+    trigger: enumOf(['manual', 'scheduled'], 'Asked for on the Storage page, or by the schedule.'),
+    requestedAt: time('When it was asked for.'), startedAt: ntime('When the worker began.'), finishedAt: ntime('When it ended.'),
+    sizeBytes: nint('The size of the file.'), encrypted: { type: 'boolean', nullable: true, description: 'The file is encrypted with the passphrase.' },
+    verified: { type: 'boolean', nullable: true, description: 'The database dump was read back after it was made and had content.' },
+    version: nstr('The Shipdok version that made it.'), warning: nstr('Something to know, for example that the platform secrets could not be included.'), error: nstr('Why it failed.'),
+    downloadable: bool('It has a file that can be downloaded.'),
+  }),
+  BackupSchedule: obj({
+    frequency: enumOf(['off', 'daily', 'weekly'], 'How often.'), hour: int('The hour, UTC (0 to 23).'), weekday: int('For weekly: the day, 0 (Sunday) to 6 (Saturday), UTC.'), keep: int('How many of the newest backups to keep (1 to 60).'),
+  }),
+  BackupsOverview: obj({
+    backups: { type: 'array', items: ref('Backup'), description: 'Newest first.' },
+    totalBytes: int('The size of all the finished backups together.'),
+    schedule: ref('BackupSchedule'), nextRunAt: ntime('When the next scheduled backup is due; `null` when the schedule is off.'),
+    encryption: obj({ enabled: bool('A passphrase is set: new backups are encrypted.') }),
+    persistent: bool('The backups folder is a volume of its own, so the backups survive the container being replaced.'),
+  }),
+  BackupPassphraseRequest: obj({ password: str('The current password.'), passphrase: { type: 'string', nullable: true, description: '12 to 256 characters, not starting or ending with a space; `null` removes it.' } }),
+  BackupDownloadRequest: obj({ password: str('The current password.') }),
   VersionStatus: obj({
     current: { type: 'string', nullable: true, description: 'The release this Shipdok runs, e.g. `0.1.14`; `null` when unknown.' },
     latest: { type: 'string', nullable: true, description: 'The newest published release; `null` when it could not be found out.' },
@@ -226,7 +247,7 @@ export const schemas = {
   AuthStatus: obj({ needsSetup: bool('No administrator exists yet.'), authenticated: bool('This browser has a valid session.'), setupTokenRequired: bool('The setup screen must ask for the setup token (the token is printed in the API log).') }),
   Username: obj({ username: str('The signed-in name.') }),
   SetupResult: obj({ username: str('The administrator.'), recoveryCodes: arr(str('A code, `XXXX-XXXX-XXXX-XXXX`.')) }, undefined, 'The only time the recovery codes are ever returned.'),
-  LoginAttempt: obj({ at: time('When.'), kind: enumOf(['login', 'setup', 'recovery', 'reset', 'settings', 'github'], 'What was attempted or changed.'), username: str('The name typed (any name, real or not).'), address: str('The client address (`host` for a reset on the machine).'), success: bool('Whether it worked.') }),
+  LoginAttempt: obj({ at: time('When.'), kind: enumOf(['login', 'setup', 'recovery', 'reset', 'settings', 'github', 'backup', 'download'], 'What was attempted or changed (`backup`: the backup passphrase was set or removed; `download`: a backup was downloaded).'), username: str('The name typed (any name, real or not).'), address: str('The client address (`host` for a reset on the machine).'), success: bool('Whether it worked.') }),
   RecoveryStatus: obj({ remaining: int('Unused codes left (of 10).'), createdAt: ntime('When the current set was made.') }),
   Locked: obj({ error: str('A sentence.'), code: enumOf(['locked'], 'Always `locked`.'), retryAfterSeconds: int('Seconds to wait.') }),
 

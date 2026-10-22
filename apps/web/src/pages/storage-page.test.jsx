@@ -21,6 +21,20 @@ const IDLE = { measuring: false, finishedAt: null, error: null, totalBytes: 0, m
 const OLD = { reclaimableBytes: 0, apps: [], autoCleanup: { on: 0, total: 0 }, thresholdBytes: null, exceeded: false }
 const routes = (over = {}) => ({ 'GET /api/storage': storage(), 'GET /api/images': OLD, 'GET /api/volumes/sizes': IDLE, 'GET /api/apps': [makeApp()], 'GET /api/volumes': { volumes: [] }, 'GET /api/build-cache': { totalBytes: null, reclaimableBytes: null, sampledAt: null, cleaning: false, last: null }, ...over })
 const page = () => renderWithProviders(<StoragePage />, { route: '/storage' })
+const BACKUPS = { backups: [], totalBytes: 0, schedule: { frequency: 'daily', hour: 3, weekday: 1, keep: 7 }, nextRunAt: null, encryption: { enabled: false }, persistent: true }
+
+describe('backups on the storage page', () => {
+  test('are a card of their own, after the build cache and before the kept volumes', async () => {
+    mockApi(routes({ 'GET /api/backups': BACKUPS }))
+    page()
+    const backups = await screen.findByText('Backups of Shipdok')
+    const cache = screen.getByText('Build cache')
+    const kept = screen.getByText('Volumes kept without an app')
+    expect(cache.compareDocumentPosition(backups) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(backups.compareDocumentPosition(kept) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Back up now' })).toBeInTheDocument()
+  })
+})
 
 describe('the storage page', () => {
   test('shows the disk and what each app takes', async () => {

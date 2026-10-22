@@ -406,3 +406,63 @@ export async function recordVolumeSizes(sizes) {
 export const recordVolumeMeasured = ({ error = null } = {}) => pool.query(
   `INSERT INTO volume_sizing (id, finished_at, last_error) VALUES (1, now(), $1)
    ON CONFLICT (id) DO UPDATE SET finished_at = now(), last_error = $1, requested_at = NULL`, [error]);
+
+// ---- Backups of Shipdok itself (backup.js, backuprunner.js). The API records a request (a row with status 'queued'); the worker notices and answers it.
+const BACKUP_ACTIVE = `('queued','running')`;
+
+/** Records a request for a backup. Returns its id, or null when one is already waiting or running (the unique index decides). */
+export async function requestBackup(trigger) {
+  const { rows } = await pool.query(`INSERT INTO backups (trigger) VALUES ($1) ON CONFLICT DO NOTHING RETURNING id`, [trigger]);
+  return rows[0]?.id ?? null;
+}
+
+/** Takes the waiting request (there is at most one: the database allows one waiting or running backup) and marks it running; null when there is none. */
+export async function claimQueuedBackup() {
+  const { rows } = await pool.query(
+    `UPDATE backups SET status = 'running', started_at = now()
+      WHERE id = (SELECT id FROM backups WHERE status = 'queued' LIMIT 1 FOR UPDATE SKIP LOCKED)
+      RETURNING id, trigger`);
+  return rows[0] ?? null;
+}
+
+export const markBackupOk = (id, { filename, sizeBytes, encrypted, verified, version, warning = null }) =>
+  pool.query(
+    `UPDATE backups SET status = 'ok', finished_at = now(), filename = $2, size_bytes = $3, encrypted = $4, verified = $5, version = $6, warning = $7, error = NULL
+      WHERE id = $1 AND status = 'running'`,
+    [id, filename, sizeBytes, encrypted, verified, version, warning]);
+
+export const markBackupFailed = (id, error) =>
+  pool.query(`UPDATE backups SET status = 'failed', finished_at = now(), error = $2 WHERE id = $1 AND status IN ${BACKUP_ACTIVE}`, [id, String(error).slice(0, 1000)]);
+
+/** A backup that was running when the worker stopped can never finish: say so. */
+export const interruptRunningBackups = () =>
+  pool.query(`UPDATE backups SET status = 'failed', finished_at = now(), error = 'Interrupted: the worker stopped while it was running' WHERE status = 'running'`);
+
+/** When the latest backup (of any kind) was asked for or started. */
+export async function lastBackupAt() {
+  const { rows } = await pool.query(`SELECT max(coalesce(started_at, requested_at)) AS at FROM backups`);
+  return rows[0].at;
+}
+
+/** The name of the latest applied migration (for a backup's manifest). */
+export async function lastMigrationName() {
+  const { rows } = await pool.query('SELECT name FROM schema_migrations ORDER BY name DESC LIMIT 1');
+  return rows[0]?.name ?? null;
+}
+
+export async function getSettingRow(key) {
+  const { rows } = await pool.query('SELECT value, updated_at FROM settings WHERE key = $1', [key]);
+  return rows[0] ?? null;
+}
+
+/** The rows of the backups to remove: finished ones beyond the newest `keep` good ones, and failed ones beyond the newest `keepFailed`. */
+export async function backupsToPrune({ keep, keepFailed = 10 }) {
+  const { rows } = await pool.query(
+    `SELECT id, filename FROM (
+       SELECT id, filename, status, row_number() OVER (PARTITION BY (status = 'ok') ORDER BY coalesce(finished_at, requested_at) DESC) AS rank
+         FROM backups WHERE status IN ('ok', 'failed')
+     ) t WHERE (status = 'ok' AND rank > $1) OR (status = 'failed' AND rank > $2)`, [keep, keepFailed]);
+  return rows;
+}
+
+export const deleteBackupRows = (ids) => pool.query('DELETE FROM backups WHERE id = ANY($1::uuid[])', [ids]);

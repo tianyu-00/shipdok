@@ -104,3 +104,10 @@ export const useGithubWebhook = (githubAppId, enabled = true) => useQuery({ quer
 
 // The running version and the newest published one. The API keeps its answer for an hour, so asking on every page load costs nothing.
 export const useVersion = () => useQuery({ queryKey: ['version'], queryFn: () => api('/version'), staleTime: 10 * 60_000, retry: false })
+
+// Backups of Shipdok itself: quick while one is waiting or being made, slow otherwise.
+export const useBackups = () => useQuery({
+  queryKey: ['backups'],
+  queryFn: () => api('/backups'),
+  refetchInterval: (q) => ((q.state.data?.backups ?? []).some((b) => b.status === 'queued' || b.status === 'running') ? 3000 : 30_000),
+})

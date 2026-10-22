@@ -119,6 +119,7 @@ services:
       - "127.0.0.1:${API_HOST_PORT:-4000}:4000" # loopback only; the Cloudflare tunnel (cloudflared) is what reaches the webhook
     volumes:
       - shipdok_logs:/var/lib/shipdok/logs # the worker writes logs; the API reads them and deletes a finished deployment's on request
+      - shipdok_backups:/var/lib/shipdok/backups # backups of Shipdok itself: the worker makes them, the API lists, serves and deletes them
       - shipdok_secrets:/run/shipdok-secrets:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
@@ -162,6 +163,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - shipdok_logs:/var/lib/shipdok/logs
+      - shipdok_backups:/var/lib/shipdok/backups
       - shipdok_secrets:/run/shipdok-secrets:ro
 
   # The dashboard. nginx serves the built files and forwards /api to the API, so the browser sees one origin (cookies just
@@ -180,3 +182,4 @@ volumes:
   shipdok_pgdata:
   shipdok_redisdata:
   shipdok_logs: # deployment logs: kept until the deployment is deleted. Back this up like the database if you care about them
+  shipdok_backups: # backups of Shipdok itself (the database and the secrets in one file each), made from the Storage page or on a schedule. Copy them off this machine: a backup on the same disk does not protect against losing it

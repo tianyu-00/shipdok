@@ -771,6 +771,67 @@
         ]
       }
     },
+    "/api/backups/{id}": {
+      "delete": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Delete a backup",
+        "description": "Removes the file and the record. Refused while it is being made.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The backup.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such backup.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "It is still being made (`code: in_progress`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/deployments/{id}": {
       "delete": {
         "tags": [
@@ -2259,6 +2320,104 @@
           }
         },
         "security": []
+      }
+    },
+    "/api/backups": {
+      "get": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Backups of Shipdok itself",
+        "description": "The backups that exist (newest first, at most 200) with how each went, their total size, the schedule and when the next scheduled backup is due (`nextRunAt`, `null` when the schedule is off), and whether they are encrypted (`encryption.enabled`: a passphrase is set). A backup is ONE file holding the database and the platform secrets (the key without which the database's encrypted data cannot be read). `persistent: false` means the backups folder is not a volume of its own, so the backups would be lost when the container is replaced.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The backups and the settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupsOverview"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Make a backup now",
+        "description": "Records a request; the worker notices within a few seconds and makes the backup beside the deployment queue (it does not wait behind a build). Poll `GET /api/backups` for the result. Only one backup may wait or run at a time.",
+        "parameters": [],
+        "responses": {
+          "202": {
+            "description": "Asked for.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A backup is already waiting or running (`code: already_running`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
       }
     },
     "/api/build-cache": {
@@ -4433,6 +4592,125 @@
         "security": []
       }
     },
+    "/api/backups/{id}/download": {
+      "post": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Download a backup",
+        "description": "The backup file (`application/octet-stream`). It holds every secret, so it needs the current password (a POST, so that the password is not in an address) and is recorded in the sign-ins list (`download`). A file that is encrypted is sent as it is, still encrypted.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The backup.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No password.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong password (`code: wrong_password`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such backup.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "That backup has no file (it failed, or is still being made; `code: no_file`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The file is gone from the backups folder (`code: file_missing`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupDownloadRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/build-cache/clean": {
       "post": {
         "tags": [
@@ -5176,6 +5454,150 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Retention"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/backups/passphrase": {
+      "put": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Set or remove the backup passphrase",
+        "description": "With a passphrase (12 to 256 characters) every NEW backup is encrypted with it (AES-256-GCM); `null` turns encryption off for new backups. Backups already made keep the passphrase they were made with. The passphrase is stored encrypted with the platform key so that scheduled backups can use it, but **it is also what opens a backup on a new machine, where the platform key is not there: remember it**. Needs the current password and is recorded in the sign-ins list (`backup`).",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupsOverview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No password, or the passphrase is too short, too long or starts or ends with a space.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong password (`code: wrong_password`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupPassphraseRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/backups/settings": {
+      "put": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Set the backup schedule",
+        "description": "How often a backup is made by itself (`off`, `daily` or `weekly`), at which hour (**UTC**, 0 to 23), on which weekday for weekly (0 = Sunday), and how many of the newest backups to keep (1 to 60; older ones are deleted after each backup). The default, until this is set, is daily at 03:00 UTC keeping 7. Changing the schedule does not make a backup at once for a time that has already passed today. Answers with the new overview.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupsOverview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A field is missing or out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupSchedule"
               }
             }
           }
@@ -6634,6 +7056,211 @@
           "exceeded"
         ]
       },
+      "Backup": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The backup."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "ok",
+              "failed"
+            ],
+            "description": "Waiting for the worker, being made, made, or failed (`error` says why)."
+          },
+          "trigger": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "scheduled"
+            ],
+            "description": "Asked for on the Storage page, or by the schedule."
+          },
+          "requestedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was asked for."
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the worker began."
+          },
+          "finishedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When it ended."
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "nullable": true,
+            "description": "The size of the file."
+          },
+          "encrypted": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "The file is encrypted with the passphrase."
+          },
+          "verified": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "The database dump was read back after it was made and had content."
+          },
+          "version": {
+            "type": "string",
+            "nullable": true,
+            "description": "The Shipdok version that made it."
+          },
+          "warning": {
+            "type": "string",
+            "nullable": true,
+            "description": "Something to know, for example that the platform secrets could not be included."
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "Why it failed."
+          },
+          "downloadable": {
+            "type": "boolean",
+            "description": "It has a file that can be downloaded."
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "trigger",
+          "requestedAt",
+          "startedAt",
+          "finishedAt",
+          "sizeBytes",
+          "encrypted",
+          "verified",
+          "version",
+          "warning",
+          "error",
+          "downloadable"
+        ]
+      },
+      "BackupSchedule": {
+        "type": "object",
+        "properties": {
+          "frequency": {
+            "type": "string",
+            "enum": [
+              "off",
+              "daily",
+              "weekly"
+            ],
+            "description": "How often."
+          },
+          "hour": {
+            "type": "integer",
+            "description": "The hour, UTC (0 to 23)."
+          },
+          "weekday": {
+            "type": "integer",
+            "description": "For weekly: the day, 0 (Sunday) to 6 (Saturday), UTC."
+          },
+          "keep": {
+            "type": "integer",
+            "description": "How many of the newest backups to keep (1 to 60)."
+          }
+        },
+        "required": [
+          "frequency",
+          "hour",
+          "weekday",
+          "keep"
+        ]
+      },
+      "BackupsOverview": {
+        "type": "object",
+        "properties": {
+          "backups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Backup"
+            },
+            "description": "Newest first."
+          },
+          "totalBytes": {
+            "type": "integer",
+            "description": "The size of all the finished backups together."
+          },
+          "schedule": {
+            "$ref": "#/components/schemas/BackupSchedule"
+          },
+          "nextRunAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the next scheduled backup is due; `null` when the schedule is off."
+          },
+          "encryption": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "description": "A passphrase is set: new backups are encrypted."
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "persistent": {
+            "type": "boolean",
+            "description": "The backups folder is a volume of its own, so the backups survive the container being replaced."
+          }
+        },
+        "required": [
+          "backups",
+          "totalBytes",
+          "schedule",
+          "nextRunAt",
+          "encryption",
+          "persistent"
+        ]
+      },
+      "BackupPassphraseRequest": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "The current password."
+          },
+          "passphrase": {
+            "type": "string",
+            "nullable": true,
+            "description": "12 to 256 characters, not starting or ending with a space; `null` removes it."
+          }
+        },
+        "required": [
+          "password",
+          "passphrase"
+        ]
+      },
+      "BackupDownloadRequest": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "The current password."
+          }
+        },
+        "required": [
+          "password"
+        ]
+      },
       "VersionStatus": {
         "type": "object",
         "properties": {
@@ -7121,9 +7748,11 @@
               "recovery",
               "reset",
               "settings",
-              "github"
+              "github",
+              "backup",
+              "download"
             ],
-            "description": "What was attempted or changed."
+            "description": "What was attempted or changed (`backup`: the backup passphrase was set or removed; `download`: a backup was downloaded)."
           },
           "username": {
             "type": "string",

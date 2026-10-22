@@ -1,6 +1,8 @@
 // Docker helpers. No arg parsing, no process.exit, no knowledge of Express or BullMQ.
 import Docker from "dockerode";
 import { spawn } from "node:child_process";
+import { createReadStream, createWriteStream } from "node:fs";
+import os from "node:os";
 import { LABEL } from "@shipdok/shared";
 
 export const docker = new Docker(); // /var/run/docker.sock: treat as highly privileged
@@ -63,6 +65,51 @@ export function capture(cmd, args, opts = {}) {
     p.on("error", reject);
     p.on("exit", (c) => (c === 0 ? resolve(out.trim()) : reject(new Error(`${cmd} exited ${c}`))));
   });
+}
+
+// ---- Backups of Shipdok itself (backup.js). The database is dumped by the Postgres container's own pg_dump, through `docker exec`, with its own environment
+// (POSTGRES_USER, POSTGRES_DB), so nothing needs the database password here and the worker image has no Postgres client.
+
+/** Runs `docker exec` and writes what the command prints to `file`. Rejects with the command's own error text (its stderr, short). */
+export function execToFile(container, command, file, { signal } = {}) {
+  return new Promise((resolve, reject) => {
+    const out = createWriteStream(file, { mode: 0o600 });
+    const p = spawn("docker", ["exec", container, ...command], { stdio: ["ignore", "pipe", "pipe"], killSignal: "SIGINT", signal });
+    let err = "";
+    p.stderr.on("data", (d) => { if (err.length < 2000) err += d; });
+    p.stdout.pipe(out);
+    p.on("error", reject);
+    p.on("close", (code) => out.end(() => (code === 0 ? resolve() : reject(new Error(`${command[0]} failed: ${err.trim().slice(0, 300) || `exit ${code}`}`)))));
+  });
+}
+
+/** Runs `docker exec -i` with `file` as its input and returns what it printed. */
+export function execWithFile(container, command, file, { signal } = {}) {
+  return new Promise((resolve, reject) => {
+    const p = spawn("docker", ["exec", "-i", container, ...command], { stdio: ["pipe", "pipe", "pipe"], killSignal: "SIGINT", signal });
+    let out = "";
+    let err = "";
+    p.stdout.on("data", (d) => { out += d; });
+    p.stderr.on("data", (d) => { if (err.length < 2000) err += d; });
+    p.on("error", reject);
+    p.on("close", (code) => (code === 0 ? resolve(out) : reject(new Error(`${command[0]} failed: ${err.trim().slice(0, 300) || `exit ${code}`}`))));
+    createReadStream(file).on("error", reject).pipe(p.stdin).on("error", () => {}); // (the command may stop reading early)
+  });
+}
+
+/** The name of the Postgres container Shipdok's own database runs in: the compose service `postgres` of the project this worker belongs to. */
+export async function findPostgresContainer({ env = process.env, hostname = os.hostname() } = {}) {
+  if (env.BACKUP_POSTGRES_CONTAINER) return env.BACKUP_POSTGRES_CONTAINER;
+  let project = null;
+  try { project = (await docker.getContainer(hostname).inspect()).Config.Labels?.["com.docker.compose.project"] ?? null; } catch { /* not in a container, or Docker cannot say */ }
+  const labels = ["com.docker.compose.service=postgres", ...(project ? [`com.docker.compose.project=${project}`] : [])];
+  const found = await docker.listContainers({ filters: { label: labels, status: ["running"] } });
+  if (found.length !== 1) {
+    throw new Error(found.length === 0
+      ? "Could not find the Postgres container (Shipdok's own database). If it does not run in this Docker Compose project, set BACKUP_POSTGRES_CONTAINER to its name"
+      : "More than one Postgres container matched; set BACKUP_POSTGRES_CONTAINER to the name of Shipdok's own");
+  }
+  return found[0].Names[0].replace(/^\//, "");
 }
 
 export async function findContainers({ appId, role }) {

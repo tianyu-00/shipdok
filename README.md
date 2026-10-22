@@ -119,7 +119,8 @@ A one-shot `secrets` service also runs at every start to generate any missing pa
 is expected.
 
 **Security notes.** The worker holds the Docker socket, which is equivalent to root on the machine, so only deploy code you trust. Secrets are
-encrypted in the database with a key stored in the `shipdok_secrets` volume. Back that volume up together with the database; see
+encrypted in the database with a key stored in the `shipdok_secrets` volume. Back that volume up together with the database: the Storage page of the
+dashboard makes backups of both (one file, optionally encrypted with a passphrase, daily by default) that you can download; see
 [Operations](docs/operations.md#backup).
 
 ## License

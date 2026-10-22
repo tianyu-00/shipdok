@@ -31,6 +31,10 @@ COPY VERSION VERSION
 RUN mkdir -p /var/lib/shipdok/logs && chown node:node /var/lib/shipdok/logs
 ENV LOG_DIR=/var/lib/shipdok/logs
 
+# Where backups of Shipdok itself are kept (a volume in compose, written by the worker). Owned by the non-root user so a fresh volume is writable.
+RUN mkdir -p /var/lib/shipdok/backups && chown node:node /var/lib/shipdok/backups && chmod 700 /var/lib/shipdok/backups
+ENV BACKUP_DIR=/var/lib/shipdok/backups
+
 COPY --from=scalar /scalar.js /app/apps/api/vendor/scalar.js
 ENV SCALAR_BUNDLE=/app/apps/api/vendor/scalar.js
 

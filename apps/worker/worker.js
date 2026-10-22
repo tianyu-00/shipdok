@@ -15,6 +15,8 @@ import { processDeleteJob } from './src/deleteapp.js';
 import { processRemoveVolumeJob } from './src/removevolume.js';
 import { processCleanCacheJob, createCacheSampler } from './src/buildcache.js';
 import { createVolumeMeasurer } from './src/volumesize.js';
+import { createBackupRunner } from './src/backuprunner.js';
+import { readVersion } from './src/version.js';
 import { jobProcessor } from './src/dispatch.js';
 import { createActivity } from './src/activity.js';
 import { createMonitor } from './src/monitor.js';
@@ -57,6 +59,8 @@ const cacheSampler = createCacheSampler(); // size of Docker's build cache
 
 const volumeMeasurer = createVolumeMeasurer(); // sizes of the persistent volumes, measured when the administrator asks
 
+const backups = createBackupRunner({ secretsKey, version: readVersion() }); // backups of Shipdok itself: asked for in the dashboard or by the schedule
+
 const worker = new Worker(
   DEPLOY_QUEUE,
   jobProcessor({
@@ -94,6 +98,7 @@ async function shutdown(signal) {
   await sampler.stop();
   await cacheSampler.stop();
   await volumeMeasurer.stop();
+  await backups.stop();
   await collector.stopAll(); // close every runtime log and record its size
   await worker.close();
   await connection.quit();
@@ -107,6 +112,7 @@ await reconcile();
 sampler.start();
 cacheSampler.start();
 volumeMeasurer.start();
+backups.start();
 monitor.start(); // crashes, health, and recovery after a host or Docker restart
 worker.run().catch((err) => {
   console.error('Worker crashed:', err);
