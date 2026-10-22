@@ -156,6 +156,22 @@ export const schemas = {
     cleaning: bool('A clean-up was asked for and has not reported back yet.'),
     last: { ...obj({ at: time('When the last clean-up finished.'), all: bool('It removed every unused entry (otherwise only those unused for a day).'), freedBytes: int('What Docker says it freed.'), error: nstr('Why it failed, if it did.') }), nullable: true, description: 'The most recent clean-up, or `null`.' },
   }),
+  // ---- repository check (create an app)
+  RepoCheck: {
+    description: 'Whether Shipdok can see the repository. `accessible: false` is an ordinary answer (HTTP 200).',
+    oneOf: [
+      obj({
+        accessible: { type: 'boolean', enum: [true] }, fullName: str('`owner/name` as GitHub spells it.'), private: bool('A private repository.'), defaultBranch: nstr('Its default branch.'),
+        via: enumOf(['app', 'anonymous'], '`app`: seen through the chosen GitHub App\'s installation; `anonymous`: public, no login needed.'),
+        appChosen: bool('A GitHub App was given in the request.'),
+      }),
+      obj({
+        accessible: { type: 'boolean', enum: [false] },
+        reason: enumOf(['not_found', 'rate_limited', 'unreachable'], '`not_found`: it does not exist, or it is private and not visible this way (GitHub does not tell the two apart); `rate_limited`: GitHub is limiting requests; `unreachable`: GitHub could not be reached.'),
+        appChosen: bool('A GitHub App was given in the request.'),
+      }),
+    ],
+  },
   // ---- old images, all apps
   ImagesOverview: obj({
     reclaimableBytes: int('What an immediate clean-up of every app could free: old versions that are no longer kept (an upper bound: versions of one app share files, so the real figure is usually smaller; it is measured when the clean-up has run).'),

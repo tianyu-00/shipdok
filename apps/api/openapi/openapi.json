@@ -2828,6 +2828,105 @@
         "security": []
       }
     },
+    "/api/github/repo-check": {
+      "get": {
+        "tags": [
+          "GitHub"
+        ],
+        "summary": "Can Shipdok see this repository?",
+        "description": "The first step of creating an app. One request to GitHub, through the given GitHub App's installation when it is installed on the repository, otherwise anonymously, which works for a public repository. Nothing about what is inside the repository is read. Always answers 200: `accessible: false` with a `reason` is an ordinary outcome (a private repository and one that does not exist look the same to GitHub). A good answer is kept for 60 seconds; `fresh=1` skips that. Failures are never kept.",
+        "parameters": [
+          {
+            "name": "repo",
+            "in": "query",
+            "required": true,
+            "description": "The repository, `owner/name`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "app",
+            "in": "query",
+            "required": false,
+            "description": "The id of a connected GitHub App; left out: anonymous.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "fresh",
+            "in": "query",
+            "required": false,
+            "description": "`1`: do not use a kept answer.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whether it can be seen.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoCheck"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a repository like owner/name (`code: bad_repo`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such GitHub app (`code: github_app_not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "That GitHub app's stored credentials cannot be read (`code: cannot_decrypt`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/images": {
       "get": {
         "tags": [
@@ -6253,6 +6352,84 @@
           "sampledAt",
           "cleaning",
           "last"
+        ]
+      },
+      "RepoCheck": {
+        "description": "Whether Shipdok can see the repository. `accessible: false` is an ordinary answer (HTTP 200).",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "accessible": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ]
+              },
+              "fullName": {
+                "type": "string",
+                "description": "`owner/name` as GitHub spells it."
+              },
+              "private": {
+                "type": "boolean",
+                "description": "A private repository."
+              },
+              "defaultBranch": {
+                "type": "string",
+                "nullable": true,
+                "description": "Its default branch."
+              },
+              "via": {
+                "type": "string",
+                "enum": [
+                  "app",
+                  "anonymous"
+                ],
+                "description": "`app`: seen through the chosen GitHub App's installation; `anonymous`: public, no login needed."
+              },
+              "appChosen": {
+                "type": "boolean",
+                "description": "A GitHub App was given in the request."
+              }
+            },
+            "required": [
+              "accessible",
+              "fullName",
+              "private",
+              "defaultBranch",
+              "via",
+              "appChosen"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "accessible": {
+                "type": "boolean",
+                "enum": [
+                  false
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "not_found",
+                  "rate_limited",
+                  "unreachable"
+                ],
+                "description": "`not_found`: it does not exist, or it is private and not visible this way (GitHub does not tell the two apart); `rate_limited`: GitHub is limiting requests; `unreachable`: GitHub could not be reached."
+              },
+              "appChosen": {
+                "type": "boolean",
+                "description": "A GitHub App was given in the request."
+              }
+            },
+            "required": [
+              "accessible",
+              "reason",
+              "appChosen"
+            ]
+          }
         ]
       },
       "ImagesOverview": {

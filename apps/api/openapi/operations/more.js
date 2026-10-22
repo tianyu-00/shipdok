@@ -168,6 +168,17 @@ export default Object.fromEntries([
     responses: { 200: ok('The installations.', { type: 'object', properties: { installations: { type: 'array', items: ref('GithubInstallation') } } }) },
     errors: { ...ghApp404, 502: 'GitHub could not be asked.' },
   })),
+  route('GET', '/api/github/repo-check', op({
+    tag: GH, summary: 'Can Shipdok see this repository?',
+    description: 'The first step of creating an app. One request to GitHub, through the given GitHub App\'s installation when it is installed on the repository, otherwise anonymously, which works for a public repository. Nothing about what is inside the repository is read. Always answers 200: `accessible: false` with a `reason` is an ordinary outcome (a private repository and one that does not exist look the same to GitHub). A good answer is kept for 60 seconds; `fresh=1` skips that. Failures are never kept.',
+    parameters: [
+      { name: 'repo', in: 'query', required: true, description: 'The repository, `owner/name`.', schema: { type: 'string' } },
+      { name: 'app', in: 'query', required: false, description: 'The id of a connected GitHub App; left out: anonymous.', schema: { type: 'string', format: 'uuid' } },
+      { name: 'fresh', in: 'query', required: false, description: '`1`: do not use a kept answer.', schema: { type: 'string', enum: ['1'] } },
+    ],
+    responses: { 200: ok('Whether it can be seen.', ref('RepoCheck')) },
+    errors: { 400: 'Not a repository like owner/name (`code: bad_repo`).', ...ghApp404 },
+  })),
   route('GET', '/api/github/branches', op({
     tag: GH, summary: 'The branches of a repository',
     parameters: [{ ...query('repo', 'The repository, as `owner/name`.'), required: true }, query('app', 'The id of the GitHub App to ask through. Left out: anonymously.')],

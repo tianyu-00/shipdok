@@ -5,20 +5,21 @@ import { BUILD_METHOD_NAMES, COMMANDS } from '@/lib/build-method'
 
 /**
  * How the image is made, and for Railpack the three optional commands. Shared by the create form and the Settings tab.
- * `idPrefix` keeps the field ids apart ('' on the create form, 's-' in Settings); `errors` is field -> message.
+ * `idPrefix` keeps the field ids apart ('' on the create form, 's-' in Settings); `errors` is field -> message. `selectable` false: the method was chosen
+ * elsewhere (the second step of creating an app), so only what depends on it is shown.
  */
-export function BuildMethodFields({ idPrefix = '', values, onChange, errors = {} }) {
+export function BuildMethodFields({ idPrefix = '', values, onChange, errors = {}, selectable = true }) {
   const railpack = values.build_method === 'railpack'
   return (
     <>
-      <Field id={`${idPrefix}build_method`} label="Build method"
+      {selectable && <Field id={`${idPrefix}build_method`} label="Build method"
         hint={railpack
           ? 'Railpack looks at the code, works out how to build it (Node, Python, Go, a static site...) and Shipdok builds that. A Dockerfile in the repository is not used.'
           : 'Builds the Dockerfile in the repository. Choose Railpack to deploy code that has none, or to let Railpack build it instead.'}>
         <NativeSelect id={`${idPrefix}build_method`} value={values.build_method} onChange={(v) => onChange('build_method', v)}>
           {Object.entries(BUILD_METHOD_NAMES).map(([value, name]) => <option key={value} value={value}>{name}</option>)}
         </NativeSelect>
-      </Field>
+      </Field>}
       {railpack && (
         <>
           {COMMANDS.map(({ key, label, placeholder, hint }) => (

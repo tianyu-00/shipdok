@@ -63,6 +63,17 @@ export const useBranches = (repo, githubAppId) => useQuery({
   refetchOnWindowFocus: false,
 })
 
+// Can Shipdok see this repository (through the chosen GitHub app, or anonymously for a public one), and what is in it? An unusable repository is an
+// ordinary answer (accessible: false). `nonce` above 0 skips the server's short memory: the "check again" after installing the app.
+export const useRepoCheck = (repo, githubApp, nonce = 0) => useQuery({
+  queryKey: ['repo-check', repo, githubApp ?? null, nonce],
+  queryFn: () => api(`/github/repo-check?repo=${encodeURIComponent(repo)}${githubApp ? `&app=${encodeURIComponent(githubApp)}` : ''}${nonce > 0 ? '&fresh=1' : ''}`),
+  enabled: isRepoName(repo) && githubApp !== undefined,
+  staleTime: 60_000,
+  retry: false,
+  refetchOnWindowFocus: false,
+})
+
 export const useEnv = (id) => useQuery({ queryKey: ['env', id], queryFn: () => api(`/apps/${id}/env`) })
 
 export const useOldImages = () => useQuery({ queryKey: ['old-images'], queryFn: () => api('/images'), refetchInterval: 30_000 })

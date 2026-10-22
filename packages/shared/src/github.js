@@ -128,6 +128,23 @@ export async function listRepoBranches(fullName, { bearer, fetch = globalThis.fe
   return { defaultBranch, branches: defaultBranch && names.includes(defaultBranch) ? [defaultBranch, ...rest] : rest, truncated: path !== null };
 }
 
+/**
+ * Can the repository be seen, and what is it? For the first step of creating an app: one request, nothing about what is inside it.
+ * Anonymous works for a public repository; with a token it also sees the private one that token is for.
+ * @returns {Promise<{ fullName: string, private: boolean, defaultBranch: string|null }>}
+ * Throws GithubError (status 404: no such repository, or a private one the token cannot see; 403/429: rate limited).
+ */
+export async function inspectRepo(fullName, { bearer, fetch = globalThis.fetch, apiBase = 'https://api.github.com' } = {}) {
+  const parsed = parseRepo(fullName);
+  if (!parsed) throw new TypeError('Invalid repository name');
+  const { json: repo } = await githubApi({ fetch, apiBase }, `/repos/${parsed.owner}/${parsed.name}`, { bearer });
+  return {
+    fullName: typeof repo?.full_name === 'string' && repo.full_name ? repo.full_name : fullName,
+    private: Boolean(repo?.private),
+    defaultBranch: typeof repo?.default_branch === 'string' && repo.default_branch ? repo.default_branch : null,
+  };
+}
+
 export function createGithubClient({
   appId,
   privateKey,
@@ -227,6 +244,14 @@ export function createGithubClient({
       if (id === null) return listRepoBranches(fullName, { fetch, apiBase });
       const token = await client.getInstallationToken(id, { repo: fullName, permissions: { contents: 'read' } });
       return listRepoBranches(fullName, { bearer: token, fetch, apiBase });
+    },
+
+    /** Can the repository be seen, and what is it (see inspectRepo): through the app's installation when it is installed there, otherwise anonymously (public repositories). */
+    async inspectRepo(fullName) {
+      const id = await client.findInstallationForRepo(fullName);
+      if (id === null) return { ...(await inspectRepo(fullName, { fetch, apiBase })), via: 'anonymous' };
+      const token = await client.getInstallationToken(id, { repo: fullName, permissions: { contents: 'read' } });
+      return { ...(await inspectRepo(fullName, { bearer: token, fetch, apiBase })), via: 'app' };
     },
 
     async listInstallations() {

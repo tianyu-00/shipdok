@@ -67,7 +67,7 @@ take over the account, so keep them private.
    github.com). Then press **Install on repositories** and choose which repositories Shipdok may read. It only ever asks for read-only access to
    code.
 2. Press **Check again** on the GitHub page. Your repositories appear.
-3. Create an app: pick the GitHub app (if you connected more than one), the repository, the branch and the port your app listens on. By default the repository must contain a `Dockerfile` (in its root, or in a root directory you set); that is what Shipdok builds. For code without one, choose **Railpack** as the build method ([how it works](docs/operations.md#apps-without-a-dockerfile-railpack)).
+3. Create an app (three steps): choose the GitHub app (or none, for a public repository) and the repository, and Shipdok checks it can see it; then choose where the app is in the repository and how to build it (**Railpack** by default, or your own **Dockerfile**: [how Railpack works](docs/operations.md#apps-without-a-dockerfile-railpack)); then fill in the rest. A private repository needs a GitHub app that is installed on it: if Shipdok cannot see the repository it says so and how to fix it. Creating an app does not deploy it: press Deploy when you are ready.
 4. Press **Deploy**. Watch the build log, then open the app's address.
 
 Pushes to the tracked branch now deploy automatically once GitHub can reach Shipdok: set a public address under **Security → Public

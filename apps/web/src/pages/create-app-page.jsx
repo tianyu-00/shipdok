@@ -1,51 +1,75 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { toast } from 'sonner'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import { api } from '@/lib/api'
-import { useGithub, useRepos } from '@/lib/queries'
+import { useGithub, useRepoCheck, useRepos } from '@/lib/queries'
 import { githubAppBody, startingApp } from '@/lib/github-apps'
-import { BranchPicker } from '@/components/branch-picker'
-import { RepoPicker } from '@/components/repo-picker'
-import { GithubAppSelect } from '@/components/github-app-select'
-import { Field } from '@/components/field'
-import { BuildMethodFields } from '@/components/build-method-fields'
-import { rootDirHint } from '@/lib/build-method'
+import { DEFAULT_METHOD } from '@/lib/build-methods'
+import { clearDraft, loadDraft, saveDraft } from '@/lib/create-draft'
+import { useDebounced } from '@/lib/use-debounced'
+import { RepoStep } from '@/components/create/repo-step'
+import { MethodStep } from '@/components/create/method-step'
+import { DetailsStep } from '@/components/create/details-step'
+import { ListSkeleton } from '@/components/states'
 
 const num = (v) => (v === '' ? undefined : Number(v))
+
+const STEPS = [
+  { title: 'Repository', text: 'Choose the repository. Shipdok checks that it can see it before going on.' },
+  { title: 'Build method', text: 'Choose where the app is in the repository and how Shipdok should build it.' },
+  { title: 'Details', text: 'The last details. Creating the app does not build it: you press Deploy when you are ready.' },
+]
 
 export default function CreateAppPage() {
   const navigate = useNavigate()
   const client = useQueryClient()
   const github = useGithub()
   const apps = github.data?.apps ?? []
-  const [chosenApp, setChosenApp] = useState(undefined) // undefined = not chosen yet, '' = none, otherwise an app's id
-  const githubApp = chosenApp ?? startingApp(apps) // the only connected app is the starting choice
+  const draft = useMemo(() => loadDraft(), []) // what was chosen before the person left for GitHub (connecting an app) and came back
+  const [step, setStep] = useState(1)
+  const [chosenApp, setChosenApp] = useState(draft?.githubApp) // undefined = not chosen yet, '' = none, otherwise an app's id
+  // The GitHub app in use: the person's choice (if that app still exists), else the only one connected, else none when there are none at all.
+  // Until the list of apps is known nothing is decided, so nothing is checked against a guess.
+  const githubApp = github.isPending ? undefined
+    : chosenApp !== undefined && (chosenApp === '' || apps.some((a) => a.id === chosenApp)) ? chosenApp
+      : apps.length === 0 ? '' : startingApp(apps)
   const repos = useRepos(githubApp)
   const [f, setF] = useState({
-    repo: '', name: '', branch: 'main', root_dir: '.', container_port: '3000', host_port: '', health_path: '',
+    repo: draft?.repo ?? '', name: '', branch: 'main', root_dir: '.', container_port: '3000', host_port: '', health_path: '',
     memory_mb: '512', cpus: '1', max_restarts: '5', build_timeout_minutes: '', keep_previous_images: '1', auto_prune: true,
-    build_method: 'dockerfile', install_command: '', build_command: '', start_command: '',
+    build_method: DEFAULT_METHOD, install_command: '', build_command: '', start_command: '',
   })
   const [nameTouched, setNameTouched] = useState(false)
   const [branchTouched, setBranchTouched] = useState(false) // once the branch is chosen by hand, the repository's default no longer replaces it
+  const [nonce, setNonce] = useState(0) // "check again"
   const set = (patch) => setF((old) => ({ ...old, ...patch }))
 
-  // Picking (or typing) a repository from the GitHub App's list fills in a name and the repository's own default branch.
+  // The repository is checked once it has stopped changing for a moment (not on every key while it is typed).
+  const repoText = f.repo.trim()
+  const settledRepo = useDebounced(repoText, 400)
+  const settled = settledRepo === repoText
+  const check = useRepoCheck(settledRepo, githubApp, nonce)
+
+  useEffect(() => { saveDraft({ repo: repoText, githubApp: chosenApp }) }, [repoText, chosenApp])
+
+  // Picking (or typing) a repository from the GitHub App's list fills in a name and the repository's own default branch; the folder starts over.
   const onRepo = (repo) => {
     const known = repos.data?.repos.find((r) => r.fullName === repo)
-    setBranchTouched(false) // a different repository starts again from its own default branch
+    setBranchTouched(false)
     set({
-      repo,
+      repo, root_dir: '.',
       ...(nameTouched ? {} : { name: repo.split('/')[1] ?? '' }),
       ...(known?.defaultBranch ? { branch: known.defaultBranch } : {}),
     })
+  }
+
+  // The check already knows the repository's default branch, so the form can start on it before the branch list is loaded.
+  const goToMethod = () => {
+    set({ ...(!branchTouched && check.data.defaultBranch ? { branch: check.data.defaultBranch } : {}), ...(nameTouched ? {} : { name: repoText.split('/')[1] ?? '' }) })
+    setStep(2)
   }
 
   const create = useMutation({
@@ -64,6 +88,7 @@ export default function CreateAppPage() {
       },
     }),
     onSuccess: (app) => {
+      clearDraft()
       client.invalidateQueries({ queryKey: ['apps'] })
       toast.success(`${app.name} created`, { description: 'It is not deployed yet: press Deploy when you are ready.' })
       if (app.warning) toast.warning(app.warning, { duration: 12_000 })
@@ -71,78 +96,37 @@ export default function CreateAppPage() {
     },
   })
 
+  const current = STEPS[step - 1]
   return (
     <div className="mx-auto max-w-2xl space-y-4">
       <Link to="/" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:underline"><ArrowLeft className="size-4" />All apps</Link>
       <Card>
         <CardHeader>
           <CardTitle>New app</CardTitle>
-          <CardDescription>Shipdok clones the repository, builds it (with its Dockerfile, or with Railpack when it has none) and runs it in a container.</CardDescription>
+          <p className="text-sm font-medium text-primary" aria-live="polite">Step {step} of {STEPS.length}: {current.title}</p>
+          <CardDescription>{current.text}</CardDescription>
         </CardHeader>
         <CardContent>
-          <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); create.mutate() }} noValidate>
-            {apps.length > 0 && (
-              <Field id="github_app" label="GitHub app" hint="The connected GitHub app that has this repository: it lists the repositories, clones a private one and its pushes deploy the app. Choose None for a public repository you deploy by hand.">
-                <GithubAppSelect id="github_app" value={githubApp} onChange={setChosenApp} apps={apps} choose={apps.length > 1} />
-              </Field>
-            )}
-            <Field id="repo" label="GitHub repository" hint={repos.data?.available ? 'The repositories the chosen GitHub app can see. For any other public repository, type owner/repo or paste its GitHub link.' : apps.length > 0 ? 'owner/repo, or paste the repository\'s GitHub link. A private repository needs a GitHub app that is installed on it.' : 'owner/repo, or paste the repository\'s GitHub link. Private repositories need a GitHub app: connect one on the GitHub page.'}>
-              <RepoPicker id="repo" value={f.repo} onChange={onRepo} repos={repos} githubAppId={githubApp} />
-            </Field>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field id="name" label="Name"><Input id="name" value={f.name} onChange={(e) => { setNameTouched(true); set({ name: e.target.value }) }} /></Field>
-              <Field id="branch" label="Branch" hint="Pushes to this branch deploy the app.">
-                <BranchPicker id="branch" repo={f.repo} value={f.branch} githubAppId={githubApp || undefined}
-                  onChange={(branch) => { setBranchTouched(true); set({ branch }) }}
-                  onDefaultKnown={(branch) => { if (!branchTouched) set({ branch }) }} />
-              </Field>
-              <Field id="container_port" label="Container port" hint="The port the app listens on inside its container.">
-                <Input id="container_port" inputMode="numeric" value={f.container_port} onChange={(e) => set({ container_port: e.target.value })} />
-              </Field>
-              <Field id="host_port" label="Host port" hint="The port it is published on, 1024 or higher. Each app needs its own. Leave empty to pick a free one automatically.">
-                <Input id="host_port" inputMode="numeric" placeholder="automatic" value={f.host_port} onChange={(e) => set({ host_port: e.target.value })} />
-              </Field>
-              <Field id="health_path" label="Health check path" hint="Optional, for example /health. Without it, any answer counts as healthy.">
-                <Input id="health_path" placeholder="/health" value={f.health_path} onChange={(e) => set({ health_path: e.target.value })} />
-              </Field>
-              <Field id="root_dir" label="Root directory" hint={rootDirHint(f.build_method)}>
-                <Input id="root_dir" value={f.root_dir} onChange={(e) => set({ root_dir: e.target.value })} />
-              </Field>
-              <BuildMethodFields values={f} onChange={(k, v) => set({ [k]: v })} />
-            </div>
-
-            <details className="rounded-md border p-3">
-              <summary className="cursor-pointer text-sm font-medium">Limits and clean-up</summary>
-              <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                <Field id="memory_mb" label="Memory limit (MB)"><Input id="memory_mb" inputMode="numeric" value={f.memory_mb} onChange={(e) => set({ memory_mb: e.target.value })} /></Field>
-                <Field id="cpus" label="CPU limit"><Input id="cpus" inputMode="decimal" value={f.cpus} onChange={(e) => set({ cpus: e.target.value })} /></Field>
-                <Field id="max_restarts" label="Automatic restarts" hint="Crashes allowed within 10 minutes before the app is marked crashed. 0 = never restart by itself.">
-                  <Input id="max_restarts" inputMode="numeric" value={f.max_restarts} onChange={(e) => set({ max_restarts: e.target.value })} />
-                </Field>
-                <Field id="build_timeout_minutes" label="Build time limit (minutes)" hint="Leave empty for no limit. Otherwise a clone and build that take longer than this (5 to 10080) are stopped and the deployment fails. With no limit, a build that hangs blocks other deployments until you cancel it.">
-                  <Input id="build_timeout_minutes" inputMode="numeric" placeholder="no limit" value={f.build_timeout_minutes} onChange={(e) => set({ build_timeout_minutes: e.target.value })} />
-                </Field>
-                <Field id="keep_previous_images" label="Earlier versions kept" hint="Images of earlier versions kept besides the running one, so you can roll back.">
-                  <Input id="keep_previous_images" inputMode="numeric" value={f.keep_previous_images} onChange={(e) => set({ keep_previous_images: e.target.value })} />
-                </Field>
-                <div className="flex items-center gap-3 sm:col-span-2">
-                  <Switch id="auto_prune" checked={f.auto_prune} onCheckedChange={(v) => set({ auto_prune: v })} />
-                  <Label htmlFor="auto_prune">Remove old images automatically after each deployment</Label>
-                </div>
-              </div>
-            </details>
-
-            {create.isError && (
-              <div role="alert" className="space-y-1 text-sm text-destructive">
-                <p>{create.error.message}</p>
-                {create.error.body?.details?.length > 0 && <ul className="list-disc pl-5">{create.error.body.details.map((d) => <li key={d}>{d}</li>)}</ul>}
-              </div>
-            )}
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" asChild><Link to="/">Cancel</Link></Button>
-              <Button type="submit" disabled={create.isPending || (apps.length > 1 && githubApp === undefined)}>{create.isPending ? 'Creating…' : 'Create app'}</Button>
-            </div>
-          </form>
+          {step === 1 && (github.isPending ? <ListSkeleton rows={2} /> : (
+            <RepoStep
+              apps={apps} githubApp={githubApp} onApp={setChosenApp} repo={f.repo} onRepo={onRepo} repos={repos}
+              settled={settled} check={check} onCheckAgain={() => setNonce((n) => n + 1)} onContinue={goToMethod}
+            />
+          ))}
+          {step === 2 && (
+            <MethodStep
+              repo={repoText} rootDir={f.root_dir} onRootDir={(dir) => set({ root_dir: dir })}
+              method={f.build_method} onMethod={(id) => set({ build_method: id })}
+              onChangeRepo={() => setStep(1)} onBack={() => setStep(1)} onContinue={() => setStep(3)}
+            />
+          )}
+          {step === 3 && (
+            <DetailsStep
+              f={f} set={set} setNameTouched={setNameTouched} branchTouched={branchTouched} setBranchTouched={setBranchTouched} githubApp={githubApp}
+              mutation={create} canCreate={!(apps.length > 1 && githubApp === undefined)}
+              onChangeRepo={() => setStep(1)} onChangeMethod={() => setStep(2)} onBack={() => setStep(2)} onSubmit={() => create.mutate()}
+            />
+          )}
         </CardContent>
       </Card>
     </div>

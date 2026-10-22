@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { verify } from '@node-rs/argon2';
-import { GithubError, createGithubClient, parsePrivateKeyPem, saveGithubApp, deleteGithubApp, githubAppSummary, listRepoBranches, REPO_FULL_NAME_RE } from '@shipdok/shared';
+import { GithubError, createGithubClient, parsePrivateKeyPem, saveGithubApp, deleteGithubApp, githubAppSummary, listRepoBranches, inspectRepo, REPO_FULL_NAME_RE } from '@shipdok/shared';
 import { limiter } from '../authutil.js';
 import { addressOf, recordAttempt } from '../lockout.js';
 import { createRefusals } from '../webhookrefusals.js';
@@ -194,6 +194,44 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings, refusa
       } catch (err) {
         console.error('Listing GitHub repositories failed:', err.message);
         res.status(502).json({ error: 'Could not list repositories from GitHub' });
+      }
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Can Shipdok see this repository? (Nothing about what is inside it is read.) For the first step of creating an app. The answer is always 200 with `accessible` true or false
+  // (and why), because a repository that cannot be seen is an ordinary outcome of the step, not a failure. A private repository and one that does not
+  // exist look the same to GitHub, so the reason is just `not_found`. Through the chosen GitHub App's installation when it is installed there, otherwise
+  // anonymously (public repositories). A good answer is kept 60 s; `fresh=1` skips that (the "check again" after installing the app). Failures are never kept.
+  const checkCache = new Map(); // "app id or anon|owner/name" -> { at, value }
+  r.get('/repo-check', async (req, res, next) => {
+    try {
+      const repo = req.query.repo;
+      if (typeof repo !== 'string' || !REPO_FULL_NAME_RE.test(repo)) return res.status(400).json({ error: 'repo must be a repository like owner/name', code: 'bad_repo' });
+      let github = null;
+      if (req.query.app !== undefined) {
+        github = await clientOf(req, res);
+        if (!github) return undefined;
+      }
+      const key = `${github ? req.query.app : 'anon'}|${repo.toLowerCase()}`;
+      const hit = checkCache.get(key);
+      if (req.query.fresh !== '1' && hit && Date.now() - hit.at < BRANCH_CACHE_MS) return res.json(hit.value);
+      const appChosen = github !== null;
+      try {
+        const info = github ? await github.inspectRepo(repo) : { ...(await inspectRepo(repo, { fetch })), via: 'anonymous' };
+        const value = {
+          accessible: true, fullName: info.fullName, private: info.private, defaultBranch: info.defaultBranch, via: info.via, appChosen,
+        };
+        if (checkCache.size >= BRANCH_CACHE_MAX) checkCache.delete(checkCache.keys().next().value);
+        checkCache.set(key, { at: Date.now(), value });
+        res.json(value);
+      } catch (err) {
+        const status = err instanceof GithubError ? err.status : undefined;
+        if (status === 404) return res.json({ accessible: false, reason: 'not_found', appChosen });
+        if (status === 403 || status === 429) return res.json({ accessible: false, reason: 'rate_limited', appChosen });
+        console.error('Checking a GitHub repository failed:', err.message);
+        res.json({ accessible: false, reason: 'unreachable', appChosen });
       }
     } catch (err) {
       next(err);

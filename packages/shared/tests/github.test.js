@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createVerify, createPublicKey } from 'node:crypto';
 import {
-  GithubError, parsePrivateKeyPem, signAppJwt, createGithubClient, exchangeManifestCode, gitAuthEnv, listRepoBranches, REPO_FULL_NAME_RE,
+  GithubError, parsePrivateKeyPem, signAppJwt, createGithubClient, exchangeManifestCode, gitAuthEnv, listRepoBranches, inspectRepo, REPO_FULL_NAME_RE,
 } from '../src/index.js';
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -561,5 +561,75 @@ describe('client.listBranches', () => {
     const fetch = fakeFetch((call) => (call.url.endsWith('/installation') ? { status: 500 } : { json: {} }));
     await assert.rejects(makeClient(fetch).listBranches('o/r'), (e) => e instanceof GithubError && e.status === 500);
     assert.equal(fetch.calls.length, 1);
+  });
+});
+
+describe('inspectRepo', () => {
+  const repoApi = ({ repo = { full_name: 'O/R', private: false, default_branch: 'main' }, repoStatus = 200 } = {}) => fakeFetch((call) => {
+    const url = new URL(call.url);
+    if (/^\/repos\/[^/]+\/[^/]+$/.test(url.pathname)) return { status: repoStatus, json: repo };
+    return { status: 404 };
+  });
+
+  test('what the repository is, in ONE request (nothing about what is inside it is read)', async () => {
+    const fetch = repoApi();
+    const out = await inspectRepo('o/r', { fetch });
+    assert.deepEqual(out, { fullName: 'O/R', private: false, defaultBranch: 'main' });
+    assert.equal(fetch.calls.length, 1);
+    assert.equal(fetch.calls[0].url, 'https://api.github.com/repos/o/r');
+  });
+
+  test('a private repository is reported as such', async () => {
+    assert.equal((await inspectRepo('o/r', { fetch: repoApi({ repo: { full_name: 'o/r', private: true, default_branch: 'dev' } }) })).private, true);
+  });
+
+  test('a missing name or default branch is not invented', async () => {
+    const out = await inspectRepo('o/r', { fetch: repoApi({ repo: { private: false } }) });
+    assert.deepEqual(out, { fullName: 'o/r', private: false, defaultBranch: null });
+  });
+
+  test('no token: anonymous, no Authorization header; with a token it is sent', async () => {
+    const anon = repoApi(); await inspectRepo('o/r', { fetch: anon });
+    for (const c of anon.calls) assert.ok(!('Authorization' in c.headers), c.url);
+    const withToken = repoApi(); await inspectRepo('o/r', { fetch: withToken, bearer: 'ghs_tok' });
+    for (const c of withToken.calls) assert.equal(c.headers.Authorization, 'Bearer ghs_tok');
+  });
+
+  test('a missing or private repository is a 404 error; rate limiting is a 403', async () => {
+    await assert.rejects(inspectRepo('o/r', { fetch: repoApi({ repoStatus: 404 }) }), (e) => e instanceof GithubError && e.status === 404);
+    await assert.rejects(inspectRepo('o/r', { fetch: repoApi({ repoStatus: 403 }) }), (e) => e instanceof GithubError && e.status === 403);
+  });
+
+  test('a bad repository name is refused before anything is asked', async () => {
+    const fetch = repoApi();
+    await assert.rejects(inspectRepo('../x', { fetch }), TypeError);
+    assert.equal(fetch.calls.length, 0);
+  });
+});
+
+describe('the client inspecting a repository', () => {
+  const routes = ({ installed }) => fakeFetch((call) => {
+    const url = new URL(call.url);
+    if (url.pathname.endsWith('/installation')) return installed ? { json: { id: 55 } } : { status: 404 };
+    if (url.pathname === '/app/installations/55/access_tokens') return tokenReply('ghs_repo');
+    if (/^\/repos\/[^/]+\/[^/]+$/.test(url.pathname)) return { json: { full_name: 'o/r', private: installed, default_branch: 'main' } };
+    return { status: 404 };
+  });
+
+  test('installed: through a read-only token for that one repository, and says so', async () => {
+    const fetch = routes({ installed: true });
+    const out = await makeClient(fetch).inspectRepo('o/r');
+    assert.deepEqual([out.via, out.private], ['app', true]);
+    const token = fetch.calls.find((c) => c.url.endsWith('/access_tokens'));
+    assert.deepEqual(token.body, { repositories: ['r'], permissions: { contents: 'read' } });
+    assert.equal(fetch.calls.find((c) => c.url === 'https://api.github.com/repos/o/r').headers.Authorization, 'Bearer ghs_repo');
+  });
+
+  test('not installed: anonymous, and says so', async () => {
+    const fetch = routes({ installed: false });
+    const out = await makeClient(fetch).inspectRepo('o/r');
+    assert.deepEqual([out.via, out.private], ['anonymous', false]);
+    assert.ok(!fetch.calls.some((c) => c.url.endsWith('/access_tokens')));
+    for (const c of fetch.calls.filter((c) => !c.url.endsWith('/installation'))) assert.ok(!('Authorization' in c.headers), c.url);
   });
 });
