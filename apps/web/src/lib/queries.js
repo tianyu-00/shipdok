@@ -109,5 +109,5 @@ export const useVersion = () => useQuery({ queryKey: ['version'], queryFn: () =>
 export const useBackups = () => useQuery({
   queryKey: ['backups'],
   queryFn: () => api('/backups'),
-  refetchInterval: (q) => ((q.state.data?.backups ?? []).some((b) => b.status === 'queued' || b.status === 'running') ? 3000 : 30_000),
+  refetchInterval: (q) => (((q.state.data?.backups ?? []).some((b) => b.status === 'queued' || b.status === 'running') || (q.state.data?.restores ?? []).some((r) => r.status === 'queued' || r.status === 'running')) ? 3000 : 30_000),
 })

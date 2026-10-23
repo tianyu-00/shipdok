@@ -199,19 +199,30 @@ the worker beside the build queue. The files go in the same `shipdok_backups` vo
 - **Only mounted volumes** are copied (a detached volume, kept after its path was removed, is not).
 - **Copy the files away.** Like the others they are on this machine's disk: download them (password needed).
 
-**Restore the data of an app.** Download the file, then open it (this decrypts it if needed and unpacks one `volume-N.tar` per volume; `manifest.json` says which path each was mounted at and which app it is):
+**Restore the data of an app (from the dashboard).** In the **Backups of your apps' data** card, every finished backup whose app still exists has a **Restore** button (the arrow icon). It asks for:
+
+- **What to do with the files that are there now:** **Replace** (the default: the volume ends up exactly as the backup was, files that are not in the backup are removed), **Add over** (the backup's files are written over the current ones, files that are only in the volume now stay) or **Only into empty volumes** (refused if a volume holds anything; nothing is overwritten).
+- **Make a backup of the current data first** (ticked by default). It is a normal volume backup, listed with "Before a restore". If it fails, nothing is restored. Untick it only if you are sure: after a Replace without it the old data is gone. Safety backups count toward "Keep the newest" like any other, so with a small number they can push older backups (even the one you restored from) out after the next backup.
+- **The passphrase of that backup**, only if it was made with a different passphrase than the current one (otherwise the current one is used).
+- **Your password** (the restore overwrites live data; it is recorded in the sign-ins list).
+
+What happens: the worker stops the app (an app that is already stopped stays stopped; if a deployment or another job is working on the app, the restore fails instead of stopping it), makes the safety backup if asked, empties or checks the volumes, writes the files in (owners and permissions are kept), reads the volumes back to check them, and starts the app again. The app is stopped only after everything that can be checked in advance has passed (the file opens, every path of the backup still has a volume, there is room). Each volume of the backup goes to the app's mounted volume **at the same path**; if the app has no storage at one of those paths any more, nothing is changed and the restore says which (add the path in Settings, then restore). Volumes of the app that are not in the backup are left alone.
+
+If a restore fails **after** it began to change files, the message says the files may be only partly restored and, when one was made, points at the safety backup in the list: restore from that one to go back. There is no automatic roll-back. If the worker is stopped in the middle, the restore is marked failed the same way and the app is started again when the worker comes back. Only one restore (or backup) of an app can wait or run at a time. Restoring Shipdok itself (the database) is not available from the dashboard: see [Restore](#restore) above.
+
+**Restore by hand.** Download the file, then open it (this decrypts it if needed and unpacks one `volume-N.tar` per volume; `manifest.json` says which path each was mounted at and which app it is):
 
 ```bash
 docker compose run --rm --no-deps -v "$PWD":/backup -e SHIPDOK_BACKUP_PASSPHRASE api node scripts/open-backup.js /backup/shipdok-volumes-FILE.tar.enc /backup/opened-volumes
 ```
 
-Restore into an EMPTY volume (the Docker name of each volume is under its path in the app's Settings; for a new app deploy once with the same paths so the volume exists, and stop the app first). Nothing is overwritten unless you point it at a volume that is not empty:
+Restore into an EMPTY volume (the Docker name of each volume is under its path in the app's Settings; stop the app first). Nothing is overwritten unless you point it at a volume that is not empty:
 
 ```bash
 docker run --rm -v shipdok-vol-XXXX:/data -v "$PWD/opened-volumes":/in:ro alpine tar xf /in/volume-0.tar -C /data
 ```
 
-(File owners and permissions are kept, as they were in the app.) This is not tested by Shipdok on a live app for you: after a restore, start the app and look at its data.
+(File owners and permissions are kept, as they were in the app.) After a restore, start the app and look at its data.
 
 **Back up a volume by hand.** You can still do it yourself. Stop the app first if it writes continuously, then, in a folder you control:
 

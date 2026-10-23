@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, afterEach } from 'vitest'
-import { downloadBackup, filenameFrom, isAppBusy, isBusy, keepChoices, latestBackups, localHourText, platformBackups, scheduleText, utcHourText, volumeBackups, volumesText, WEEKDAYS } from './backups'
+import { RESTORE_MODES, isAppRestoring, restoreModeLabel, downloadBackup, filenameFrom, isAppBusy, isBusy, keepChoices, latestBackups, localHourText, platformBackups, scheduleText, utcHourText, volumeBackups, volumesText, WEEKDAYS } from './backups'
 import { ApiError } from './api'
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
@@ -134,5 +134,18 @@ describe('the two kinds of backup', () => {
   })
   test('volumes are counted in words', () => {
     expect([volumesText(0), volumesText(1), volumesText(2)]).toEqual(['0 volumes', '1 volume', '2 volumes'])
+  })
+})
+
+describe('restoring', () => {
+  test('a restore of an app that waits or runs blocks that app only', () => {
+    const list = [{ appId: 'a1', status: 'running' }, { appId: 'a2', status: 'ok' }, { appId: 'a3', status: 'queued' }, { appId: 'a4', status: 'failed' }]
+    expect([isAppRestoring(list, 'a1'), isAppRestoring(list, 'a2'), isAppRestoring(list, 'a3'), isAppRestoring(list, 'a4'), isAppRestoring(list, 'zz')]).toEqual([true, false, true, false, false])
+    expect(isAppRestoring(undefined, 'a1')).toBe(false)
+  })
+  test('the modes offered: Replace first (the default), then Add over, then only into empty volumes', () => {
+    expect(RESTORE_MODES.map((m) => m.value)).toEqual(['replace', 'add', 'empty'])
+    expect(restoreModeLabel('add')).toBe('Add over')
+    expect(restoreModeLabel('other')).toBe('other')
   })
 })

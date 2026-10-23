@@ -33,6 +33,17 @@ export const isBusy = (backups) => (backups ?? []).some((b) => b.status === 'que
 /** Is a backup of THIS app's volumes waiting or being made? */
 export const isAppBusy = (backups, appId) => isBusy(volumeBackups(backups).filter((b) => b.appId === appId))
 
+/** Is a restore of THIS app waiting or running? (Then no backup or restore of it can be asked for.) */
+export const isAppRestoring = (restores, appId) => (restores ?? []).some((r) => r.appId === appId && (r.status === 'queued' || r.status === 'running'))
+
+/** The ways to restore, in the order offered (the first is the default). */
+export const RESTORE_MODES = [
+  { value: 'replace', label: 'Replace', hint: 'The volume ends up exactly as the backup was. Files that are not in the backup are removed.' },
+  { value: 'add', label: 'Add over', hint: 'The backup\'s files are written over the current ones. Files that are only in the volume now stay.' },
+  { value: 'empty', label: 'Only into empty volumes', hint: 'Refused if a volume holds anything. Nothing is overwritten.' },
+]
+export const restoreModeLabel = (mode) => RESTORE_MODES.find((m) => m.value === mode)?.label ?? mode
+
 /** How many volume backups an app may keep: the choices offered (the app's own number is added when it is not one of them). */
 export const KEEP_CHOICES = [1, 2, 3, 5, 7, 10, 14, 30, 60]
 export const keepChoices = (current) => (KEEP_CHOICES.includes(current) ? KEEP_CHOICES : [...KEEP_CHOICES, current].sort((a, b) => a - b))

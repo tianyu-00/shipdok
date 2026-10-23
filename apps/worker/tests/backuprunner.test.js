@@ -35,7 +35,7 @@ const oldBackup = async (status, ageMinutes) => {
 
 before(ready);
 beforeEach(async () => {
-  await pool.query('TRUNCATE backups');
+  await pool.query('TRUNCATE volume_restores, backups');
   await pool.query(`DELETE FROM settings WHERE key IN ('backup_schedule', 'backup_passphrase')`);
   dir = await mkdtemp(join(tmpdir(), 'bkr-dir-'));
   secretsDir = await mkdtemp(join(tmpdir(), 'bkr-sec-'));

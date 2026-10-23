@@ -48,7 +48,7 @@ before(ready);
 after(() => pool.end());
 beforeEach(async () => {
   await reset();
-  await pool.query('TRUNCATE backups, app_volumes');
+  await pool.query('TRUNCATE volume_restores, backups, app_volumes');
   await pool.query(`DELETE FROM settings WHERE key IN ('backup_schedule', 'backup_passphrase')`);
   dir = await mkdtemp(join(tmpdir(), 'vbr-dir-'));
   source = await mkdtemp(join(tmpdir(), 'vbr-src-'));
@@ -190,7 +190,7 @@ describe('stopping the app for the copy', () => {
     assert.equal(row.status, 'ok');
     assert.match(row.warning, /could not be started again after the copy: port in use/);
 
-    await pool.query('TRUNCATE backups');
+    await pool.query('TRUNCATE volume_restores, backups');
     await runtime(appId, 'running');
     const eng2 = engine({ startContainer: async () => { throw new Error('port in use'); }, archiveVolume: async () => { throw new Error('read error'); } });
     const again = await asked();
@@ -263,7 +263,7 @@ describe('the schedule', () => {
     await scheduled();
     await pool.query(`INSERT INTO backups (kind, app_id, app_name, trigger, status, started_at, finished_at) VALUES ('volumes', $1, 'A', 'manual', 'ok', $2, $2)`, [appId, new Date(SLOT + 60_000)]);
     assert.equal(await ask(), 0);
-    await pool.query('TRUNCATE backups');
+    await pool.query('TRUNCATE volume_restores, backups');
     await pool.query(`INSERT INTO backups (kind, app_id, app_name, trigger, status, started_at, finished_at) VALUES ('volumes', $1, 'A', 'manual', 'ok', $2, $2)`, [appId, new Date(SLOT - 60_000)]);
     assert.equal(await ask(), 1, 'one from before the slot is not enough');
   });
@@ -291,7 +291,7 @@ describe('the schedule', () => {
   test('a volume backup does not stand in for Shipdok\'s own, and the other way round', async () => {
     await pool.query(`INSERT INTO backups (kind, app_id, app_name, trigger, status, started_at, finished_at) VALUES ('volumes', $1, 'A', 'manual', 'ok', $2, $2)`, [appId, new Date(SLOT + 60_000)]);
     assert.equal(await requestIfDue({ db, now: NOW, log }), true, 'Shipdok\'s own backup is still due');
-    await pool.query('TRUNCATE backups');
+    await pool.query('TRUNCATE volume_restores, backups');
     await scheduled();
     await db.requestBackup('manual'); await pool.query(`UPDATE backups SET status = 'ok', started_at = $1, finished_at = $1`, [new Date(SLOT + 60_000)]);
     assert.equal(await ask(), 1, 'the app\'s is still due');
@@ -371,7 +371,7 @@ describe('after the worker was stopped', () => {
     await recoverAfterStop({ db, eng, log });
     assert.deepEqual(orderOf(eng), []);
     await setApp(appId, { volume_backup_stop: false, desired_state: 'running' });
-    await pool.query('TRUNCATE backups');
+    await pool.query('TRUNCATE volume_restores, backups');
     await db.requestVolumeBackup(appId, 'manual'); await db.claimQueuedBackup();
     const eng2 = engine();
     await recoverAfterStop({ db, eng: eng2, log });

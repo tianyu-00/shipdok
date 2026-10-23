@@ -197,6 +197,7 @@ export const schemas = {
     verified: { type: 'boolean', nullable: true, description: 'The database dump was read back after it was made and had content.' },
     version: nstr('The Shipdok version that made it.'), warning: nstr('Something to know, for example that the platform secrets could not be included.'), error: nstr('Why it failed.'),
     downloadable: bool('It has a file that can be downloaded.'),
+    restorable: bool('A backup of an app\'s volumes that is finished, has its file and whose app still exists: it can be restored (`POST /api/backups/{id}/restore`).'),
   }),
   BackupSchedule: obj({
     frequency: enumOf(['off', 'daily', 'weekly'], 'How often.'), hour: int('The hour, UTC (0 to 23).'), weekday: int('For weekly: the day, 0 (Sunday) to 6 (Saturday), UTC.'), keep: int('How many of the newest backups to keep (1 to 60).'),
@@ -206,6 +207,7 @@ export const schemas = {
     totalBytes: int('The size of all the finished backups together.'),
     schedule: ref('BackupSchedule'), nextRunAt: ntime('When the next scheduled backup is due; `null` when the schedule is off.'),
     encryption: obj({ enabled: bool('A passphrase is set: new backups are encrypted.') }),
+    restores: { type: 'array', description: 'The latest restores (newest first, at most 20).', items: ref('VolumeRestore') },
     apps: { type: 'array', description: 'The apps that have mounted persistent volumes.', items: obj({
       id: uuid('The app.'), name: str('Its name.'), volumeCount: int('Mounted volumes.'), sizeBytes: nint('Their size together, from the last measurement; `null` when any was never measured.'),
       lastBackupAt: ntime('When the latest good volume backup finished.'), enabled: bool('Included in the scheduled backups.'), stop: bool('Stopped while its volumes are copied.'), keep: int('How many of its newest volume backups to keep.'),
@@ -213,6 +215,20 @@ export const schemas = {
     persistent: bool('The backups folder is a volume of its own, so the backups survive the container being replaced.'),
   }),
   VolumeBackupSettings: obj({ enabled: bool('Include the app in the scheduled backups.'), stop: bool('Stop the app while its volumes are copied.'), keep: int('How many of its newest volume backups to keep (1 to 60).') }),
+  VolumeRestore: obj({
+    id: uuid('The restore.'), backupId: { type: 'string', format: 'uuid', nullable: true, description: 'The backup it restores from (`null` once that backup is deleted).' },
+    appId: { type: 'string', format: 'uuid', nullable: true, description: 'The app (`null` once it is deleted).' }, appName: str('The name the app had.'),
+    backupMadeAt: ntime('When that backup was made.'), mode: enumOf(['replace', 'add', 'empty'], 'replace: the volume ends up exactly as the backup was; add: the backup\'s files are written over the current ones; empty: only into volumes that hold nothing.'),
+    safetyBackup: bool('A backup of the current data was asked to be made first.'), safetyBackupId: { type: 'string', format: 'uuid', nullable: true, description: 'That backup (it is in the list, with trigger `before_restore`).' },
+    status: enumOf(['queued', 'running', 'ok', 'failed'], 'Waiting for the worker, being done, done, or failed (`error` says why).'),
+    requestedAt: time('When it was asked for.'), startedAt: ntime('When the worker began.'), finishedAt: ntime('When it ended.'),
+    volumeCount: nint('How many volumes were restored.'), warning: nstr('Something to know, for example that the app could not be started again.'), error: nstr('Why it failed.'),
+  }),
+  RestoreRequest: obj({
+    password: str('The current password.'), mode: enumOf(['replace', 'add', 'empty'], 'What to do with what is in the volumes now.'),
+    safetyBackup: bool('Make a backup of the current data first; if that fails, nothing is restored.'),
+    passphrase: { type: 'string', nullable: true, description: 'Only when the backup was made with a different passphrase than the current one (1 to 256 characters). Kept encrypted until the restore ends.' },
+  }),
   BackupPassphraseRequest: obj({ password: str('The current password.'), passphrase: { type: 'string', nullable: true, description: '12 to 256 characters, not starting or ending with a space; `null` removes it.' } }),
   BackupDownloadRequest: obj({ password: str('The current password.') }),
   VersionStatus: obj({

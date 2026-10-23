@@ -190,3 +190,148 @@ describe('Shipdok\'s own card with both kinds in the list', () => {
     expect(screen.queryByRole('status', { name: 'Last backup failed' })).toBeNull()
   })
 })
+
+describe('how often the list is refreshed', () => {
+  const interval = async (data) => {
+    mockApi({ 'GET /api/backups': data })
+    const view = renderWithProviders(<VolumeBackupsCard />)
+    await screen.findAllByRole('listitem')
+    const query = view.client.getQueryCache().find({ queryKey: ['backups'] })
+    return query.observers[0].options.refetchInterval(query)
+  }
+  test('every 30 seconds when nothing is going on', async () => expect(await interval(overview({ restores: [] }))).toBe(30_000))
+  test('every 3 seconds while a backup is waiting or running', async () => expect(await interval(overview({ backups: [volumeBackup({ status: 'running' })], restores: [] }))).toBe(3000))
+  test('every 3 seconds while a restore is waiting or running, so its end shows up', async () => {
+    expect(await interval(overview({ restores: [{ id: 'r', status: 'running', appId: 'a1', appName: 'Blog', mode: 'replace', safetyBackup: true }] }))).toBe(3000)
+  })
+})
+
+describe('restoring', () => {
+  const restore = (over = {}) => ({
+    id: 'r1', backupId: 'v1', appId: 'a1', appName: 'Blog', backupMadeAt: ago(60), mode: 'replace', safetyBackup: true, safetyBackupId: null, status: 'ok', requestedAt: ago(10), startedAt: ago(10), finishedAt: ago(9),
+    volumeCount: 2, warning: null, error: null, ...over,
+  })
+  const withRestorable = (over = {}) => overview({ backups: [volumeBackup({ restorable: true })], restores: [], ...over })
+  const open = async (data = withRestorable(), extra = {}) => {
+    const api = card(data, extra)
+    await userEvent.click(await screen.findByRole('button', { name: /Restore from the backup of/ }))
+    return api
+  }
+  const post = (api) => api.called('POST', '/api/backups/v1/restore')
+
+  test('a button on each backup that can be restored, and none on one that cannot', async () => {
+    card(overview({ backups: [volumeBackup({ restorable: true }), volumeBackup({ id: 'v2', restorable: false, appId: null })], restores: [] }))
+    await screen.findAllByRole('row', { name: /Blog/ })
+    expect(screen.getAllByRole('button', { name: /Restore from the backup of/ })).toHaveLength(1)
+  })
+  test('is disabled while a backup or a restore of that app is waiting or running, not for others', async () => {
+    card(withRestorable({ backups: [volumeBackup({ restorable: true }), volumeBackup({ id: 'q', status: 'running', restorable: false, downloadable: false, finishedAt: null })] }))
+    expect(await screen.findByRole('button', { name: /Restore from the backup of/ })).toBeDisabled()
+    document.body.innerHTML = ''
+    card(withRestorable({ restores: [restore({ status: 'running', finishedAt: null })] }))
+    expect(await screen.findByRole('button', { name: /Restore from the backup of/ })).toBeDisabled()
+  })
+  test('the dialog says what will happen, with Replace chosen, the safety backup ticked, and the app named', async () => {
+    await open()
+    expect(await screen.findByText('Restore the data of Blog')).toBeInTheDocument()
+    expect(screen.getByText(/Blog is stopped while this happens/)).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /Replace/ })).toBeChecked()
+    expect(screen.getByRole('radio', { name: /Add over/ })).not.toBeChecked()
+    expect(screen.getByRole('radio', { name: /Only into empty volumes/ })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /Make a backup of the current data first/ })).toBeChecked()
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeDisabled()
+  })
+  test('sends the password, the mode and the safety choice, then closes and says so', async () => {
+    const api = await open(withRestorable(), { 'POST /api/backups/v1/restore': answer(202, { id: 'r1' }) })
+    await userEvent.click(screen.getByRole('radio', { name: /Add over/ }))
+    await userEvent.click(screen.getByRole('checkbox', { name: /Make a backup of the current data first/ }))
+    await userEvent.type(screen.getByLabelText('Your password'), 'my-password')
+    await userEvent.click(screen.getByRole('button', { name: 'Restore' }))
+    await waitFor(() => expect(post(api)).toHaveLength(1))
+    expect(post(api)[0].body).toEqual({ password: 'my-password', mode: 'add', safetyBackup: false })
+    expect(toasts.success).toHaveBeenCalledWith('A restore of Blog has been asked for')
+    await waitFor(() => expect(screen.queryByText('Restore the data of Blog')).toBeNull())
+  })
+  test('the default choices are Replace with a safety backup', async () => {
+    const api = await open(withRestorable(), { 'POST /api/backups/v1/restore': answer(202, { id: 'r1' }) })
+    await userEvent.type(screen.getByLabelText('Your password'), 'pw')
+    await userEvent.click(screen.getByRole('button', { name: 'Restore' }))
+    await waitFor(() => expect(post(api)).toHaveLength(1))
+    expect(post(api)[0].body).toEqual({ password: 'pw', mode: 'replace', safetyBackup: true })
+  })
+  const enc = () => withRestorable({ backups: [volumeBackup({ restorable: true, encrypted: true })] })
+  const send = async (api) => { await userEvent.type(screen.getByLabelText('Your password'), 'pw'); await userEvent.click(screen.getByRole('button', { name: 'Restore' })); await waitFor(() => expect(post(api)).toHaveLength(1)) }
+  test('the passphrase field is only for an encrypted backup', async () => {
+    await open(withRestorable({ backups: [volumeBackup({ restorable: true, encrypted: false })] }))
+    expect(screen.queryByLabelText(/Passphrase of this backup/)).toBeNull()
+  })
+  test('an encrypted backup offers the passphrase, which is optional: nothing is sent when it is empty', async () => {
+    const api = await open(enc(), { 'POST /api/backups/v1/restore': answer(202, { id: 'r1' }) })
+    expect(screen.getByLabelText(/Passphrase of this backup/)).toBeInTheDocument()
+    await send(api)
+    expect(post(api)[0].body).not.toHaveProperty('passphrase')
+  })
+  test('and it is sent when typed', async () => {
+    const api = await open(enc(), { 'POST /api/backups/v1/restore': answer(202, { id: 'r1' }) })
+    await userEvent.type(screen.getByLabelText(/Passphrase of this backup/), 'old one')
+    await send(api)
+    expect(post(api)[0].body.passphrase).toBe('old one')
+  })
+  test('a wrong password is said under the field and the dialog stays', async () => {
+    await open(withRestorable(), { 'POST /api/backups/v1/restore': answer(403, { error: 'x', code: 'wrong_password' }) })
+    await userEvent.type(screen.getByLabelText('Your password'), 'wrong')
+    await userEvent.click(screen.getByRole('button', { name: 'Restore' }))
+    expect(await screen.findByText('That is not your current password')).toBeInTheDocument()
+    expect(screen.getByText('Restore the data of Blog')).toBeInTheDocument()
+  })
+  test('another refusal shows the server\'s reason', async () => {
+    await open(withRestorable(), { 'POST /api/backups/v1/restore': answer(409, { error: 'A backup of this app is being made: try again when it is done', code: 'backup_running' }) })
+    await userEvent.type(screen.getByLabelText('Your password'), 'pw')
+    await userEvent.click(screen.getByRole('button', { name: 'Restore' }))
+    expect(await screen.findByText('A backup of this app is being made: try again when it is done')).toBeInTheDocument()
+  })
+  test('cancelling asks for nothing', async () => {
+    const api = await open()
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(post(api)).toHaveLength(0)
+    await waitFor(() => expect(screen.queryByText('Restore the data of Blog')).toBeNull())
+  })
+
+  test('the restores are listed with how each went; a failed one shows why, in the row and in a notice', async () => {
+    card(withRestorable({ restores: [restore({ id: 'r2', status: 'failed', error: 'The volume at /data is not empty', mode: 'empty', safetyBackup: false, volumeCount: null }), restore()] }))
+    const items = await screen.findAllByRole('listitem', { name: 'Restore of Blog' })
+    expect(items).toHaveLength(2)
+    expect(items[0]).toHaveTextContent('Only into empty volumes · no backup of the current data')
+    expect(items[0]).toHaveTextContent('The volume at /data is not empty')
+    expect(items[1]).toHaveTextContent('Replace · backup of the current data first · 2 volumes restored')
+    expect(screen.getByRole('status', { name: 'Last restore failed' })).toHaveTextContent('The last restore of Blog\'s data failed')
+  })
+  test('no failure notice when the newest restore worked; a warning is shown', async () => {
+    card(withRestorable({ restores: [restore({ warning: 'The app could not be started again after the restore: port in use' }), restore({ id: 'r0', status: 'failed', error: 'old' })] }))
+    expect(await screen.findByText(/could not be started again after the restore/)).toBeInTheDocument()
+    expect(screen.queryByRole('status', { name: 'Last restore failed' })).toBeNull()
+  })
+  test('while a restore runs, the app says so and Back up now is off', async () => {
+    card(withRestorable({ restores: [restore({ status: 'running', finishedAt: null })] }))
+    expect(await within(await screen.findByRole('listitem', { name: 'Blog' })).findByRole('button', { name: 'Restoring…' })).toBeDisabled()
+    expect(screen.getByText('Restoring…', { selector: '[data-slot=badge]' })).toBeInTheDocument()
+  })
+  test('no list of restores when there are none, and an older answer without the field still works', async () => {
+    card(withRestorable({ restores: [] }))
+    await screen.findByRole('listitem', { name: 'Blog' })
+    expect(screen.queryByText('Restores')).toBeNull()
+    document.body.innerHTML = ''
+    const old = withRestorable(); delete old.restores
+    card(old)
+    expect(await screen.findByRole('listitem', { name: 'Blog' })).toBeInTheDocument()
+  })
+  test('a backup made before a restore says so', async () => {
+    card(withRestorable({ backups: [volumeBackup({ trigger: 'before_restore', restorable: true })] }))
+    expect(await screen.findByText('Before a restore')).toBeInTheDocument()
+  })
+  test('a 409 because a restore is running is not reported as "a backup is already being made"', async () => {
+    card(overview(), { 'POST /api/backups/volumes/a1': answer(409, { error: 'A restore of this app is waiting or running', code: 'restore_running' }) })
+    await userEvent.click(await screen.findByRole('button', { name: 'Back up now' }))
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('A restore of this app is waiting or running'))
+  })
+})

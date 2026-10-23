@@ -29,6 +29,9 @@ export const backupFilePath = (root, filename) => (typeof filename === 'string' 
 // What the stored passphrase is bound to (API writes it, worker reads it): a value stored for something else does not open as the passphrase.
 export const BACKUP_PASSPHRASE_CONTEXT = 'backup:passphrase';
 
+// What the passphrase given with one restore request is bound to (the API writes it, the worker reads it and removes it when the restore ends).
+export const restorePassphraseContext = (id) => `restore:passphrase:${id}`;
+
 export const SCHEDULE_FREQUENCIES = ['off', 'daily', 'weekly'];
 export const SCHEDULE_DEFAULTS = Object.freeze({ frequency: 'daily', hour: 3, weekday: 1, keep: 7 });
 export const KEEP_MIN = 1;

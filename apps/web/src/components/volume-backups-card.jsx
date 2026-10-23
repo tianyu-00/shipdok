@@ -9,13 +9,14 @@ import { Label } from '@/components/ui/label'
 import { api } from '@/lib/api'
 import { useBackups } from '@/lib/queries'
 import { formatBytes, timeAgo } from '@/lib/format'
-import { isAppBusy, keepChoices, scheduleText, volumeBackups, volumesText } from '@/lib/backups'
+import { isAppBusy, isAppRestoring, keepChoices, restoreModeLabel, scheduleText, volumeBackups, volumesText } from '@/lib/backups'
 import { NativeSelect } from '@/components/native-select'
 import { LoadError } from '@/components/states'
-import { DownloadDialog } from '@/components/backup-dialogs'
+import { Badge } from '@/components/ui/badge'
+import { DownloadDialog, RestoreDialog } from '@/components/backup-dialogs'
 import { BackupTable, DeleteBackupDialog } from '@/components/backup-table'
 
-function AppRow({ app, busy, scheduleOff }) {
+function AppRow({ app, busy, restoring, scheduleOff }) {
   const client = useQueryClient()
   const save = useMutation({
     mutationFn: (change) => api(`/backups/volumes/${app.id}/settings`, { method: 'PUT', body: { enabled: app.enabled, stop: app.stop, keep: app.keep, ...change } }),
@@ -25,7 +26,7 @@ function AppRow({ app, busy, scheduleOff }) {
   const now = useMutation({
     mutationFn: () => api(`/backups/volumes/${app.id}`, { method: 'POST' }),
     onSuccess: () => { toast.success(`A backup of ${app.name}'s data has been asked for`); client.invalidateQueries({ queryKey: ['backups'] }) },
-    onError: (err) => { toast.error(err.status === 409 ? 'A backup of this app is already being made' : err.message); client.invalidateQueries({ queryKey: ['backups'] }) },
+    onError: (err) => { toast.error(err.status === 409 && err.body?.code !== 'restore_running' ? 'A backup of this app is already being made' : err.message); client.invalidateQueries({ queryKey: ['backups'] }) },
   })
   const id = `vb-${app.id}`
   return (
@@ -38,7 +39,7 @@ function AppRow({ app, busy, scheduleOff }) {
             {' · '}{app.lastBackupAt ? `last backup ${timeAgo(app.lastBackupAt)}` : 'never backed up'}
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => now.mutate()} disabled={busy || now.isPending}>{busy ? 'Backing up…' : 'Back up now'}</Button>
+        <Button variant="outline" size="sm" onClick={() => now.mutate()} disabled={busy || restoring || now.isPending}>{restoring ? 'Restoring…' : busy ? 'Backing up…' : 'Back up now'}</Button>
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="flex items-start gap-2">
@@ -66,10 +67,47 @@ function AppRow({ app, busy, scheduleOff }) {
   )
 }
 
+const RESTORE_STATUS = {
+  queued: { label: 'Waiting', className: 'border-info/40 bg-info/10 text-info' },
+  running: { label: 'Restoring…', className: 'border-info/40 bg-info/10 text-info' },
+  ok: { label: 'Done', className: 'border-success/40 bg-success/10 text-success' },
+  failed: { label: 'Failed', className: 'border-destructive/40 bg-destructive/10 text-destructive' },
+}
+
+function Restores({ restores }) {
+  return (
+    <div className="space-y-2">
+      <p className="text-sm font-medium">Restores</p>
+      <ul className="space-y-2">
+        {restores.map((r) => {
+          const s = RESTORE_STATUS[r.status] ?? RESTORE_STATUS.failed
+          return (
+            <li key={r.id} className="rounded-md border p-3 text-sm" aria-label={`Restore of ${r.appName}`}>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium">{r.appName}</span>
+                <Badge variant="outline" className={s.className}>{s.label}</Badge>
+                <span className="text-muted-foreground">{timeAgo(r.finishedAt ?? r.requestedAt)}</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                From the backup of {r.backupMadeAt ? new Date(r.backupMadeAt).toLocaleString() : 'an earlier time'} · {restoreModeLabel(r.mode)}
+                {r.safetyBackup ? ' · backup of the current data first' : ' · no backup of the current data'}
+                {r.status === 'ok' && r.volumeCount != null && ` · ${volumesText(r.volumeCount)} restored`}
+              </p>
+              {r.error && <p className="mt-1 text-xs text-destructive">{r.error}</p>}
+              {r.warning && <p className="mt-1 text-xs text-warning">{r.warning}</p>}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
 export default function VolumeBackupsCard() {
   const backups = useBackups()
   const [downloading, setDownloading] = useState(null)
   const [deleting, setDeleting] = useState(null)
+  const [restoring, setRestoring] = useState(null)
   const d = backups.data
   const own = volumeBackups(d?.backups)
   const newest = own[0]
@@ -87,6 +125,12 @@ export default function VolumeBackupsCard() {
         {backups.isError && <LoadError error={backups.error} title="Could not load the backups" onRetry={() => backups.refetch()} />}
         {d && (
           <>
+            {(d.restores ?? [])[0]?.status === 'failed' && (
+              <Alert variant="destructive" role="status" aria-label="Last restore failed">
+                <AlertTitle>The last restore of {d.restores[0].appName}'s data failed</AlertTitle>
+                <AlertDescription>{d.restores[0].error ?? 'No reason was recorded.'}</AlertDescription>
+              </Alert>
+            )}
             {newest?.status === 'failed' && (
               <Alert variant="destructive" role="status" aria-label="Last app backup failed">
                 <AlertTitle>The last backup of {newest.appName ?? 'an app'}'s data failed</AlertTitle>
@@ -97,15 +141,22 @@ export default function VolumeBackupsCard() {
               ? <p className="text-sm text-muted-foreground">No app has persistent storage yet. Add a path in an app's Settings tab (Persistent storage) and it will be listed here.</p>
               : (
                 <>
-                  <ul className="space-y-3">{(d.apps ?? []).map((app) => <AppRow key={app.id} app={app} busy={isAppBusy(d.backups, app.id)} scheduleOff={d.schedule.frequency === 'off'} />)}</ul>
+                  <ul className="space-y-3">{(d.apps ?? []).map((app) => <AppRow key={app.id} app={app} busy={isAppBusy(d.backups, app.id)} restoring={isAppRestoring(d.restores, app.id)} scheduleOff={d.schedule.frequency === 'off'} />)}</ul>
                   <p className="text-sm text-muted-foreground">Schedule: {scheduleText(d.schedule)}. Change it in the card above.</p>
                 </>
               )}
-            {own.length > 0 && <BackupTable backups={own} showApp onDownload={setDownloading} onDelete={setDeleting} />}
+            {own.length > 0 && (
+              <BackupTable
+                backups={own} showApp onDownload={setDownloading} onDelete={setDeleting} onRestore={setRestoring}
+                restoreBlocked={(b) => isAppBusy(d.backups, b.appId) || isAppRestoring(d.restores, b.appId)}
+              />
+            )}
+            {(d.restores ?? []).length > 0 && <Restores restores={d.restores} />}
           </>
         )}
       </CardContent>
       {downloading && <DownloadDialog backup={downloading} onClose={() => setDownloading(null)} />}
+      {restoring && <RestoreDialog backup={restoring} onClose={() => setRestoring(null)} />}
       <DeleteBackupDialog backup={deleting} onClose={() => setDeleting(null)} />
     </Card>
   )

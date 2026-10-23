@@ -16,7 +16,7 @@ let app;
 
 beforeEach(async () => {
   await resetDb();
-  await testPool.query('TRUNCATE backups');
+  await testPool.query('TRUNCATE volume_restores, backups');
   dir = mkdtempSync(join(tmpdir(), 'bk-api-'));
   app = await makeApp({ queue: { add: jest.fn(), remove: jest.fn() }, backupDir: dir });
   agent = request.agent(app);
@@ -35,7 +35,7 @@ const overview = async () => (await agent.get('/api/backups')).body;
 const attempts = async (kind) => (await testPool.query('SELECT username, success FROM login_attempts WHERE kind = $1', [kind])).rows;
 
 describe('who may use it', () => {
-  test.each([['get', '/api/backups'], ['post', '/api/backups'], ['put', '/api/backups/settings'], ['put', '/api/backups/passphrase'], ['post', '/api/backups/11111111-1111-4111-8111-111111111111/download'], ['delete', '/api/backups/11111111-1111-4111-8111-111111111111']])('%s %s needs a session', async (method, path) => {
+  test.each([['get', '/api/backups'], ['post', '/api/backups'], ['put', '/api/backups/settings'], ['put', '/api/backups/passphrase'], ['post', '/api/backups/11111111-1111-4111-8111-111111111111/download'], ['delete', '/api/backups/11111111-1111-4111-8111-111111111111'], ['post', '/api/backups/11111111-1111-4111-8111-111111111111/restore']])('%s %s needs a session', async (method, path) => {
     expect((await request(app)[method](path).send({})).status).toBe(401);
   });
 });
@@ -233,7 +233,7 @@ describe('downloading', () => {
   });
   test('a backup that failed, or is still being made, has nothing to download', async () => {
     for (const status of ['failed', 'queued']) {
-      await testPool.query('TRUNCATE backups');
+      await testPool.query('TRUNCATE volume_restores, backups');
       const id = status === 'failed' ? await insert({ status }) : (await agent.post('/api/backups')).body.id;
       const res = await download(id);
       expect([res.status, res.body.code]).toEqual([409, 'no_file']);
@@ -477,6 +477,172 @@ describe('backups of an app\'s volumes', () => {
       expect(res.headers['content-disposition']).toContain(name);
       expect(Buffer.compare(res.body, CONTENT)).toBe(0);
       expect(await attempts('download')).toHaveLength(1);
+    });
+  });
+});
+
+// ---- Restoring the volumes of an app from a backup
+describe('restoring from a volume backup', () => {
+  const VNAME = 'shipdok-volumes-20261022-030000-aaaaaaaa.tar';
+  let appId;
+  const body = (over = {}) => ({ password: PASSWORD, mode: 'replace', safetyBackup: true, ...over });
+  const volumeBackup = async ({ status = 'ok', kind = 'volumes', app = appId, filename = VNAME, encrypted = false, file = true } = {}) => {
+    if (file && status === 'ok') writeFileSync(join(dir, filename), CONTENT);
+    const { rows } = await testPool.query(
+      `INSERT INTO backups (kind, app_id, app_name, status, trigger, filename, size_bytes, encrypted, finished_at) VALUES ($1, $2, $3, $4, 'manual', $5, 5, $6, '2026-10-22T03:00:00Z') RETURNING id`,
+      [kind, kind === 'volumes' ? app : null, kind === 'volumes' ? 'Blog' : null, status, status === 'ok' ? filename : null, encrypted]);
+    return rows[0].id;
+  };
+  const restore = (id, over = {}) => agent.post(`/api/backups/${id}/restore`).send(body(over));
+  const restoreRows = async () => (await testPool.query('SELECT * FROM volume_restores')).rows;
+
+  beforeEach(async () => {
+    await testPool.query('TRUNCATE app_volumes');
+    appId = (await agent.post('/api/apps').send({ name: 'Blog', repo: 'o/blog', container_port: 3000, host_port: 8300 })).body.id;
+    await testPool.query(`INSERT INTO app_volumes (app_id, app_name, container_path, docker_name) VALUES ($1, 'Blog', '/data', 'shipdok-vol-r1')`, [appId]);
+  });
+
+  test('is recorded as queued with what the person chose, and the password is checked and the use recorded in the sign-ins list', async () => {
+    const id = await volumeBackup();
+    const res = await restore(id, { mode: 'add', safetyBackup: false });
+    expect(res.status).toBe(202);
+    const [row] = await restoreRows();
+    expect(row).toMatchObject({ id: res.body.id, backup_id: id, app_id: appId, app_name: 'Blog', mode: 'add', safety_backup: false, status: 'queued', passphrase_enc: null });
+    expect(new Date(row.backup_made_at).toISOString()).toBe('2026-10-22T03:00:00.000Z');
+    expect(await attempts('restore')).toHaveLength(1);
+  });
+  test('a wrong password is a 403 and nothing is recorded, not even in the sign-ins list', async () => {
+    const id = await volumeBackup();
+    const res = await restore(id, { password: 'wrong-password-here' });
+    expect([res.status, res.body.code]).toEqual([403, 'wrong_password']);
+    expect(await restoreRows()).toHaveLength(0);
+    expect(await attempts('restore')).toHaveLength(0);
+  });
+  test('the passphrase given for an older backup is kept encrypted with the platform key, bound to that one restore', async () => {
+    const id = await volumeBackup({ encrypted: true });
+    const res = await restore(id, { passphrase: 'the old passphrase of mine' });
+    expect(res.status).toBe(202);
+    const [row] = await restoreRows();
+    expect(row.passphrase_enc).not.toContain('old passphrase');
+    const key = loadSecretsKeyForTests();
+    expect(decryptSecret(row.passphrase_enc, key, `restore:passphrase:${res.body.id}`)).toBe('the old passphrase of mine');
+    expect(() => decryptSecret(row.passphrase_enc, key, 'restore:passphrase:other')).toThrow();
+    expect(JSON.stringify(await overview())).not.toContain('old passphrase');
+  });
+  test.each([
+    [{ mode: 'wipe' }], [{ mode: undefined }], [{ safetyBackup: undefined }], [{ safetyBackup: 'yes' }], [{ password: undefined }], [{ passphrase: '' }], [{ passphrase: 'x'.repeat(257) }], [{ extra: 1 }],
+  ])('refuses %j', async (over) => {
+    const id = await volumeBackup();
+    const res = await agent.post(`/api/backups/${id}/restore`).send({ ...body(), ...over });
+    expect(res.status).toBe(400);
+    expect(await restoreRows()).toHaveLength(0);
+  });
+  test('all three modes are accepted', async () => {
+    for (const mode of ['replace', 'add', 'empty']) {
+      await testPool.query('TRUNCATE volume_restores');
+      expect((await restore(await volumeBackup(), { mode })).status).toBe(202);
+    }
+  });
+
+  describe('what it refuses', () => {
+    const none = async () => expect(await restoreRows()).toHaveLength(0);
+    test('an unknown backup and a bad id are 404', async () => {
+      expect((await restore('11111111-1111-4111-8111-111111111111')).status).toBe(404);
+      expect((await restore('nope')).status).toBe(404);
+      await none();
+    });
+    test('a backup of Shipdok itself is a 400: that restore is not available here', async () => {
+      const id = await volumeBackup({ kind: 'platform', filename: 'shipdok-backup-20261022-030000-aaaaaaaa.tar' });
+      const res = await restore(id);
+      expect([res.status, res.body.code]).toEqual([400, 'not_volumes']);
+      await none();
+    });
+    test('a backup that failed or is still being made has no file to restore from', async () => {
+      for (const status of ['failed', 'queued', 'running']) {
+        await testPool.query('TRUNCATE volume_restores, backups');
+        const res = await restore(await volumeBackup({ status }));
+        expect([res.status, res.body.code]).toEqual([409, 'no_file']);
+      }
+      await none();
+    });
+    test('the app of the backup is gone, or being deleted', async () => {
+      const id = await volumeBackup();
+      await testPool.query(`UPDATE apps SET deleting_at = now() WHERE id = $1`, [appId]);
+      expect((await restore(id)).body.code).toBe('app_gone');
+      await testPool.query(`UPDATE apps SET deleting_at = NULL WHERE id = $1`, [appId]);
+      await testPool.query('DELETE FROM app_volumes'); await testPool.query('DELETE FROM apps WHERE id = $1', [appId]);
+      expect([(await restore(id)).status, (await restore(id)).body.code]).toEqual([409, 'app_gone']);
+      await none();
+    });
+    test('the file is gone from the backups folder: 410', async () => {
+      const id = await volumeBackup({ file: false });
+      const res = await restore(id);
+      expect([res.status, res.body.code]).toEqual([410, 'file_missing']);
+      await none();
+    });
+    test('the app has no mounted volume any more (a detached one does not count)', async () => {
+      const id = await volumeBackup();
+      await testPool.query(`UPDATE app_volumes SET state = 'detached'`);
+      const res = await restore(id);
+      expect([res.status, res.body.code]).toEqual([400, 'no_volumes']);
+      await none();
+    });
+    test('a backup of the app that is waiting or running blocks it, and so does a restore already waiting', async () => {
+      const id = await volumeBackup();
+      expect((await agent.post(`/api/backups/volumes/${appId}`)).status).toBe(202);
+      const res = await restore(id);
+      expect([res.status, res.body.code]).toEqual([409, 'backup_running']);
+      await testPool.query(`UPDATE backups SET status = 'failed' WHERE status = 'queued'`);
+      expect((await restore(id)).status).toBe(202);
+      const again = await restore(id);
+      expect([again.status, again.body.code]).toEqual([409, 'already_running']);
+      expect(await restoreRows()).toHaveLength(1);
+    });
+    test('a backup of ANOTHER app does not block it', async () => {
+      const other = (await agent.post('/api/apps').send({ name: 'Other', repo: 'o/other', container_port: 3000, host_port: 8301 })).body.id;
+      await testPool.query(`INSERT INTO app_volumes (app_id, app_name, container_path, docker_name) VALUES ($1, 'Other', '/d', 'shipdok-vol-r2')`, [other]);
+      expect((await agent.post(`/api/backups/volumes/${other}`)).status).toBe(202);
+      expect((await restore(await volumeBackup())).status).toBe(202);
+    });
+  });
+
+  test('a backup of an app\'s volumes cannot be asked for while a restore of that app waits or runs (and nothing is recorded)', async () => {
+    expect((await restore(await volumeBackup())).status).toBe(202);
+    const res = await agent.post(`/api/backups/volumes/${appId}`);
+    expect([res.status, res.body.code]).toEqual([409, 'restore_running']);
+    expect((await testPool.query(`SELECT count(*)::int AS n FROM backups WHERE status = 'queued'`)).rows[0].n).toBe(0);
+  });
+
+  describe('in the overview', () => {
+    test('says which backups can be restored: finished volume backups with a file whose app exists', async () => {
+      const good = await volumeBackup();
+      const failed = await volumeBackup({ status: 'failed' });
+      const platform = await volumeBackup({ kind: 'platform', filename: 'shipdok-backup-20261022-030000-bbbbbbbb.tar' });
+      const gone = await volumeBackup({ app: null, filename: 'shipdok-volumes-20261022-030000-cccccccc.tar' });
+      const byId = Object.fromEntries((await overview()).backups.map((b) => [b.id, b.restorable]));
+      expect(byId).toEqual({ [good]: true, [failed]: false, [platform]: false, [gone]: false });
+    });
+    test('lists the latest restores, newest first, with how each went and never the passphrase', async () => {
+      const id = await volumeBackup();
+      const first = (await restore(id, { passphrase: 'secret passphrase 1' })).body.id;
+      await testPool.query(`UPDATE volume_restores SET status = 'failed', error = 'Not enough free disk space', finished_at = now(), requested_at = now() - interval '1 hour' WHERE id = $1`, [first]);
+      const second = (await restore(id, { mode: 'empty', safetyBackup: false })).body.id;
+      const o = await overview();
+      expect(o.restores.map((r) => r.id)).toEqual([second, first]);
+      expect(o.restores[0]).toMatchObject({ backupId: id, appId, appName: 'Blog', mode: 'empty', safetyBackup: false, status: 'queued', error: null });
+      expect(o.restores[1]).toMatchObject({ status: 'failed', error: 'Not enough free disk space' });
+      expect(JSON.stringify(o)).not.toMatch(/passphrase_enc|secret passphrase/);
+    });
+    test('shows at most 20 restores', async () => {
+      await testPool.query(`INSERT INTO volume_restores (app_name, mode, safety_backup, status, requested_at) SELECT 'x', 'add', true, 'ok', now() - make_interval(mins => g) FROM generate_series(1, 25) g`);
+      expect((await overview()).restores).toHaveLength(20);
+    });
+    test('a backup stays restorable-looking data after its restore row refers to it, and deleting the backup keeps the restore row', async () => {
+      const id = await volumeBackup();
+      await restore(id);
+      await testPool.query(`UPDATE volume_restores SET status = 'ok'`);
+      expect((await agent.delete(`/api/backups/${id}`)).status).toBe(204);
+      expect((await overview()).restores[0]).toMatchObject({ backupId: null, status: 'ok' });
     });
   });
 });

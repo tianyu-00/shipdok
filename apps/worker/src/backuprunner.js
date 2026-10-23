@@ -3,11 +3,12 @@
 //
 // Every few seconds: is a backup waiting (the dashboard asked, or the schedule asked a moment ago)? Once a minute: does the schedule say one is due?
 // If so, record a request: the same path as a click on "Back up now". The database allows ONE waiting or running backup, so a double request is dropped.
-import { isBackupDue, normalizeSchedule, backupRoot, decryptSecret, backupPassphraseProblem, BACKUP_PASSPHRASE_CONTEXT } from '@shipdok/shared';
+import { isBackupDue, normalizeSchedule, backupRoot, backupFilePath, decryptSecret, restorePassphraseContext, backupPassphraseProblem, BACKUP_PASSPHRASE_CONTEXT } from '@shipdok/shared';
 import * as realEngine from './docker.js';
 import * as store from './db.js';
 import { makeBackup, removeBackupFiles } from './backup.js';
 import { makeVolumeBackup } from './volumebackup.js';
+import { backupFileExists, makeRestore } from './volumerestore.js';
 import { controlApp } from './control.js';
 
 export const PASSPHRASE_CONTEXT = BACKUP_PASSPHRASE_CONTEXT;
@@ -35,21 +36,39 @@ async function volumesBackup(request, { db, eng, passphrase, dir, version, log, 
   const volumes = await db.listMountedVolumes(app.id);
   const copy = (stopped) => makeVolumeBackup({ id: request.id, trigger: request.trigger, dir, app, volumes, passphrase, version, stopped, eng, now: now(), log });
   if (!app.volume_backup_stop || !STOPPABLE.includes(app.runtime_state)) return copy(false);
+  return withAppStopped(app, { db, eng, activity, log, forWhat: 'the copy' }, copy);
+}
 
-  if (activity?.isBusy(app.id)) throw new Error('A deployment or another job is working on this app right now, so it was not stopped for the copy. Try again in a few minutes');
-  const run = (fn) => (activity ? activity.run(app.id, fn) : fn());
-  return run(async () => {
+/**
+ * Stops the app and says when to start it again: `release()` starts it (unless the administrator wanted it stopped, checked then) and returns a note
+ * when that failed. Nothing is stopped while a deployment or another job is working on the app; the monitor leaves the app alone until `release`.
+ */
+async function stopApp(app, { db, eng, activity, log, forWhat }) {
+  if (activity?.isBusy(app.id)) throw new Error(`A deployment or another job is working on this app right now, so it was not stopped for ${forWhat}. Try again in a few minutes`);
+  const end = activity?.begin(app.id) ?? (() => {});
+  try {
     const stopped = await controlApp({ appId: app.id, action: 'stop' }, { eng, db, log });
-    if (!stopped.ok) throw new Error(`The app could not be stopped for the copy: ${stopped.error}`);
-    let result; let failure = null;
-    try { result = await copy(true); } catch (err) { failure = err; }
-    // Started again unless the administrator wanted it stopped (checked now, in case they changed it meanwhile)
-    const wanted = await db.getDesiredState(app.id);
-    const started = wanted === 'running' ? await controlApp({ appId: app.id, action: 'start' }, { eng, db, log }) : { ok: true };
-    const restartNote = started.ok ? null : `The app could not be started again after the copy: ${started.error}`;
-    if (failure) throw new Error(restartNote ? `${failure.message}. ${restartNote}` : failure.message);
-    return restartNote ? { ...result, warning: restartNote } : result;
-  });
+    if (!stopped.ok) throw new Error(`The app could not be stopped for ${forWhat}: ${stopped.error}`);
+  } catch (err) { end(); throw err; }
+  return {
+    async release() {
+      try {
+        const wanted = await db.getDesiredState(app.id);
+        const started = wanted === 'running' ? await controlApp({ appId: app.id, action: 'start' }, { eng, db, log }) : { ok: true };
+        return started.ok ? null : `The app could not be started again after ${forWhat}: ${started.error}`;
+      } finally { end(); }
+    },
+  };
+}
+
+/** Stops the app, runs `fn(true)`, starts it again whatever the outcome. A start that fails is a warning on the result, or added to the error. */
+async function withAppStopped(app, ctx, fn) {
+  const held = await stopApp(app, ctx);
+  let result; let failure = null;
+  try { result = await fn(true); } catch (err) { failure = err; }
+  const restartNote = await held.release();
+  if (failure) { if (restartNote) failure.message = `${failure.message}. ${restartNote}`; throw failure; }
+  return restartNote ? { ...result, warning: restartNote } : result;
 }
 
 /** Makes the backup that was asked for, records how it went, and removes the old ones. Never throws. */
@@ -71,6 +90,69 @@ export async function answerBackup(request, { db = store, eng = realEngine, secr
     await db.markBackupFailed(request.id, err.message).catch(() => {});
     await prune({ db, dir, log }).catch(() => {});
     return { ok: false, error: err.message };
+  }
+}
+
+/** The restore that was asked for: checks, the optional safety backup, the files. Records how it went and never throws. */
+export async function answerRestore(restore, { db = store, eng = realEngine, secretsKey, dir = backupRoot(), version = null, log = console.log, now = () => new Date(), activity = null } = {}) {
+  let safetyId = null;
+  try {
+    const backup = restore.backup_id ? await db.getBackupForRestore(restore.backup_id) : null;
+    if (!backup) throw new Error('That backup no longer exists');
+    const file = backup.status === 'ok' && backup.kind === 'volumes' ? backupFilePath(dir, backup.filename) : null;
+    if (!file || !(await backupFileExists(file))) throw new Error('The file of that backup is gone from the backups folder');
+    const app = restore.app_id ? await db.getVolumeBackupApp(restore.app_id) : null;
+    if (!app) throw new Error('The app no longer exists');
+    if (app.deleting_at) throw new Error('The app is being deleted');
+
+    // The passphrase that opens THIS file: the one given with the request, else the current one (a plain backup needs none)
+    let openWith = null;
+    if (backup.encrypted) {
+      openWith = restore.passphrase_enc
+        ? (() => { try { return decryptSecret(restore.passphrase_enc, secretsKey, restorePassphraseContext(restore.id)); } catch { throw new Error('The passphrase given with the request could not be read'); } })()
+        : await loadPassphrase({ db, secretsKey }).catch(() => { throw new Error('The backup passphrase could not be read: give the passphrase of that backup'); });
+      if (!openWith) throw new Error('That backup is encrypted, but no passphrase is set: give the passphrase of that backup');
+    }
+    const volumes = await db.listMountedVolumes(app.id);
+    if (volumes.length === 0) throw new Error('The app has no persistent storage any more');
+
+    // The app is stopped only when every check has passed (inside makeRestore's beforeWrite) and started again at the end, whatever happened.
+    let held = null;
+    let result; let failure = null;
+    try {
+      result = await makeRestore({
+        file, passphrase: openWith, mode: restore.mode, volumes, app, dir, eng, log,
+        beforeWrite: async () => {
+          if (STOPPABLE.includes(app.runtime_state)) held = await stopApp(app, { db, eng, activity, log, forWhat: 'the restore' });
+          if (!restore.safety_backup) return;
+          log('Making a backup of the current data first');
+          safetyId = await db.startSafetyBackup(app.id, app.name);
+          if (!safetyId) throw new Error('A backup of this app is already being made, so the safety backup could not be started. Nothing was restored');
+          await db.setRestoreSafety(restore.id, safetyId);
+          try {
+            const current = await loadPassphrase({ db, secretsKey });
+            const made = await makeVolumeBackup({ id: safetyId, trigger: 'before_restore', dir, app, volumes, passphrase: current, version, stopped: held !== null, eng, now: now(), log });
+            await db.markBackupOk(safetyId, made);
+          } catch (err) {
+            await db.markBackupFailed(safetyId, err.message).catch(() => {});
+            throw new Error(`The backup of the current data failed, so nothing was restored: ${err.message}`);
+          }
+        },
+      });
+    } catch (err) { failure = err; }
+    const restartNote = held ? await held.release() : null;
+    if (failure) { if (restartNote) failure.message = `${failure.message}. ${restartNote}`; throw failure; }
+    if (restartNote) result = { ...result, warning: restartNote };
+    await db.markRestoreOk(restore.id, { volumeCount: result.volumeCount, warning: result.warning ?? null });
+    log(`Restore ${restore.id} finished`);
+    return { ok: true, ...result };
+  } catch (err) {
+    const message = err.partial
+      ? `${err.message}. The files of the app may be only partly restored${safetyId ? ': the backup made just before is in the list' : ''}`
+      : err.message;
+    log(`Restore ${restore.id} failed: ${message}`);
+    await db.markRestoreFailed(restore.id, message).catch(() => {});
+    return { ok: false, error: message };
   }
 }
 
@@ -111,13 +193,14 @@ export async function requestIfDue({ db = store, now = Date.now(), log = console
 
 /** At start: a backup that was running can never finish, the helper containers it left are removed, and an app it had stopped is started again. */
 export async function recoverAfterStop({ db = store, eng = realEngine, log = console.log } = {}) {
-  const interrupted = await db.interruptRunningBackups().catch((err) => { log(`backups: ${err.message}`); return []; });
+  const interruptedRestores = await db.interruptRunningRestores().catch((err) => { log(`restores: ${err.message}`); return []; });
+  const interrupted = [...(await db.interruptRunningBackups().catch((err) => { log(`backups: ${err.message}`); return []; })), ...interruptedRestores];
   await eng.removeStaleHelpers?.().catch((err) => log(`backups: ${err.message}`));
   for (const { app_id: appId } of interrupted) {
     if (!appId) continue; // (only a volume backup has an app)
     const app = await db.getVolumeBackupApp(appId).catch(() => null);
-    if (app?.volume_backup_stop && app.desired_state === 'running' && app.runtime_state === 'stopped') {
-      log(`Starting ${app.slug} again: its backup was interrupted while it was stopped`);
+    if (app && (app.volume_backup_stop || interruptedRestores.some((r) => r.app_id === appId)) && app.desired_state === 'running' && app.runtime_state === 'stopped') {
+      log(`Starting ${app.slug} again: its backup or restore was interrupted while it was stopped`);
       await controlApp({ appId, action: 'start' }, { eng, db, log }).catch((err) => log(`backups: ${err.message}`));
     }
   }
@@ -137,8 +220,13 @@ export function createBackupRunner({ db = store, eng = realEngine, secretsKey, d
       await requestVolumeBackupsIfDue({ db, log }).catch((err) => log(`volume backup schedule: ${err.message}`));
     }
     const request = await db.claimQueuedBackup();
-    if (!request) return false;
-    await answerBackup(request, { db, eng, secretsKey, dir, secretsDir, version, log, activity });
+    if (request) {
+      await answerBackup(request, { db, eng, secretsKey, dir, secretsDir, version, log, activity });
+      return true;
+    }
+    const restore = await db.claimQueuedRestore();
+    if (!restore) return false;
+    await answerRestore(restore, { db, eng, secretsKey, dir, version, log, activity });
     return true;
   };
   return {

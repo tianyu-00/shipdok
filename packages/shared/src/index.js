@@ -4,8 +4,9 @@ export {
 export { parseMasterKey, envVarContext, encryptSecret, decryptSecret } from './crypto.js';
 export { parseEnvText } from './envfile.js';
 export {
-  backupRoot, BACKUP_KINDS, BACKUP_PASSPHRASE_CONTEXT, BACKUP_FILE_RE, backupFilename, backupFilePath, SCHEDULE_FREQUENCIES, SCHEDULE_DEFAULTS, KEEP_MIN, KEEP_MAX, scheduleProblems, normalizeSchedule, mostRecentSlot, nextSlot, isBackupDue,
+  backupRoot, BACKUP_KINDS, BACKUP_PASSPHRASE_CONTEXT, restorePassphraseContext, BACKUP_FILE_RE, backupFilename, backupFilePath, SCHEDULE_FREQUENCIES, SCHEDULE_DEFAULTS, KEEP_MIN, KEEP_MAX, scheduleProblems, normalizeSchedule, mostRecentSlot, nextSlot, isBackupDue,
 } from './backupstore.js';
+export { openBackup } from './openbackup.js';
 export { BACKUP_MAGIC, BACKUP_PASSPHRASE_MIN, BACKUP_PASSPHRASE_MAX, backupPassphraseProblem, isEncryptedBackup, encryptBackupFile, decryptBackupFile } from './backupcrypto.js';
 export {
   githubFieldContext, GithubStoreError, saveGithubApp, githubAppSummary, listGithubApps, loadGithubApp, loadGithubApps, deleteGithubApp, createGithubProvider, oldGithubEnvNotice,

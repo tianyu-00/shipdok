@@ -576,9 +576,9 @@ export async function createBackupHelper({ image, volumes }, { docker: d = docke
   });
 }
 
-/** Writes the files of volume number `index` of a helper to `file` as a tar. */
-export async function archiveVolume(helper, index, file) {
-  const stream = await helper.getArchive({ path: `/vbackup/${index}/.` });
+/** Writes the files of volume number `index` of a helper to `file` as a tar (`mount`: where the helper has them: /vbackup, or /vrestore for a restore helper). */
+export async function archiveVolume(helper, index, file, mount = "vbackup") {
+  const stream = await helper.getArchive({ path: `/${mount}/${index}/.` });
   await pipeline(stream, createWriteStream(file, { mode: 0o600 }));
 }
 
@@ -593,4 +593,42 @@ export async function removeStaleHelpers({ docker: d = docker } = {}) {
 export async function diskSpace(dir) {
   const s = await statfs(dir);
   return { totalBytes: s.bsize * s.blocks, freeBytes: s.bsize * s.bavail };
+}
+
+// ---- Restoring an app's volumes (volumerestore.js). A helper container mounts the volumes READ-WRITE. It is first STARTED once to run a short script that
+// empties the volumes or checks that they are empty (it needs `sh`, `find` and `ls`, so it is made from the worker's own image, which has them; outside a
+// container, from the app's image), then the files come in through Docker's archive call (the same as `docker cp`), which keeps owners and permissions.
+// The helper has no network and a read-only root; it is always removed.
+
+/** The image this worker runs from (an image ID), or null when it does not run in a container. */
+export async function ownImage({ docker: d = docker, hostname = os.hostname() } = {}) {
+  try { return (await d.getContainer(hostname).inspect()).Image; } catch { return null; }
+}
+
+/** A helper with these Docker volumes mounted read-write at /vrestore/0, /vrestore/1, ..., which runs `script` (as root: the files belong to the app's users). */
+export async function createRestoreHelper({ image, volumes, script }, { docker: d = docker } = {}) {
+  return d.createContainer({
+    Image: image,
+    name: `shipdok-restore-helper-${randomBytes(4).toString("hex")}`,
+    Labels: { [HELPER_LABEL]: "true" },
+    User: "root",
+    Entrypoint: ["sh", "-c"],
+    Cmd: [script],
+    NetworkDisabled: true,
+    HostConfig: { Binds: volumes.map((name, i) => `${name}:/vrestore/${i}`), ReadonlyRootfs: true },
+  });
+}
+
+/** Starts the helper, waits for the script to end and returns { code, output } (output is the script's own text, short). */
+export async function runRestoreScript(helper) {
+  await helper.start();
+  const { StatusCode } = await helper.wait();
+  let output = "";
+  try { output = (await helper.logs({ stdout: true, stderr: true, tail: 20 })).toString("utf8").replace(/[^\x20-\x7e\n]/g, "").trim().slice(0, 500); } catch { /* no output */ }
+  return { code: StatusCode, output };
+}
+
+/** Writes the files of a tar into volume number `index` of the helper. */
+export async function putVolumeArchive(helper, index, file) {
+  await helper.putArchive(createReadStream(file), { path: `/vrestore/${index}` });
 }

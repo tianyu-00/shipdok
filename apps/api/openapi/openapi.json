@@ -4659,7 +4659,7 @@
             }
           },
           "409": {
-            "description": "A backup of this app is already waiting or running (`code: already_running`).",
+            "description": "A backup of this app is already waiting or running (`code: already_running`), or a restore of it is (`code: restore_running`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4794,6 +4794,130 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/BackupDownloadRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/backups/{id}/restore": {
+      "post": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Restore the volumes of an app from a backup",
+        "description": "Puts the files of the backup back into the app's persistent volumes. **It overwrites live data**, so it needs the current password and is recorded in the sign-ins list (`restore`). Each volume of the backup goes to the app's mounted volume at the same path; if one has no volume any more nothing is changed and the restore fails saying which. `mode`: `replace` (the volume ends up exactly as the backup was), `add` (written over the current files) or `empty` (refused when the volume holds anything). `safetyBackup`: a normal volume backup of the current data is made first (listed with trigger `before_restore`); if it fails nothing is restored. The worker stops the app (an app that is already stopped stays stopped), restores, reads the volumes back to check them, and starts the app again; if a deployment or another job is working on the app it fails instead of stopping it. Volumes the backup does not have are left alone. A restore of Shipdok itself (the database) is not available here: see the Operations guide. Answers 202; poll `GET /api/backups` (`restores`).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "A finished backup of an app's volumes.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Asked for.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body, not a backup of volumes (`code: not_volumes`), or the app has no persistent storage (`code: no_volumes`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong password (`code: wrong_password`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such backup.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No file (`no_file`), the app is gone (`app_gone`), a backup of the app is being made (`backup_running`) or a restore is already waiting or running (`already_running`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The file is gone from the backups folder (`code: file_missing`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreRequest"
               }
             }
           }
@@ -7318,6 +7442,10 @@
           "downloadable": {
             "type": "boolean",
             "description": "It has a file that can be downloaded."
+          },
+          "restorable": {
+            "type": "boolean",
+            "description": "A backup of an app's volumes that is finished, has its file and whose app still exists: it can be restored (`POST /api/backups/{id}/restore`)."
           }
         },
         "required": [
@@ -7337,7 +7465,8 @@
           "version",
           "warning",
           "error",
-          "downloadable"
+          "downloadable",
+          "restorable"
         ]
       },
       "BackupSchedule": {
@@ -7407,6 +7536,13 @@
               "enabled"
             ]
           },
+          "restores": {
+            "type": "array",
+            "description": "The latest restores (newest first, at most 20).",
+            "items": {
+              "$ref": "#/components/schemas/VolumeRestore"
+            }
+          },
           "apps": {
             "type": "array",
             "description": "The apps that have mounted persistent volumes.",
@@ -7473,6 +7609,7 @@
           "schedule",
           "nextRunAt",
           "encryption",
+          "restores",
           "apps",
           "persistent"
         ]
@@ -7497,6 +7634,149 @@
           "enabled",
           "stop",
           "keep"
+        ]
+      },
+      "VolumeRestore": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The restore."
+          },
+          "backupId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "The backup it restores from (`null` once that backup is deleted)."
+          },
+          "appId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "The app (`null` once it is deleted)."
+          },
+          "appName": {
+            "type": "string",
+            "description": "The name the app had."
+          },
+          "backupMadeAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When that backup was made."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "replace",
+              "add",
+              "empty"
+            ],
+            "description": "replace: the volume ends up exactly as the backup was; add: the backup's files are written over the current ones; empty: only into volumes that hold nothing."
+          },
+          "safetyBackup": {
+            "type": "boolean",
+            "description": "A backup of the current data was asked to be made first."
+          },
+          "safetyBackupId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "That backup (it is in the list, with trigger `before_restore`)."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "ok",
+              "failed"
+            ],
+            "description": "Waiting for the worker, being done, done, or failed (`error` says why)."
+          },
+          "requestedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was asked for."
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the worker began."
+          },
+          "finishedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When it ended."
+          },
+          "volumeCount": {
+            "type": "integer",
+            "nullable": true,
+            "description": "How many volumes were restored."
+          },
+          "warning": {
+            "type": "string",
+            "nullable": true,
+            "description": "Something to know, for example that the app could not be started again."
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "Why it failed."
+          }
+        },
+        "required": [
+          "id",
+          "backupId",
+          "appId",
+          "appName",
+          "backupMadeAt",
+          "mode",
+          "safetyBackup",
+          "safetyBackupId",
+          "status",
+          "requestedAt",
+          "startedAt",
+          "finishedAt",
+          "volumeCount",
+          "warning",
+          "error"
+        ]
+      },
+      "RestoreRequest": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "The current password."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "replace",
+              "add",
+              "empty"
+            ],
+            "description": "What to do with what is in the volumes now."
+          },
+          "safetyBackup": {
+            "type": "boolean",
+            "description": "Make a backup of the current data first; if that fails, nothing is restored."
+          },
+          "passphrase": {
+            "type": "string",
+            "nullable": true,
+            "description": "Only when the backup was made with a different passphrase than the current one (1 to 256 characters). Kept encrypted until the restore ends."
+          }
+        },
+        "required": [
+          "password",
+          "mode",
+          "safetyBackup",
+          "passphrase"
         ]
       },
       "BackupPassphraseRequest": {

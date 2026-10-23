@@ -32,3 +32,14 @@ test('overlapping runs on one app keep it busy until the last one ends', async (
   await first;
   assert.equal(a.isBusy('x'), false);
 });
+
+test('begin() marks an app busy until the returned function is called, once only', () => {
+  const a = createActivity();
+  const end = a.begin('x');
+  const other = a.begin('x');
+  assert.equal(a.isBusy('x'), true);
+  end(); end(); // (a second call changes nothing)
+  assert.equal(a.isBusy('x'), true, 'the other hold is still there');
+  other();
+  assert.equal(a.isBusy('x'), false);
+});

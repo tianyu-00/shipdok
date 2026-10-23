@@ -506,3 +506,42 @@ export async function backupsToPrune({ keep, keepFailed = 10, keepFailedVolumes 
 }
 
 export const deleteBackupRows = (ids) => pool.query('DELETE FROM backups WHERE id = ANY($1::uuid[])', [ids]);
+
+// ---- Restoring an app's volumes (volumerestore.js, backuprunner.js). The API records a request (a row with status 'queued'); the worker answers it.
+const RESTORE_ACTIVE = `('queued','running')`;
+
+/** Takes the oldest waiting restore and marks it running; null when there is none. */
+export async function claimQueuedRestore() {
+  const { rows } = await pool.query(
+    `UPDATE volume_restores SET status = 'running', started_at = now()
+      WHERE id = (SELECT id FROM volume_restores WHERE status = 'queued' ORDER BY requested_at LIMIT 1 FOR UPDATE SKIP LOCKED)
+      RETURNING id, backup_id, app_id, app_name, mode, safety_backup, passphrase_enc`);
+  return rows[0] ?? null;
+}
+
+/** The backup a restore reads: its file and what it is. */
+export const getBackupForRestore = (id) =>
+  pool.query(`SELECT id, kind, status, filename, encrypted, app_id FROM backups WHERE id = $1`, [id]).then((r) => r.rows[0] ?? null);
+
+/** Records the backup made just before a restore replaces the data, as already running (it is not asked for and waited on like the others). */
+export async function startSafetyBackup(appId, appName) {
+  const { rows } = await pool.query(
+    `INSERT INTO backups (trigger, kind, app_id, app_name, status, started_at) VALUES ('before_restore', 'volumes', $1, $2, 'running', now()) ON CONFLICT DO NOTHING RETURNING id`,
+    [appId, appName]);
+  return rows[0]?.id ?? null;
+}
+
+export const setRestoreSafety = (id, backupId) => pool.query('UPDATE volume_restores SET safety_backup_id = $2 WHERE id = $1', [id, backupId]);
+
+export const markRestoreOk = (id, { volumeCount, warning = null }) =>
+  pool.query(`UPDATE volume_restores SET status = 'ok', finished_at = now(), volume_count = $2, warning = $3, error = NULL, passphrase_enc = NULL WHERE id = $1 AND status = 'running'`, [id, volumeCount, warning]);
+
+export const markRestoreFailed = (id, error) =>
+  pool.query(`UPDATE volume_restores SET status = 'failed', finished_at = now(), error = $2, passphrase_enc = NULL WHERE id = $1 AND status IN ${RESTORE_ACTIVE}`, [id, String(error).slice(0, 1000)]);
+
+/** A restore that was running when the worker stopped can never finish: say so (the data may be half restored). Returns the apps it concerned. */
+export const interruptRunningRestores = () =>
+  pool.query(
+    `UPDATE volume_restores SET status = 'failed', finished_at = now(), passphrase_enc = NULL,
+            error = 'Interrupted: the worker stopped while it was running. The files of the app may be only partly restored' WHERE status = 'running' RETURNING app_id`)
+    .then((r) => r.rows);

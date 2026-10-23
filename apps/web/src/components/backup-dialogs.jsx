@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { api } from '@/lib/api'
-import { downloadBackup } from '@/lib/backups'
+import { RESTORE_MODES, downloadBackup } from '@/lib/backups'
 import { Field } from '@/components/field'
 
 /** Asks for the password again (a backup holds every secret), then hands the file to the browser. */
@@ -111,6 +111,62 @@ export function PassphraseDialog({ enabled, onClose }) {
               <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
               <Button type="submit" disabled={save.isPending || (!removing && !remembered)}>{save.isPending ? 'Saving…' : removing ? 'Stop encrypting' : 'Save passphrase'}</Button>
             </div>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Restoring the volumes of an app from one of its backups: what will happen, how, a safety backup, the password (it overwrites live data). */
+export function RestoreDialog({ backup, onClose }) {
+  const client = useQueryClient()
+  const [mode, setMode] = useState('replace')
+  const [safety, setSafety] = useState(true)
+  const [passphrase, setPassphrase] = useState('')
+  const [password, setPassword] = useState('')
+  const [problem, setProblem] = useState(null)
+  const when = new Date(backup.finishedAt ?? backup.requestedAt).toLocaleString()
+  const restore = useMutation({
+    mutationFn: () => api(`/backups/${backup.id}/restore`, { method: 'POST', body: { password, mode, safetyBackup: safety, ...(passphrase ? { passphrase } : {}) } }),
+    onSuccess: () => { toast.success(`A restore of ${backup.appName} has been asked for`); client.invalidateQueries({ queryKey: ['backups'] }); onClose() },
+    onError: (err) => setProblem(err.status === 403 ? 'That is not your current password' : err.message),
+  })
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <form onSubmit={(e) => { e.preventDefault(); setProblem(null); restore.mutate() }} noValidate className="space-y-4">
+          <DialogHeader>
+            <DialogTitle>Restore the data of {backup.appName}</DialogTitle>
+            <DialogDescription>
+              From the backup made {when}. <strong>{backup.appName} is stopped while this happens</strong> and started again afterwards (an app that is already stopped stays stopped).
+              The data in its volumes is changed as you choose below.
+            </DialogDescription>
+          </DialogHeader>
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-medium">What to do with the files that are there now</legend>
+            {RESTORE_MODES.map((m) => (
+              <label key={m.value} className="flex cursor-pointer items-start gap-2 rounded-md border p-2 text-sm has-[:checked]:border-primary">
+                <input type="radio" name="restore-mode" className="mt-1 accent-primary" value={m.value} checked={mode === m.value} onChange={() => setMode(m.value)} />
+                <span><span className="font-medium">{m.label}</span><span className="block text-xs text-muted-foreground">{m.hint}</span></span>
+              </label>
+            ))}
+          </fieldset>
+          <label className="flex cursor-pointer items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-1 accent-primary" checked={safety} onChange={(e) => setSafety(e.target.checked)} />
+            <span>Make a backup of the current data first <span className="block text-xs text-muted-foreground">It appears in the list. If it fails, nothing is restored. Untick it to restore at once; the current data is then gone for good.</span></span>
+          </label>
+          {backup.encrypted && (
+            <Field id="restore-passphrase" label="Passphrase of this backup (optional)" hint="Only needed if it was made with a different passphrase than the current one.">
+              <Input id="restore-passphrase" type="password" autoComplete="off" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
+            </Field>
+          )}
+          <Field id="restore-password" label="Your password" error={problem}>
+            <Input id="restore-password" type="password" autoComplete="current-password" aria-invalid={problem ? true : undefined} value={password} onChange={(e) => { setPassword(e.target.value); setProblem(null) }} />
+          </Field>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" variant="destructive" disabled={!password || restore.isPending}>{restore.isPending ? 'Asking…' : 'Restore'}</Button>
           </DialogFooter>
         </form>
       </DialogContent>

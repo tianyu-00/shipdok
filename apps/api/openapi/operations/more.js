@@ -134,7 +134,7 @@ export default Object.fromEntries([
     tag: LOG, summary: 'Back up the persistent volumes of an app now', parameters: [idParam('appId', 'The app.')],
     description: 'Records a request; the worker makes ONE file with every mounted volume of the app (read-only; the app keeps running unless its "stop while copying" switch is on, see `PUT /api/backups/volumes/{appId}/settings`) beside the deployment queue. Refused by the worker, with the reason in the backup\'s `error`, when the disk would be left nearly full. Poll `GET /api/backups`. One backup may wait or run per app.',
     responses: { 202: ok('Asked for.', { type: 'object', properties: { id: { type: 'string', format: 'uuid' } } }) },
-    errors: { 400: 'The app has no persistent volumes (`code: no_volumes`).', 404: 'No such app.', 409: 'A backup of this app is already waiting or running (`code: already_running`).', 429: 'Too many requests.' },
+    errors: { 400: 'The app has no persistent volumes (`code: no_volumes`).', 404: 'No such app.', 409: 'A backup of this app is already waiting or running (`code: already_running`), or a restore of it is (`code: restore_running`).', 429: 'Too many requests.' },
   })),
   route('PUT', '/api/backups/volumes/{appId}/settings', op({
     tag: LOG, summary: 'Set how the volumes of an app are backed up', parameters: [idParam('appId', 'The app.')], body: ref('VolumeBackupSettings'),
@@ -159,6 +159,12 @@ export default Object.fromEntries([
     description: 'The backup file (`application/octet-stream`). It holds every secret, so it needs the current password (a POST, so that the password is not in an address) and is recorded in the sign-ins list (`download`). A file that is encrypted is sent as it is, still encrypted.',
     responses: { 200: { description: 'The file.', content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } } },
     errors: { 400: 'No password.', 403: 'Wrong password (`code: wrong_password`).', 404: 'No such backup.', 409: 'That backup has no file (it failed, or is still being made; `code: no_file`).', 410: 'The file is gone from the backups folder (`code: file_missing`).', 429: 'Too many tries.' },
+  })),
+  route('POST', '/api/backups/{id}/restore', op({
+    tag: LOG, summary: 'Restore the volumes of an app from a backup', parameters: [idParam('id', 'A finished backup of an app\'s volumes.')], body: ref('RestoreRequest'),
+    description: 'Puts the files of the backup back into the app\'s persistent volumes. **It overwrites live data**, so it needs the current password and is recorded in the sign-ins list (`restore`). Each volume of the backup goes to the app\'s mounted volume at the same path; if one has no volume any more nothing is changed and the restore fails saying which. `mode`: `replace` (the volume ends up exactly as the backup was), `add` (written over the current files) or `empty` (refused when the volume holds anything). `safetyBackup`: a normal volume backup of the current data is made first (listed with trigger `before_restore`); if it fails nothing is restored. The worker stops the app (an app that is already stopped stays stopped), restores, reads the volumes back to check them, and starts the app again; if a deployment or another job is working on the app it fails instead of stopping it. Volumes the backup does not have are left alone. A restore of Shipdok itself (the database) is not available here: see the Operations guide. Answers 202; poll `GET /api/backups` (`restores`).',
+    responses: { 202: ok('Asked for.', { type: 'object', properties: { id: { type: 'string', format: 'uuid' } } }) },
+    errors: { 400: 'Invalid body, not a backup of volumes (`code: not_volumes`), or the app has no persistent storage (`code: no_volumes`).', 403: 'Wrong password (`code: wrong_password`).', 404: 'No such backup.', 409: 'No file (`no_file`), the app is gone (`app_gone`), a backup of the app is being made (`backup_running`) or a restore is already waiting or running (`already_running`).', 410: 'The file is gone from the backups folder (`code: file_missing`).', 429: 'Too many tries.' },
   })),
   route('DELETE', '/api/backups/{id}', op({
     tag: LOG, summary: 'Delete a backup', parameters: [idParam('id', 'The backup.')],
