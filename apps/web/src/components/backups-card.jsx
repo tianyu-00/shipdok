@@ -1,31 +1,20 @@
 import { useEffect, useState } from 'react'
-import { Download, KeyRound, Lock, ShieldCheck, Trash2 } from 'lucide-react'
+import { KeyRound } from 'lucide-react'
 import { toast } from 'sonner'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { api } from '@/lib/api'
 import { useBackups } from '@/lib/queries'
 import { formatBytes, timeAgo } from '@/lib/format'
-import { FREQUENCIES, WEEKDAYS, isBusy, latestBackups, localHourText, scheduleText, utcHourText } from '@/lib/backups'
+import { FREQUENCIES, WEEKDAYS, isBusy, latestBackups, localHourText, platformBackups, scheduleText, utcHourText } from '@/lib/backups'
 import { Field } from '@/components/field'
 import { NativeSelect } from '@/components/native-select'
 import { LoadError } from '@/components/states'
 import { DownloadDialog, PassphraseDialog } from '@/components/backup-dialogs'
-
-const STATUS = {
-  queued: { label: 'Waiting', className: 'border-info/40 bg-info/10 text-info' },
-  running: { label: 'Making…', className: 'border-info/40 bg-info/10 text-info' },
-  ok: { label: 'Done', className: 'border-success/40 bg-success/10 text-success' },
-  failed: { label: 'Failed', className: 'border-destructive/40 bg-destructive/10 text-destructive' },
-}
+import { BackupTable, DeleteBackupDialog } from '@/components/backup-table'
 
 function Schedule({ schedule, nextRunAt }) {
   const client = useQueryClient()
@@ -83,35 +72,6 @@ function Schedule({ schedule, nextRunAt }) {
   )
 }
 
-function Row({ backup, onDownload, onDelete }) {
-  const s = STATUS[backup.status] ?? STATUS.failed
-  return (
-    <TableRow>
-      <TableCell className="whitespace-nowrap" title={new Date(backup.requestedAt).toLocaleString()}>
-        {timeAgo(backup.finishedAt ?? backup.requestedAt)}
-        <span className="block text-xs text-muted-foreground">{backup.trigger === 'scheduled' ? 'Scheduled' : 'Made by hand'}</span>
-      </TableCell>
-      <TableCell className="whitespace-nowrap">{backup.sizeBytes == null ? '—' : formatBytes(backup.sizeBytes)}</TableCell>
-      <TableCell>
-        <div className="flex flex-wrap items-center gap-1">
-          <Badge variant="outline" className={s.className}>{s.label}</Badge>
-          {backup.status === 'ok' && backup.encrypted && <Badge variant="outline"><Lock className="size-3" aria-hidden="true" />Encrypted</Badge>}
-          {backup.status === 'ok' && !backup.encrypted && <Badge variant="outline" className="border-warning/40 text-warning">Not encrypted</Badge>}
-          {backup.status === 'ok' && backup.verified && <Badge variant="outline" className="border-success/40 text-success"><ShieldCheck className="size-3" aria-hidden="true" />Checked</Badge>}
-        </div>
-        {backup.error && <p className="mt-1 text-xs text-destructive">{backup.error}</p>}
-        {backup.warning && <p className="mt-1 text-xs text-warning">{backup.warning}</p>}
-      </TableCell>
-      <TableCell>
-        <div className="flex justify-end gap-1">
-          {backup.downloadable && <Button variant="ghost" size="sm" aria-label={`Download the backup from ${new Date(backup.requestedAt).toLocaleString()}`} onClick={() => onDownload(backup)}><Download className="size-4" aria-hidden="true" /></Button>}
-          {(backup.status === 'ok' || backup.status === 'failed') && <Button variant="ghost" size="sm" aria-label={`Delete the backup from ${new Date(backup.requestedAt).toLocaleString()}`} onClick={() => onDelete(backup)}><Trash2 className="size-4" aria-hidden="true" /></Button>}
-        </div>
-      </TableCell>
-    </TableRow>
-  )
-}
-
 export default function BackupsCard() {
   const client = useQueryClient()
   const backups = useBackups()
@@ -123,23 +83,18 @@ export default function BackupsCard() {
     onSuccess: () => { toast.success('A backup has been asked for'); client.invalidateQueries({ queryKey: ['backups'] }) },
     onError: (err) => { toast.error(err.status === 409 ? 'A backup is already being made' : err.message); client.invalidateQueries({ queryKey: ['backups'] }) },
   })
-  const remove = useMutation({
-    mutationFn: (b) => api(`/backups/${b.id}`, { method: 'DELETE' }),
-    onSuccess: () => { toast.success('Backup deleted'); client.invalidateQueries({ queryKey: ['backups'] }) },
-    onError: (err) => toast.error(err.message),
-    onSettled: () => setDeleting(null),
-  })
 
   const d = backups.data
-  const busy = isBusy(d?.backups)
-  const { good, newest } = latestBackups(d?.backups)
+  const own = platformBackups(d?.backups)
+  const busy = isBusy(own)
+  const { good, newest } = latestBackups(own)
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Backups of Shipdok</CardTitle>
         <CardDescription>
-          One file holds the database and the key that opens its encrypted data (your variables and GitHub credentials). It does not hold your apps' own data volumes,
-          and it is made on this machine: copy backups somewhere else with Download, because a backup on the same disk does not protect you from losing the disk.
+          One file holds the database and the key that opens its encrypted data (your variables and GitHub credentials). Your apps' own data volumes are backed up separately, below.
+          Backups are made on this machine: copy backups somewhere else with Download, because a backup on the same disk does not protect you from losing the disk.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -161,19 +116,12 @@ export default function BackupsCard() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-sm">
                 {good ? <>Last backup: <strong>{timeAgo(good.finishedAt)}</strong> ({formatBytes(good.sizeBytes ?? 0)})</> : <strong>No backup has been made yet</strong>}
-                {d.totalBytes > 0 && <span className="text-muted-foreground"> · {formatBytes(d.totalBytes)} in all</span>}
+                {own.some((b) => b.status === 'ok') && <span className="text-muted-foreground"> · {formatBytes(own.filter((b) => b.status === 'ok').reduce((n, b) => n + (b.sizeBytes ?? 0), 0))} in all</span>}
               </p>
               <Button onClick={() => now.mutate()} disabled={busy || now.isPending}>{busy ? 'Backing up…' : 'Back up now'}</Button>
             </div>
 
-            {d.backups.length > 0 && (
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader><TableRow><TableHead>When</TableHead><TableHead>Size</TableHead><TableHead>State</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
-                  <TableBody>{d.backups.map((b) => <Row key={b.id} backup={b} onDownload={setDownloading} onDelete={setDeleting} />)}</TableBody>
-                </Table>
-              </div>
-            )}
+            {own.length > 0 && <BackupTable backups={own} onDownload={setDownloading} onDelete={setDeleting} />}
 
             <Schedule schedule={d.schedule} nextRunAt={d.nextRunAt} />
 
@@ -186,18 +134,7 @@ export default function BackupsCard() {
       </CardContent>
       {downloading && <DownloadDialog backup={downloading} onClose={() => setDownloading(null)} />}
       {passphrase && <PassphraseDialog enabled={d?.encryption.enabled} onClose={() => setPassphrase(false)} />}
-      <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete this backup?</AlertDialogTitle>
-            <AlertDialogDescription>The file is removed from this machine. If you have not downloaded it, it is gone.</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={(e) => { e.preventDefault(); remove.mutate(deleting) }} disabled={remove.isPending}>{remove.isPending ? 'Deleting…' : 'Delete'}</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <DeleteBackupDialog backup={deleting} onClose={() => setDeleting(null)} />
     </Card>
   )
 }

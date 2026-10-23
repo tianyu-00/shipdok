@@ -23,12 +23,17 @@ export const scheduleSchema = z.object({
   keep: z.number().int().min(1).max(60),
 }).strict();
 export const passphraseSchema = z.object({ password: z.string().min(1), passphrase: z.string().nullable() }).strict();
+export const volumeSettingsSchema = z.object({
+  enabled: z.boolean(),
+  stop: z.boolean(),
+  keep: z.number().int().min(1).max(60),
+}).strict();
 export const downloadSchema = z.object({ password: z.string().min(1) }).strict();
 
 const invalid = (parsed) => ({ error: 'Invalid request', details: parsed.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`) });
 
 const shape = (r) => ({
-  id: r.id, status: r.status, trigger: r.trigger, requestedAt: r.requested_at, startedAt: r.started_at, finishedAt: r.finished_at,
+  id: r.id, kind: r.kind, appId: r.app_id, appName: r.app_name, volumeCount: r.volume_count, status: r.status, trigger: r.trigger, requestedAt: r.requested_at, startedAt: r.started_at, finishedAt: r.finished_at,
   sizeBytes: r.size_bytes == null ? null : Number(r.size_bytes), encrypted: r.encrypted, verified: r.verified, version: r.version, warning: r.warning, error: r.error,
   downloadable: r.status === 'ok' && r.filename != null,
 });
@@ -57,6 +62,20 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
     return rows[0];
   }
 
+  // The apps that have mounted volumes, with what is set for their backups. Sizes are the last measurement (null = never measured).
+  async function appsWithVolumes() {
+    const { rows } = await db.query(
+      `SELECT a.id, a.name, a.volume_backup_enabled, a.volume_backup_stop, a.volume_backup_keep,
+              count(v.id)::int AS volume_count, sum(v.size_bytes)::bigint AS size_bytes, count(v.size_bytes)::int AS measured,
+              (SELECT max(b.finished_at) FROM backups b WHERE b.kind = 'volumes' AND b.app_id = a.id AND b.status = 'ok') AS last_ok_at
+         FROM apps a JOIN app_volumes v ON v.app_id = a.id AND v.state = 'in_use'
+        WHERE a.deleting_at IS NULL GROUP BY a.id ORDER BY lower(a.name), a.id`);
+    return rows.map((a) => ({
+      id: a.id, name: a.name, volumeCount: a.volume_count, sizeBytes: a.measured === a.volume_count ? Number(a.size_bytes) : null, lastBackupAt: a.last_ok_at,
+      enabled: a.volume_backup_enabled, stop: a.volume_backup_stop, keep: a.volume_backup_keep,
+    }));
+  }
+
   async function overview() {
     const { rows } = await db.query('SELECT * FROM backups ORDER BY requested_at DESC, id LIMIT 200');
     const { rows: stored } = await db.query('SELECT key, value FROM settings WHERE key = ANY($1)', [[SCHEDULE_KEY, PASSPHRASE_KEY]]);
@@ -68,6 +87,7 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
       totalBytes: rows.filter((b) => b.status === 'ok').reduce((n, b) => n + Number(b.size_bytes ?? 0), 0),
       schedule,
       nextRunAt: next ? next.toISOString() : null,
+      apps: await appsWithVolumes(),
       encryption: { enabled: byKey[PASSPHRASE_KEY] != null },
       persistent: await inOwnVolume(backupDir),
     };
@@ -83,6 +103,40 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
       const { rows } = await db.query(`INSERT INTO backups (trigger) VALUES ('manual') ON CONFLICT DO NOTHING RETURNING id`);
       if (!rows[0]) return res.status(409).json({ error: 'A backup is already waiting or running', code: 'already_running' });
       res.status(202).json({ id: rows[0].id });
+    } catch (err) { next(err); }
+  });
+
+  // Ask for a backup of one app's volumes now.
+  r.post('/volumes/:appId', limiter(20), async (req, res, next) => {
+    try {
+      if (!UUID_RE.test(req.params.appId)) return res.status(404).json({ error: 'App not found' });
+      const { rows: apps } = await db.query('SELECT id FROM apps WHERE id = $1 AND deleting_at IS NULL', [req.params.appId]);
+      if (!apps[0]) return res.status(404).json({ error: 'App not found' });
+      const { rows } = await db.query(
+        `INSERT INTO backups (trigger, kind, app_id, app_name)
+           SELECT 'manual', 'volumes', a.id, a.name FROM apps a
+            WHERE a.id = $1 AND EXISTS (SELECT 1 FROM app_volumes v WHERE v.app_id = a.id AND v.state = 'in_use')
+         ON CONFLICT DO NOTHING RETURNING id`, [req.params.appId]);
+      if (rows[0]) return res.status(202).json({ id: rows[0].id });
+      const { rows: mounted } = await db.query(`SELECT 1 FROM app_volumes WHERE app_id = $1 AND state = 'in_use' LIMIT 1`, [req.params.appId]);
+      if (!mounted[0]) return res.status(400).json({ error: 'This app has no persistent volumes', code: 'no_volumes' });
+      res.status(409).json({ error: 'A backup of this app is already waiting or running', code: 'already_running' });
+    } catch (err) { next(err); }
+  });
+
+  // What is set for one app's volume backups: in the schedule or not, stop the app while copying, how many to keep.
+  r.put('/volumes/:appId/settings', limiter(30), async (req, res, next) => {
+    try {
+      if (!UUID_RE.test(req.params.appId)) return res.status(404).json({ error: 'App not found' });
+      const parsed = volumeSettingsSchema.safeParse(req.body ?? {});
+      if (!parsed.success) return res.status(400).json(invalid(parsed));
+      const { enabled, stop, keep } = parsed.data;
+      const { rowCount } = await db.query(
+        `UPDATE apps SET volume_backup_enabled = $2, volume_backup_stop = $3, volume_backup_keep = $4, updated_at = now(),
+                volume_backup_changed_at = CASE WHEN volume_backup_enabled IS DISTINCT FROM $2 THEN now() ELSE volume_backup_changed_at END
+          WHERE id = $1 AND deleting_at IS NULL`, [req.params.appId, enabled, stop, keep]);
+      if (rowCount === 0) return res.status(404).json({ error: 'App not found' });
+      res.json(await overview());
     } catch (err) { next(err); }
   });
 

@@ -2,6 +2,9 @@
 import Docker from "dockerode";
 import { spawn } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
+import { statfs } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { pipeline } from "node:stream/promises";
 import os from "node:os";
 import { LABEL } from "@shipdok/shared";
 
@@ -544,4 +547,50 @@ export async function volumeSizes({ docker: d = docker } = {}) {
     if (typeof v.Name === 'string' && Number.isFinite(size) && size >= 0) sizes.set(v.Name, size); // -1: Docker could not say
   }
   return sizes;
+}
+
+// ---- Backups of an app's volumes (volumebackup.js). A volume is read through a helper container that is CREATED, never started: it is made from the
+// app's own image (nothing to pull), mounts the volumes read-only, and Docker's archive call (the same as `docker cp`) streams their files out as a tar.
+// The helper has no network and runs nothing; it is removed at the end, and any left behind by a crash is removed when the worker starts.
+export const HELPER_LABEL = "shipdok.backup-helper";
+
+/** The image the app's container was made from (an image ID, so a moved tag does not matter), or throws a message fit to show. */
+export async function appImage(appId) {
+  const found = [...(await findContainers({ appId, role: "live" })), ...(await findAppContainers(appId))];
+  for (const c of found) {
+    try { return (await c.inspect()).Image; } catch { /* try the next */ }
+  }
+  throw new Error("The app has no container, so there is no image to read its volumes with. Deploy it first");
+}
+
+/** A helper container with these Docker volumes mounted read-only at /vbackup/0, /vbackup/1, ... */
+export async function createBackupHelper({ image, volumes }, { docker: d = docker } = {}) {
+  return d.createContainer({
+    Image: image,
+    name: `shipdok-backup-helper-${randomBytes(4).toString("hex")}`,
+    Labels: { [HELPER_LABEL]: "true" },
+    Entrypoint: ["/nonexistent"], // never started; whatever the image would run does not matter
+    Cmd: [],
+    NetworkDisabled: true,
+    HostConfig: { Binds: volumes.map((name, i) => `${name}:/vbackup/${i}:ro`) },
+  });
+}
+
+/** Writes the files of volume number `index` of a helper to `file` as a tar. */
+export async function archiveVolume(helper, index, file) {
+  const stream = await helper.getArchive({ path: `/vbackup/${index}/.` });
+  await pipeline(stream, createWriteStream(file, { mode: 0o600 }));
+}
+
+/** Removes the helper containers a worker that died left behind. Returns how many. */
+export async function removeStaleHelpers({ docker: d = docker } = {}) {
+  const list = await d.listContainers({ all: true, filters: { label: [`${HELPER_LABEL}=true`] } });
+  for (const c of list) await d.getContainer(c.Id).remove({ force: true }).catch(() => {});
+  return list.length;
+}
+
+/** { totalBytes, freeBytes } of the disk the folder is on. */
+export async function diskSpace(dir) {
+  const s = await statfs(dir);
+  return { totalBytes: s.bsize * s.blocks, freeBytes: s.bsize * s.bavail };
 }

@@ -59,7 +59,7 @@ const cacheSampler = createCacheSampler(); // size of Docker's build cache
 
 const volumeMeasurer = createVolumeMeasurer(); // sizes of the persistent volumes, measured when the administrator asks
 
-const backups = createBackupRunner({ secretsKey, version: readVersion() }); // backups of Shipdok itself: asked for in the dashboard or by the schedule
+const backups = createBackupRunner({ secretsKey, version: readVersion(), activity }); // backups of Shipdok itself: asked for in the dashboard or by the schedule
 
 const worker = new Worker(
   DEPLOY_QUEUE,

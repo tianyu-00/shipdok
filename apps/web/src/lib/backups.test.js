@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, afterEach } from 'vitest'
-import { downloadBackup, filenameFrom, isBusy, latestBackups, localHourText, scheduleText, utcHourText, WEEKDAYS } from './backups'
+import { downloadBackup, filenameFrom, isAppBusy, isBusy, keepChoices, latestBackups, localHourText, platformBackups, scheduleText, utcHourText, volumeBackups, volumesText, WEEKDAYS } from './backups'
 import { ApiError } from './api'
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
@@ -110,5 +110,29 @@ describe('downloading', () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('network') }))
     await expect(downloadBackup('abc', 'x')).rejects.toBeInstanceOf(ApiError)
     await expect(downloadBackup('abc', 'x')).rejects.toMatchObject({ status: 0 })
+  })
+})
+
+describe('the two kinds of backup', () => {
+  const list = [{ id: 'p', status: 'ok' }, { id: 'p2', kind: 'platform', status: 'ok' }, { id: 'v', kind: 'volumes', appId: 'a1', status: 'running' }, { id: 'v2', kind: 'volumes', appId: 'a2', status: 'ok' }]
+  test('a backup without a kind is Shipdok\'s own', () => {
+    expect(platformBackups(list).map((b) => b.id)).toEqual(['p', 'p2'])
+    expect(volumeBackups(list).map((b) => b.id)).toEqual(['v', 'v2'])
+    expect(platformBackups(undefined)).toEqual([])
+    expect(volumeBackups(null)).toEqual([])
+  })
+  test('busy is asked of one app at a time, and a Shipdok backup never makes an app busy', () => {
+    expect(isAppBusy(list, 'a1')).toBe(true)
+    expect(isAppBusy(list, 'a2')).toBe(false)
+    expect(isAppBusy([{ id: 'p', status: 'queued' }], 'a1')).toBe(false)
+    expect(isBusy(platformBackups(list))).toBe(false)
+  })
+  test('the numbers to keep offer the usual choices, plus the app\'s own when it is another', () => {
+    expect(keepChoices(3)).toEqual([1, 2, 3, 5, 7, 10, 14, 30, 60])
+    expect(keepChoices(4)).toEqual([1, 2, 3, 4, 5, 7, 10, 14, 30, 60])
+    expect(keepChoices(61)).toEqual([1, 2, 3, 5, 7, 10, 14, 30, 60, 61])
+  })
+  test('volumes are counted in words', () => {
+    expect([volumesText(0), volumesText(1), volumesText(2)]).toEqual(['0 volumes', '1 volume', '2 volumes'])
   })
 })

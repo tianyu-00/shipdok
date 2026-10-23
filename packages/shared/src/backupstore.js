@@ -6,16 +6,19 @@ import { join } from 'node:path';
 /** Where backup files are kept: BACKUP_DIR (compose sets it to the `shipdok_backups` volume), else ~/.shipdok/backups. */
 export const backupRoot = (env = process.env) => env.BACKUP_DIR || join(homedir(), '.shipdok', 'backups');
 
-// shipdok-backup-<UTC date>-<UTC time>-<first 8 characters of the id>.tar, plus .enc when it is encrypted
-export const BACKUP_FILE_RE = /^shipdok-backup-\d{8}-\d{6}-[0-9a-f]{8}\.tar(\.enc)?$/;
+// shipdok-backup-<UTC date>-<UTC time>-<first 8 characters of the id>.tar, plus .enc when it is encrypted; shipdok-volumes-... for the volumes of an app
+// (the app's name is never part of a file name: it is user text, and it is in the row)
+export const BACKUP_KINDS = ['platform', 'volumes'];
+export const BACKUP_FILE_RE = /^shipdok-(backup|volumes)-\d{8}-\d{6}-[0-9a-f]{8}\.tar(\.enc)?$/;
 
 const pad = (n, width = 2) => String(n).padStart(width, '0');
 
-export function backupFilename(date, id, encrypted) {
+export function backupFilename(date, id, encrypted, kind = 'platform') {
+  if (!BACKUP_KINDS.includes(kind)) throw new Error('Not a backup kind');
   const d = new Date(date);
   const stamp = `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}-${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`;
   const short = String(id).replace(/-/g, '').slice(0, 8).toLowerCase();
-  const name = `shipdok-backup-${stamp}-${short}.tar${encrypted ? '.enc' : ''}`;
+  const name = `shipdok-${kind === 'volumes' ? 'volumes' : 'backup'}-${stamp}-${short}.tar${encrypted ? '.enc' : ''}`;
   if (!BACKUP_FILE_RE.test(name)) throw new Error('Not a usable backup file name');
   return name;
 }

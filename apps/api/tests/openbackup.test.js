@@ -53,6 +53,55 @@ describe('a plain backup', () => {
   });
 });
 
+// A backup of an app's volumes: volume-N.tar for each volume and a manifest that lists them
+function makeVolumeTar({ count = 2, files = null, kind = 'volumes', extra = {} } = {}) {
+  const dir = fresh();
+  const names = [];
+  for (let i = 0; i < count; i++) { writeFileSync(join(dir, `volume-${i}.tar`), `VOLUME-${i}`); names.push(`volume-${i}.tar`); }
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ format: 1, kind, createdAt: '2026-10-22T03:00:00.000Z', shipdokVersion: '0.1.19', trigger: 'manual', app: { name: 'Blog' }, files: files ?? [...names, 'manifest.json'] }));
+  names.push('manifest.json');
+  for (const [name, text] of Object.entries(extra)) { writeFileSync(join(dir, name), text); names.push(name); }
+  const file = join(fresh(), 'shipdok-volumes.tar');
+  execFileSync('tar', ['cf', file, '-C', dir, ...names]);
+  return file;
+}
+
+describe('a backup of an app\'s volumes', () => {
+  test('is unpacked: every volume and the manifest, readable by the owner only', async () => {
+    const out = join(fresh(), 'o');
+    const r = await openBackup({ file: makeVolumeTar(), outDir: out });
+    expect(r.files).toEqual(['manifest.json', 'volume-0.tar', 'volume-1.tar']);
+    expect(r.manifest).toMatchObject({ kind: 'volumes', app: { name: 'Blog' } });
+    expect(readFileSync(join(out, 'volume-1.tar'), 'utf8')).toBe('VOLUME-1');
+    for (const name of readdirSync(out)) expect(statSync(join(out, name)).mode & 0o077).toBe(0);
+  });
+  test('only the volumes the manifest lists, by a strict name: nothing else the archive carries', async () => {
+    const out = join(fresh(), 'o');
+    await openBackup({ file: makeVolumeTar({ extra: { 'evil.sh': 'rm -rf /', 'volume-9.tar': 'not listed', 'db.dump': 'not a volume backup file' } }), outDir: out });
+    expect(readdirSync(out).sort()).toEqual(['manifest.json', 'volume-0.tar', 'volume-1.tar']);
+  });
+  test('a manifest that lists names that are not volume files asks for nothing of the kind', async () => {
+    const out = join(fresh(), 'o');
+    await expect(openBackup({ file: makeVolumeTar({ files: ['../evil', '/etc/passwd', 'db.dump', 'volume-x.tar', 'manifest.json'] }), outDir: out })).rejects.toThrow(/lists no volumes/);
+    expect(readdirSync(out).filter((n) => n !== 'manifest.json')).toEqual([]);
+  });
+  test('a volume the manifest lists but the archive lacks is refused', async () => {
+    await expect(openBackup({ file: makeVolumeTar({ files: ['volume-0.tar', 'volume-1.tar', 'volume-2.tar', 'manifest.json'] }), outDir: join(fresh(), 'o') })).rejects.toThrow(/does not look like a Shipdok backup/);
+  });
+  test('an encrypted one opens with the passphrase', async () => {
+    const file = join(fresh(), 'shipdok-volumes.tar.enc');
+    await encryptBackupFile(makeVolumeTar(), file, PASS);
+    const out = join(fresh(), 'o');
+    const r = await openBackup({ file, outDir: out, passphrase: PASS });
+    expect([r.wasEncrypted, r.files.length]).toEqual([true, 3]);
+    await expect(openBackup({ file, outDir: join(fresh(), 'o2'), passphrase: 'not the passphrase at all' })).rejects.toThrow();
+  });
+  test('a backup of Shipdok itself is still opened as before when the manifest has no kind', async () => {
+    const r = await openBackup({ file: makeTar(), outDir: join(fresh(), 'o') });
+    expect(r.files).toEqual(['db.dump', 'manifest.json', 'secrets.tgz']);
+  });
+});
+
 describe('an encrypted backup', () => {
   async function encrypted() {
     const file = join(fresh(), 'shipdok-backup.tar.enc');

@@ -312,3 +312,171 @@ describe('deleting', () => {
     expect((await agent.delete('/api/backups/not-a-uuid')).status).toBe(404);
   });
 });
+
+// ---- Backups of an app's volumes
+describe('backups of an app\'s volumes', () => {
+  let appId;
+  let appName;
+  const addApp = async (name = 'Blog') => {
+    const res = await agent.post('/api/apps').send({ name, repo: 'o/blog', container_port: 3000, host_port: 8080 + Math.floor(Math.random() * 500) });
+    return res.body.id;
+  };
+  const addVolume = (id, path = '/data', state = 'in_use', size = null) => testPool.query(
+    `INSERT INTO app_volumes (app_id, app_name, container_path, docker_name, state, size_bytes, measured_at) VALUES ($1, 'x', $2, $3, $4, $5, CASE WHEN $5::bigint IS NULL THEN NULL ELSE now() END)`,
+    [id, path, `shipdok-vol-${Math.random().toString(16).slice(2)}`, state, size]);
+  const volumeRow = async (id = appId) => (await testPool.query(`SELECT * FROM backups WHERE kind = 'volumes' AND app_id = $1`, [id])).rows;
+  const settings = (over = {}, id = appId) => agent.put(`/api/backups/volumes/${id}/settings`).send({ enabled: true, stop: true, keep: 5, ...over });
+
+  beforeEach(async () => {
+    await testPool.query('TRUNCATE app_volumes');
+    appName = 'Blog';
+    appId = await addApp(appName);
+    await addVolume(appId, '/data', 'in_use', 1000);
+  });
+
+  describe('who may use it', () => {
+    test.each([['post', '/api/backups/volumes/11111111-1111-4111-8111-111111111111'], ['put', '/api/backups/volumes/11111111-1111-4111-8111-111111111111/settings']])('%s %s needs a session', async (method, path) => {
+      expect((await request(app)[method](path).send({})).status).toBe(401);
+    });
+  });
+
+  describe('the apps in the overview', () => {
+    test('lists the apps that have mounted volumes, with the defaults: not in the schedule, not stopped, keep 3', async () => {
+      const bare = await addApp('No data');
+      await addVolume(bare, '/old', 'detached');
+      const o = await overview();
+      expect(o.apps).toEqual([{ id: appId, name: 'Blog', volumeCount: 1, sizeBytes: 1000, lastBackupAt: null, enabled: false, stop: false, keep: 3 }]);
+    });
+    test('adds the volumes of an app up, and says nothing about the size while any was never measured', async () => {
+      await addVolume(appId, '/uploads', 'in_use', 234);
+      expect((await overview()).apps[0]).toMatchObject({ volumeCount: 2, sizeBytes: 1234 });
+      await addVolume(appId, '/cache', 'in_use', null);
+      expect((await overview()).apps[0]).toMatchObject({ volumeCount: 3, sizeBytes: null });
+    });
+    test('apps are in alphabetical order, and an app being deleted is not listed', async () => {
+      const a = await addApp('alpha'); await addVolume(a);
+      const z = await addApp('Zulu'); await addVolume(z);
+      expect((await overview()).apps.map((x) => x.name)).toEqual(['alpha', 'Blog', 'Zulu']);
+      await testPool.query(`UPDATE apps SET deleting_at = now() WHERE id = $1`, [z]);
+      expect((await overview()).apps.map((x) => x.name)).toEqual(['alpha', 'Blog']);
+    });
+    test('says when the latest good volume backup finished', async () => {
+      await testPool.query(`INSERT INTO backups (kind, app_id, app_name, status, trigger, filename, finished_at) VALUES ('volumes', $1, 'Blog', 'ok', 'manual', 'shipdok-volumes-20261022-030000-aaaaaaaa.tar', '2026-10-22T03:00:00Z'), ('volumes', $1, 'Blog', 'failed', 'manual', NULL, '2026-10-23T03:00:00Z')`, [appId]);
+      expect(new Date((await overview()).apps[0].lastBackupAt).toISOString()).toBe('2026-10-22T03:00:00.000Z');
+    });
+    test('a volume backup is listed with its kind, app and number of volumes, and never a file name', async () => {
+      await testPool.query(`INSERT INTO backups (kind, app_id, app_name, volume_count, status, trigger, filename, size_bytes, encrypted, verified, finished_at) VALUES ('volumes', $1, 'Blog', 2, 'ok', 'scheduled', 'shipdok-volumes-20261022-030000-aaaaaaaa.tar', 77, false, true, now())`, [appId]);
+      const o = await overview();
+      expect(o.backups[0]).toMatchObject({ kind: 'volumes', appId, appName: 'Blog', volumeCount: 2, sizeBytes: 77, downloadable: true });
+      expect(JSON.stringify(o)).not.toMatch(/shipdok-volumes|\.tar/);
+      expect(o.totalBytes).toBe(77);
+    });
+    test('Shipdok\'s own backups say so', async () => {
+      await insert();
+      expect((await overview()).backups[0]).toMatchObject({ kind: 'platform', appId: null, appName: null, volumeCount: null });
+    });
+    test('a backup stays listed, under the name the app had, after the app is deleted', async () => {
+      await testPool.query(`INSERT INTO backups (kind, app_id, app_name, status, trigger, filename, size_bytes, finished_at) VALUES ('volumes', $1, 'Blog', 'ok', 'manual', 'shipdok-volumes-20261022-030000-aaaaaaaa.tar', 5, now())`, [appId]);
+      await testPool.query('DELETE FROM app_volumes WHERE app_id = $1', [appId]);
+      await testPool.query('DELETE FROM apps WHERE id = $1', [appId]);
+      expect((await overview()).backups[0]).toMatchObject({ kind: 'volumes', appId: null, appName: 'Blog', downloadable: true });
+    });
+  });
+
+  describe('asking for one now', () => {
+    test('is recorded as queued for the worker, with the app and its name', async () => {
+      const res = await agent.post(`/api/backups/volumes/${appId}`);
+      expect(res.status).toBe(202);
+      const row = (await volumeRow())[0];
+      expect([row.id, row.status, row.trigger, row.kind, row.app_name]).toEqual([res.body.id, 'queued', 'manual', 'volumes', 'Blog']);
+    });
+    test('one per app: a second is a 409, another app\'s and Shipdok\'s own are not blocked', async () => {
+      expect((await agent.post(`/api/backups/volumes/${appId}`)).status).toBe(202);
+      const again = await agent.post(`/api/backups/volumes/${appId}`);
+      expect([again.status, again.body.code]).toEqual([409, 'already_running']);
+      const other = await addApp('Other'); await addVolume(other);
+      expect((await agent.post(`/api/backups/volumes/${other}`)).status).toBe(202);
+      expect((await agent.post('/api/backups')).status).toBe(202);
+    });
+    test('two requests at the same moment make one', async () => {
+      const results = await Promise.all([1, 2, 3].map(() => agent.post(`/api/backups/volumes/${appId}`)));
+      expect(results.map((r) => r.status).sort()).toEqual([202, 409, 409]);
+      expect(await volumeRow()).toHaveLength(1);
+    });
+    test('an app with no mounted volume is a 400 (a detached one does not count)', async () => {
+      const bare = await addApp('Bare');
+      let res = await agent.post(`/api/backups/volumes/${bare}`);
+      expect([res.status, res.body.code]).toEqual([400, 'no_volumes']);
+      await addVolume(bare, '/old', 'detached');
+      res = await agent.post(`/api/backups/volumes/${bare}`);
+      expect(res.status).toBe(400);
+      expect(await volumeRow(bare)).toHaveLength(0);
+    });
+    test('an unknown app, a bad id and an app being deleted are 404', async () => {
+      expect((await agent.post('/api/backups/volumes/11111111-1111-4111-8111-111111111111')).status).toBe(404);
+      expect((await agent.post('/api/backups/volumes/not-an-id')).status).toBe(404);
+      await testPool.query(`UPDATE apps SET deleting_at = now() WHERE id = $1`, [appId]);
+      expect((await agent.post(`/api/backups/volumes/${appId}`)).status).toBe(404);
+    });
+    test('a finished backup can be deleted, and a waiting one cannot (the same rules as Shipdok\'s own)', async () => {
+      const queued = await agent.post(`/api/backups/volumes/${appId}`);
+      expect((await agent.delete(`/api/backups/${queued.body.id}`)).status).toBe(409);
+      await testPool.query(`UPDATE backups SET status = 'failed' WHERE id = $1`, [queued.body.id]);
+      expect((await agent.delete(`/api/backups/${queued.body.id}`)).status).toBe(204);
+    });
+  });
+
+  describe('the settings of an app', () => {
+    test('are saved, answered with the new overview, and kept', async () => {
+      const res = await settings({ enabled: true, stop: true, keep: 5 });
+      expect(res.status).toBe(200);
+      expect(res.body.apps[0]).toMatchObject({ id: appId, enabled: true, stop: true, keep: 5 });
+      expect((await overview()).apps[0]).toMatchObject({ enabled: true, stop: true, keep: 5 });
+    });
+    test('switching the schedule on records when (so that a slot that passed earlier today is not made up for), leaving it on does not move that', async () => {
+      expect((await testPool.query('SELECT volume_backup_changed_at FROM apps WHERE id = $1', [appId])).rows[0].volume_backup_changed_at).toBeNull();
+      await settings({ enabled: true });
+      const first = (await testPool.query('SELECT volume_backup_changed_at AS t FROM apps WHERE id = $1', [appId])).rows[0].t;
+      expect(first).not.toBeNull();
+      await testPool.query(`UPDATE apps SET volume_backup_changed_at = '2020-01-01' WHERE id = $1`, [appId]);
+      await settings({ enabled: true, keep: 9 });
+      expect((await testPool.query('SELECT volume_backup_changed_at AS t FROM apps WHERE id = $1', [appId])).rows[0].t.toISOString()).toBe('2020-01-01T00:00:00.000Z');
+      await settings({ enabled: false });
+      expect((await testPool.query('SELECT volume_backup_changed_at AS t FROM apps WHERE id = $1', [appId])).rows[0].t.getFullYear()).toBeGreaterThan(2020);
+    });
+    test.each([
+      [{ keep: 0 }], [{ keep: 61 }], [{ keep: 2.5 }], [{ keep: '5' }], [{ enabled: 'yes' }], [{ stop: null }], [{ extra: 1 }],
+    ])('refuses %j', async (over) => {
+      expect((await settings(over)).status).toBe(400);
+      expect((await overview()).apps[0]).toMatchObject({ enabled: false, stop: false, keep: 3 });
+    });
+    test('both ends of the number to keep are fine', async () => {
+      expect((await settings({ keep: 1 })).status).toBe(200);
+      expect((await settings({ keep: 60 })).status).toBe(200);
+    });
+    test('an unknown app, a bad id and an app being deleted are 404', async () => {
+      expect((await settings({}, '11111111-1111-4111-8111-111111111111')).status).toBe(404);
+      expect((await settings({}, 'nope')).status).toBe(404);
+      await testPool.query(`UPDATE apps SET deleting_at = now() WHERE id = $1`, [appId]);
+      expect((await settings()).status).toBe(404);
+    });
+    test('missing fields are refused: nothing is half-saved', async () => {
+      expect((await agent.put(`/api/backups/volumes/${appId}/settings`).send({ enabled: true })).status).toBe(400);
+    });
+  });
+
+  describe('downloading', () => {
+    test('works for a volume backup like for any other: the password, the record in the sign-ins list, the bytes', async () => {
+      const name = 'shipdok-volumes-20261022-030000-aaaaaaaa.tar';
+      writeFileSync(join(dir, name), CONTENT);
+      const { rows } = await testPool.query(`INSERT INTO backups (kind, app_id, app_name, status, trigger, filename, size_bytes, finished_at) VALUES ('volumes', $1, 'Blog', 'ok', 'manual', $2, $3, now()) RETURNING id`, [appId, name, CONTENT.length]);
+      const bad = await agent.post(`/api/backups/${rows[0].id}/download`).send({ password: 'wrong-password-here' });
+      expect(bad.status).toBe(403);
+      const res = await agent.post(`/api/backups/${rows[0].id}/download`).send({ password: PASSWORD }).buffer().parse((r, cb) => { const c = []; r.on('data', (d) => c.push(d)); r.on('end', () => cb(null, Buffer.concat(c))); });
+      expect(res.status).toBe(200);
+      expect(res.headers['content-disposition']).toContain(name);
+      expect(Buffer.compare(res.body, CONTENT)).toBe(0);
+      expect(await attempts('download')).toHaveLength(1);
+    });
+  });
+});

@@ -23,8 +23,22 @@ export function scheduleText(schedule) {
   return `${when}, keeping the newest ${schedule.keep}`
 }
 
+/** Backups of Shipdok itself (a backup without a kind is one) and the backups of apps' volumes. */
+export const platformBackups = (backups) => (backups ?? []).filter((b) => b.kind !== 'volumes')
+export const volumeBackups = (backups) => (backups ?? []).filter((b) => b.kind === 'volumes')
+
 /** Is a backup waiting or being made? */
 export const isBusy = (backups) => (backups ?? []).some((b) => b.status === 'queued' || b.status === 'running')
+
+/** Is a backup of THIS app's volumes waiting or being made? */
+export const isAppBusy = (backups, appId) => isBusy(volumeBackups(backups).filter((b) => b.appId === appId))
+
+/** How many volume backups an app may keep: the choices offered (the app's own number is added when it is not one of them). */
+export const KEEP_CHOICES = [1, 2, 3, 5, 7, 10, 14, 30, 60]
+export const keepChoices = (current) => (KEEP_CHOICES.includes(current) ? KEEP_CHOICES : [...KEEP_CHOICES, current].sort((a, b) => a - b))
+
+/** "2 volumes" */
+export const volumesText = (n) => `${n} volume${n === 1 ? '' : 's'}`
 
 /** The newest backup that worked, and the newest of all (which may have failed). */
 export function latestBackups(backups) {

@@ -31,8 +31,13 @@ try {
   const { files, manifest, wasEncrypted } = await openBackup({ file, outDir, passphrase });
   console.log(`${wasEncrypted ? 'Decrypted and opened' : 'Opened'} the backup made ${manifest.createdAt} by Shipdok ${manifest.shipdokVersion ?? '(unknown version)'} (${manifest.trigger}).`);
   console.log(`In ${outDir}: ${files.join(', ')}`);
-  if (!manifest.includesSecrets) console.log('WARNING: this backup does not contain the platform secrets (secrets.tgz), so it cannot open the database\'s encrypted data on its own.');
-  console.log('Next: restore the database and the secrets as described under "Restore" in docs/operations.md.');
+  if (manifest.kind === 'volumes') {
+    const name = String(manifest.app?.name ?? 'unknown').replace(/[^\x20-\x7e\u00a0-\uffff]/g, '?'); // (the manifest is text from a file: no control characters to the terminal)
+    console.log(`This is a backup of the volumes of the app "${name}"${manifest.appWasStopped ? ' (copied while the app was stopped)' : ' (copied while the app ran)'}:`);
+    for (const v of manifest.volumes ?? []) console.log(`  ${v.file}  was mounted at ${v.containerPath}`);
+    console.log('Next: restore a volume as described under "Restore the data of an app" in docs/operations.md.');
+  } else if (!manifest.includesSecrets) console.log('WARNING: this backup does not contain the platform secrets (secrets.tgz), so it cannot open the database\'s encrypted data on its own.');
+  if (manifest.kind !== 'volumes') console.log('Next: restore the database and the secrets as described under "Restore" in docs/operations.md.');
 } catch (err) {
   console.error(err.message);
   process.exitCode = 1;

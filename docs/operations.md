@@ -52,7 +52,7 @@ restarting and changes nothing else. Go back by restoring the backup you took in
 
 ## Backup
 
-**Backups from the dashboard.** The Storage page has a **Backups of Shipdok** card. A backup is ONE file that holds both things below (the database and the
+**Backups from the dashboard.** The Storage page has a **Backups of Shipdok** card (the data of your apps is backed up by the card below it, see [Persistent storage of your apps](#persistent-storage-of-your-apps)). A backup is ONE file that holds both things below (the database and the
 secrets volume), so it is a complete backup on its own. It is made by the worker, beside the build queue (it never waits behind a build), with
 `pg_dump` inside the Postgres container, and the dump is read back to check it before the backup counts as made.
 
@@ -65,7 +65,7 @@ secrets volume), so it is a complete backup on its own. It is made by the worker
 - **Download** needs your password again and is recorded in the sign-ins list on the Security page, as is setting or removing the passphrase.
 - **Copy backups off this machine.** They are stored on the same disk as Shipdok (the `shipdok_backups` volume), which does not protect you from losing
   the disk or the machine. Download them, regularly.
-- **Not included:** your apps' own data volumes (see [Persistent storage](#persistent-storage-of-your-apps)), the job queue and the logs.
+- **Not included:** your apps' own data volumes (they have their own backups, see [Persistent storage](#persistent-storage-of-your-apps)), the job queue and the logs.
 - **Needs the `shipdok_backups` volume.** It is in the compose.yaml of this release: after an upgrade get the newest compose file ([Upgrade](#upgrade)),
   or the card warns that the backups are not on a volume of their own and would be lost when the container is replaced.
 - If the worker cannot find Shipdok's own Postgres container (for example when Shipdok was started by something other than Docker Compose), the backup fails
@@ -181,8 +181,39 @@ mounts, so the files survive redeploys, rollbacks, restarts and image clean-ups.
   that was never measured says *not measured*; a path added since the last measurement is not counted until you measure again. The figures are a
   snapshot, not live: measure again to refresh them.
 
-**Back up a volume.** Shipdok does not back up your apps' volumes. The Docker name of each volume (`shipdok-vol-...`) is shown under its path in
-Settings. Stop the app first if it writes continuously, then, in a folder you control:
+**Back up the data of an app (from the dashboard).** The Storage page has a **Backups of your apps' data** card. Each app with persistent storage is listed with its
+volumes, their size and when it was last backed up. **Back up now** copies every mounted volume of that app into ONE file (a tar per volume plus a manifest), made by
+the worker beside the build queue. The files go in the same `shipdok_backups` volume and the same list as the backups of Shipdok, and use the same passphrase if you set one.
+
+- **The volumes are only read** (a helper container that is never started mounts them read-only and Docker streams their files out). The app keeps running and nothing
+  about it changes. Because the app may write while its files are copied, a database that lives in a volume (SQLite, or a Postgres/MySQL data folder) can be copied
+  half-written. For those, turn on **Stop the app while copying** for that app: it is stopped, copied and started again (a short downtime; if it is already stopped it
+  stays stopped; if a deployment is running at that moment the backup fails and says so instead of stopping anything). If the app does not start again after the copy,
+  the backup says so.
+- **Automatic backups are off for apps until you switch them on** (**Include in the automatic backups**). They use the schedule of the card above (one daily or weekly
+  time) and an app is backed up at most once per slot. Switching an app on after today's time has passed does not make a backup at once.
+- **Keep the newest** (per app, 1 to 60, default 3): older ones of that app are deleted after each backup. A backup of an app you have deleted stays (listed under the name it
+  had) until you delete it.
+- **Room:** a backup needs up to twice the size of the volumes while it is made, and the disk must still have 10% free afterwards. If not, the backup is refused with the
+  sizes in the message. Sizes come from **Measure sizes** on the Storage page, or are asked of Docker when a volume was never measured (slow on a Pi).
+- **Only mounted volumes** are copied (a detached volume, kept after its path was removed, is not).
+- **Copy the files away.** Like the others they are on this machine's disk: download them (password needed).
+
+**Restore the data of an app.** Download the file, then open it (this decrypts it if needed and unpacks one `volume-N.tar` per volume; `manifest.json` says which path each was mounted at and which app it is):
+
+```bash
+docker compose run --rm --no-deps -v "$PWD":/backup -e SHIPDOK_BACKUP_PASSPHRASE api node scripts/open-backup.js /backup/shipdok-volumes-FILE.tar.enc /backup/opened-volumes
+```
+
+Restore into an EMPTY volume (the Docker name of each volume is under its path in the app's Settings; for a new app deploy once with the same paths so the volume exists, and stop the app first). Nothing is overwritten unless you point it at a volume that is not empty:
+
+```bash
+docker run --rm -v shipdok-vol-XXXX:/data -v "$PWD/opened-volumes":/in:ro alpine tar xf /in/volume-0.tar -C /data
+```
+
+(File owners and permissions are kept, as they were in the app.) This is not tested by Shipdok on a live app for you: after a restore, start the app and look at its data.
+
+**Back up a volume by hand.** You can still do it yourself. Stop the app first if it writes continuously, then, in a folder you control:
 
 ```bash
 umask 077

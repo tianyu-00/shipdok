@@ -1,5 +1,6 @@
-// Opening a backup file on the host: decrypt it if it is encrypted, and unpack it into a folder: db.dump (the database), secrets.tgz (the platform secrets)
-// and manifest.json. Restoring from those is described in docs/operations.md ("Restore"). Used by scripts/open-backup.js; kept apart so it can be tested.
+// Opening a backup file on the host: decrypt it if it is encrypted, and unpack it into a folder. A backup of Shipdok itself holds db.dump (the database),
+// secrets.tgz (the platform secrets) and manifest.json; a backup of an app's volumes holds volume-0.tar, volume-1.tar, ... (one per volume) and manifest.json.
+// Restoring from those is described in docs/operations.md ("Restore"). Used by scripts/open-backup.js; kept apart so it can be tested.
 import { execFile } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -8,6 +9,8 @@ import { decryptBackupFile, isEncryptedBackup } from '@shipdok/shared';
 
 const run = promisify(execFile);
 const FILES = ['db.dump', 'secrets.tgz', 'manifest.json'];
+const VOLUME_FILE = /^volume-\d{1,3}\.tar$/;
+const MAX_VOLUMES = 100;
 
 /**
  * @returns {Promise<{ outDir: string, files: string[], manifest: object, wasEncrypted: boolean }>}
@@ -25,16 +28,26 @@ export async function openBackup({ file, outDir, passphrase = null }) {
       tarFile = join(work, 'bundle.tar');
       await decryptBackupFile(file, tarFile, passphrase);
     }
-    // Only our three files are unpacked, by name: nothing else a tar could carry (paths, links) is extracted.
-    await run('tar', ['xf', tarFile, '-C', outDir, '--no-same-owner', '--no-same-permissions', ...FILES], { maxBuffer: 1024 * 1024 }).catch((err) => {
+    // Only our own files are unpacked, by name: nothing else a tar could carry (paths, links) is extracted. The manifest first: it says which kind of backup this is.
+    const extract = (names) => run('tar', ['xf', tarFile, '-C', outDir, '--no-same-owner', '--no-same-permissions', ...names], { maxBuffer: 1024 * 1024 });
+    const notOurs = (err) => new Error(`This does not look like a Shipdok backup (${String(err.stderr ?? '').trim().split('\n')[0] || 'tar failed'})`);
+    await extract(['manifest.json']).catch((err) => { throw notOurs(err); });
+    let manifest;
+    try { manifest = JSON.parse(await readFile(join(outDir, 'manifest.json'), 'utf8')); } catch { throw new Error('This does not look like a Shipdok backup (the manifest cannot be read)'); }
+    let wanted = FILES;
+    if (manifest?.kind === 'volumes') {
+      wanted = (Array.isArray(manifest.files) ? manifest.files : []).filter((n) => typeof n === 'string' && VOLUME_FILE.test(n)).slice(0, MAX_VOLUMES);
+      if (wanted.length === 0) throw new Error('This does not look like a Shipdok backup (it lists no volumes)');
+      wanted = [...wanted, 'manifest.json'];
+    }
+    await extract(wanted).catch((err) => {
       const text = String(err.stderr ?? '');
-      if (/Not found in archive/.test(text) && !/db\.dump/.test(text)) return; // secrets.tgz is absent from a backup that could not include the secrets
-      throw new Error(`This does not look like a Shipdok backup (${text.trim().split('\n')[0] || 'tar failed'})`);
+      if (manifest?.kind !== 'volumes' && /Not found in archive/.test(text) && !/db\.dump/.test(text)) return; // secrets.tgz is absent from a backup that could not include the secrets
+      throw notOurs(err);
     });
-    const files = (await readdir(outDir)).filter((n) => FILES.includes(n)).sort();
-    if (!files.includes('db.dump') || !files.includes('manifest.json')) throw new Error('This does not look like a Shipdok backup (the database dump or the manifest is missing)');
-    for (const name of files) await chmod(join(outDir, name), 0o600); // the dump and the secrets are for their owner only
-    const manifest = JSON.parse(await readFile(join(outDir, 'manifest.json'), 'utf8'));
+    const files = (await readdir(outDir)).filter((n) => wanted.includes(n)).sort();
+    if (manifest?.kind !== 'volumes' && (!files.includes('db.dump') || !files.includes('manifest.json'))) throw new Error('This does not look like a Shipdok backup (the database dump or the manifest is missing)');
+    for (const name of files) await chmod(join(outDir, name), 0o600); // the dump, the secrets and the volumes' files are for their owner only
     return { outDir, files, manifest, wasEncrypted };
   } finally {
     await rm(work, { recursive: true, force: true });

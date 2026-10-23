@@ -24,7 +24,7 @@ export function DownloadDialog({ backup, onClose }) {
           <DialogHeader>
             <DialogTitle>Download this backup</DialogTitle>
             <DialogDescription>
-              It holds every secret Shipdok has{backup.encrypted ? ', but it is encrypted with your backup passphrase, which you will need to open it' : ', and it is NOT encrypted: keep it somewhere private'}.
+              It holds {backup.kind === 'volumes' ? `all the data in the volumes of ${backup.appName ?? 'the app'}, which may include secrets` : 'every secret Shipdok has'}{backup.encrypted ? ', but it is encrypted with your backup passphrase, which you will need to open it' : ', and it is NOT encrypted: keep it somewhere private'}.
               Enter your password to download it.
             </DialogDescription>
           </DialogHeader>

@@ -121,7 +121,7 @@ export default Object.fromEntries([
   // ---------------------------------------------------------------- backups of Shipdok itself
   route('GET', '/api/backups', op({
     tag: LOG, summary: 'Backups of Shipdok itself',
-    description: 'The backups that exist (newest first, at most 200) with how each went, their total size, the schedule and when the next scheduled backup is due (`nextRunAt`, `null` when the schedule is off), and whether they are encrypted (`encryption.enabled`: a passphrase is set). A backup is ONE file holding the database and the platform secrets (the key without which the database\'s encrypted data cannot be read). `persistent: false` means the backups folder is not a volume of its own, so the backups would be lost when the container is replaced.',
+    description: 'The backups that exist (newest first, at most 200) with how each went, their total size, the schedule and when the next scheduled backup is due (`nextRunAt`, `null` when the schedule is off), and whether they are encrypted (`encryption.enabled`: a passphrase is set). A backup of Shipdok is ONE file holding the database and the platform secrets (the key without which the database\'s encrypted data cannot be read); a backup of an app\'s volumes (`kind: volumes`, with `appName`) is one file with every mounted volume of that app. `apps` lists the apps that have mounted volumes with how their backups are set. `persistent: false` means the backups folder is not a volume of its own, so the backups would be lost when the container is replaced.',
     responses: { 200: ok('The backups and the settings.', ref('BackupsOverview')) },
   })),
   route('POST', '/api/backups', op({
@@ -129,6 +129,18 @@ export default Object.fromEntries([
     description: 'Records a request; the worker notices within a few seconds and makes the backup beside the deployment queue (it does not wait behind a build). Poll `GET /api/backups` for the result. Only one backup may wait or run at a time.',
     responses: { 202: ok('Asked for.', { type: 'object', properties: { id: { type: 'string', format: 'uuid' } } }) },
     errors: { 409: 'A backup is already waiting or running (`code: already_running`).', 429: 'Too many requests.' },
+  })),
+  route('POST', '/api/backups/volumes/{appId}', op({
+    tag: LOG, summary: 'Back up the persistent volumes of an app now', parameters: [idParam('appId', 'The app.')],
+    description: 'Records a request; the worker makes ONE file with every mounted volume of the app (read-only; the app keeps running unless its "stop while copying" switch is on, see `PUT /api/backups/volumes/{appId}/settings`) beside the deployment queue. Refused by the worker, with the reason in the backup\'s `error`, when the disk would be left nearly full. Poll `GET /api/backups`. One backup may wait or run per app.',
+    responses: { 202: ok('Asked for.', { type: 'object', properties: { id: { type: 'string', format: 'uuid' } } }) },
+    errors: { 400: 'The app has no persistent volumes (`code: no_volumes`).', 404: 'No such app.', 409: 'A backup of this app is already waiting or running (`code: already_running`).', 429: 'Too many requests.' },
+  })),
+  route('PUT', '/api/backups/volumes/{appId}/settings', op({
+    tag: LOG, summary: 'Set how the volumes of an app are backed up', parameters: [idParam('appId', 'The app.')], body: ref('VolumeBackupSettings'),
+    description: '`enabled`: include the app in the scheduled backups (the schedule is the one of `PUT /api/backups/settings`; off by default; switching it on does not back up at once for a time that already passed today). `stop`: stop the app while its volumes are copied and start it again afterwards, so a database in a volume is copied consistently (default off: the copy is made while the app runs). `keep`: how many of this app\'s newest volume backups to keep (1 to 60, default 3). Answers with the new overview.',
+    responses: { 200: ok('Saved.', ref('BackupsOverview')) },
+    errors: { 404: 'No such app.' },
   })),
   route('PUT', '/api/backups/settings', op({
     tag: LOG, summary: 'Set the backup schedule', body: ref('BackupSchedule'),

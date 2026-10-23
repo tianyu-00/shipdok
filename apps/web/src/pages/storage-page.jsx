@@ -20,6 +20,7 @@ import KeptVolumes from '@/components/kept-volumes'
 import BuildCacheCard from '@/components/build-cache-card'
 import OldImagesCard from '@/components/old-images-card'
 import BackupsCard from '@/components/backups-card'
+import VolumeBackupsCard from '@/components/volume-backups-card'
 import { MeasureSizes } from '@/components/measure-sizes'
 
 const LEVEL = {
@@ -138,6 +139,7 @@ export default function StoragePage() {
           <OldImagesCard />
           <BuildCacheCard />
           <BackupsCard />
+          <VolumeBackupsCard />
           <KeptVolumes />
         </>
       )}

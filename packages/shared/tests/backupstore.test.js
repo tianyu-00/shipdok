@@ -15,6 +15,14 @@ describe('where backups live and what they are called', () => {
     assert.equal(backupFilename('2026-10-22T03:04:05Z', '12345678-aaaa-4bbb-8ccc-1234567890ab', false), 'shipdok-backup-20261022-030405-12345678.tar');
     assert.equal(backupFilename('2026-01-02T23:59:59Z', 'ABCDEF01-aaaa-4bbb-8ccc-1234567890ab', true), 'shipdok-backup-20260102-235959-abcdef01.tar.enc');
   });
+  test('a volume backup has its own name, never with the app\'s name in it', () => {
+    assert.equal(backupFilename('2026-10-22T03:04:05Z', '12345678-aaaa-4bbb-8ccc-1234567890ab', false, 'volumes'), 'shipdok-volumes-20261022-030405-12345678.tar');
+    assert.equal(backupFilename('2026-10-22T03:04:05Z', '12345678-aaaa-4bbb-8ccc-1234567890ab', true, 'volumes'), 'shipdok-volumes-20261022-030405-12345678.tar.enc');
+    assert.equal(backupFilename('2026-10-22T03:04:05Z', '12345678-aaaa-4bbb-8ccc-1234567890ab', false, 'platform'), 'shipdok-backup-20261022-030405-12345678.tar');
+    assert.throws(() => backupFilename('2026-10-22T03:04:05Z', '12345678-aaaa-4bbb-8ccc-1234567890ab', false, '../x'), /backup kind/);
+    assert.equal(backupFilePath('/b', 'shipdok-volumes-20261022-030405-12345678.tar.enc'), '/b/shipdok-volumes-20261022-030405-12345678.tar.enc');
+    for (const bad of ['shipdok-volumes-my-blog-20261022-030405-12345678.tar', 'shipdok-other-20261022-030405-12345678.tar', 'shipdok-volumes-20261022-030405-12345678.tgz']) assert.equal(backupFilePath('/b', bad), null, bad);
+  });
   test('only our own file names become paths, and never anything outside the folder', () => {
     const ok = 'shipdok-backup-20261022-030405-12345678.tar';
     assert.equal(backupFilePath('/b', ok), `/b/${ok}`);

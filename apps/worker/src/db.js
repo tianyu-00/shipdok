@@ -420,28 +420,62 @@ export async function requestBackup(trigger) {
 export async function claimQueuedBackup() {
   const { rows } = await pool.query(
     `UPDATE backups SET status = 'running', started_at = now()
-      WHERE id = (SELECT id FROM backups WHERE status = 'queued' LIMIT 1 FOR UPDATE SKIP LOCKED)
-      RETURNING id, trigger`);
+      WHERE id = (SELECT id FROM backups WHERE status = 'queued' ORDER BY requested_at LIMIT 1 FOR UPDATE SKIP LOCKED)
+      RETURNING id, trigger, kind, app_id, app_name`);
   return rows[0] ?? null;
 }
 
-export const markBackupOk = (id, { filename, sizeBytes, encrypted, verified, version, warning = null }) =>
+export const markBackupOk = (id, { filename, sizeBytes, encrypted, verified, version, warning = null, volumeCount = null }) =>
   pool.query(
-    `UPDATE backups SET status = 'ok', finished_at = now(), filename = $2, size_bytes = $3, encrypted = $4, verified = $5, version = $6, warning = $7, error = NULL
+    `UPDATE backups SET status = 'ok', finished_at = now(), filename = $2, size_bytes = $3, encrypted = $4, verified = $5, version = $6, warning = $7, volume_count = $8, error = NULL
       WHERE id = $1 AND status = 'running'`,
-    [id, filename, sizeBytes, encrypted, verified, version, warning]);
+    [id, filename, sizeBytes, encrypted, verified, version, warning, volumeCount]);
 
 export const markBackupFailed = (id, error) =>
   pool.query(`UPDATE backups SET status = 'failed', finished_at = now(), error = $2 WHERE id = $1 AND status IN ${BACKUP_ACTIVE}`, [id, String(error).slice(0, 1000)]);
 
-/** A backup that was running when the worker stopped can never finish: say so. */
+/** A backup that was running when the worker stopped can never finish: say so. Returns the rows (kind, app_id) so an app stopped for its copy can be started again. */
 export const interruptRunningBackups = () =>
-  pool.query(`UPDATE backups SET status = 'failed', finished_at = now(), error = 'Interrupted: the worker stopped while it was running' WHERE status = 'running'`);
+  pool.query(`UPDATE backups SET status = 'failed', finished_at = now(), error = 'Interrupted: the worker stopped while it was running' WHERE status = 'running' RETURNING kind, app_id`)
+    .then((r) => r.rows);
 
-/** When the latest backup (of any kind) was asked for or started. */
+/** When the latest backup of Shipdok itself was asked for or started (the volume backups of apps have their own times). */
 export async function lastBackupAt() {
-  const { rows } = await pool.query(`SELECT max(coalesce(started_at, requested_at)) AS at FROM backups`);
+  const { rows } = await pool.query(`SELECT max(coalesce(started_at, requested_at)) AS at FROM backups WHERE kind = 'platform'`);
   return rows[0].at;
+}
+
+// ---- Backups of an app's volumes (volumebackup.js)
+/** Asks for a backup of an app's volumes. Null when one is already waiting or running for it, or the app has no mounted volume (or is being deleted). */
+export async function requestVolumeBackup(appId, trigger) {
+  const { rows } = await pool.query(
+    `INSERT INTO backups (trigger, kind, app_id, app_name)
+       SELECT $2, 'volumes', a.id, a.name FROM apps a
+        WHERE a.id = $1 AND a.deleting_at IS NULL AND EXISTS (SELECT 1 FROM app_volumes v WHERE v.app_id = a.id AND v.state = 'in_use')
+     ON CONFLICT DO NOTHING RETURNING id`, [appId, trigger]);
+  return rows[0]?.id ?? null;
+}
+
+/** The app as a volume backup needs it, with whether its container runs now. */
+export async function getVolumeBackupApp(appId) {
+  const { rows } = await pool.query(
+    `SELECT a.id, a.name, a.slug, a.desired_state, a.volume_backup_stop, a.deleting_at, r.state AS runtime_state
+       FROM apps a LEFT JOIN app_runtime r ON r.app_id = a.id WHERE a.id = $1`, [appId]);
+  return rows[0] ?? null;
+}
+
+export const listMountedVolumes = (appId) =>
+  pool.query(`SELECT container_path, docker_name, size_bytes FROM app_volumes WHERE app_id = $1 AND state = 'in_use' ORDER BY container_path`, [appId]).then((r) => r.rows);
+
+/** The apps whose data is included in the schedule, with when their latest volume backup started. */
+export async function appsForVolumeSchedule() {
+  const { rows } = await pool.query(
+    `SELECT a.id, a.volume_backup_changed_at AS changed_at,
+            (SELECT max(coalesce(b.started_at, b.requested_at)) FROM backups b WHERE b.kind = 'volumes' AND b.app_id = a.id) AS last_at
+       FROM apps a
+      WHERE a.volume_backup_enabled AND a.deleting_at IS NULL
+        AND EXISTS (SELECT 1 FROM app_volumes v WHERE v.app_id = a.id AND v.state = 'in_use')`);
+  return rows;
 }
 
 /** The name of the latest applied migration (for a backup's manifest). */
@@ -455,13 +489,19 @@ export async function getSettingRow(key) {
   return rows[0] ?? null;
 }
 
-/** The rows of the backups to remove: finished ones beyond the newest `keep` good ones, and failed ones beyond the newest `keepFailed`. */
-export async function backupsToPrune({ keep, keepFailed = 10 }) {
+/**
+ * The rows of the backups to remove. Shipdok's own: finished ones beyond the newest `keep` good ones and beyond the newest `keepFailed` failed ones.
+ * Each app's volume backups are counted on their own, with the number that app keeps (a backup of a deleted app counts with the others of that name).
+ */
+export async function backupsToPrune({ keep, keepFailed = 10, keepFailedVolumes = 3 }) {
   const { rows } = await pool.query(
     `SELECT id, filename FROM (
-       SELECT id, filename, status, row_number() OVER (PARTITION BY (status = 'ok') ORDER BY coalesce(finished_at, requested_at) DESC) AS rank
-         FROM backups WHERE status IN ('ok', 'failed')
-     ) t WHERE (status = 'ok' AND rank > $1) OR (status = 'failed' AND rank > $2)`, [keep, keepFailed]);
+       SELECT b.id, b.filename, b.status, b.kind,
+              row_number() OVER (PARTITION BY b.kind, coalesce(b.app_id::text, b.app_name, ''), (b.status = 'ok') ORDER BY coalesce(b.finished_at, b.requested_at) DESC) AS rank,
+              CASE WHEN b.kind = 'platform' THEN $1::int ELSE coalesce(a.volume_backup_keep, 3) END AS keep_ok
+         FROM backups b LEFT JOIN apps a ON a.id = b.app_id WHERE b.status IN ('ok', 'failed')
+     ) t WHERE (status = 'ok' AND rank > keep_ok) OR (status = 'failed' AND rank > CASE WHEN kind = 'platform' THEN $2::int ELSE $3::int END)`,
+    [keep, keepFailed, keepFailedVolumes]);
   return rows;
 }
 

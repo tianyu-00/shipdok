@@ -188,7 +188,9 @@ export const schemas = {
     exceeded: bool('`reclaimableBytes` has reached `thresholdBytes` (always `false` when there is none).'),
   }),
   Backup: obj({
-    id: uuid('The backup.'), status: enumOf(['queued', 'running', 'ok', 'failed'], 'Waiting for the worker, being made, made, or failed (`error` says why).'),
+    id: uuid('The backup.'), kind: enumOf(['platform', 'volumes'], 'Shipdok itself (the database and the platform secrets), or the persistent volumes of one app.'),
+    appId: { type: 'string', format: 'uuid', nullable: true, description: 'For `volumes`: the app (`null` once it is deleted: the backup stays).' }, appName: nstr('For `volumes`: the name the app had.'),
+    volumeCount: nint('For `volumes`: how many volumes the file holds.'), status: enumOf(['queued', 'running', 'ok', 'failed'], 'Waiting for the worker, being made, made, or failed (`error` says why).'),
     trigger: enumOf(['manual', 'scheduled'], 'Asked for on the Storage page, or by the schedule.'),
     requestedAt: time('When it was asked for.'), startedAt: ntime('When the worker began.'), finishedAt: ntime('When it ended.'),
     sizeBytes: nint('The size of the file.'), encrypted: { type: 'boolean', nullable: true, description: 'The file is encrypted with the passphrase.' },
@@ -204,8 +206,13 @@ export const schemas = {
     totalBytes: int('The size of all the finished backups together.'),
     schedule: ref('BackupSchedule'), nextRunAt: ntime('When the next scheduled backup is due; `null` when the schedule is off.'),
     encryption: obj({ enabled: bool('A passphrase is set: new backups are encrypted.') }),
+    apps: { type: 'array', description: 'The apps that have mounted persistent volumes.', items: obj({
+      id: uuid('The app.'), name: str('Its name.'), volumeCount: int('Mounted volumes.'), sizeBytes: nint('Their size together, from the last measurement; `null` when any was never measured.'),
+      lastBackupAt: ntime('When the latest good volume backup finished.'), enabled: bool('Included in the scheduled backups.'), stop: bool('Stopped while its volumes are copied.'), keep: int('How many of its newest volume backups to keep.'),
+    }) },
     persistent: bool('The backups folder is a volume of its own, so the backups survive the container being replaced.'),
   }),
+  VolumeBackupSettings: obj({ enabled: bool('Include the app in the scheduled backups.'), stop: bool('Stop the app while its volumes are copied.'), keep: int('How many of its newest volume backups to keep (1 to 60).') }),
   BackupPassphraseRequest: obj({ password: str('The current password.'), passphrase: { type: 'string', nullable: true, description: '12 to 256 characters, not starting or ending with a space; `null` removes it.' } }),
   BackupDownloadRequest: obj({ password: str('The current password.') }),
   VersionStatus: obj({

@@ -2328,7 +2328,7 @@
           "Logs and storage"
         ],
         "summary": "Backups of Shipdok itself",
-        "description": "The backups that exist (newest first, at most 200) with how each went, their total size, the schedule and when the next scheduled backup is due (`nextRunAt`, `null` when the schedule is off), and whether they are encrypted (`encryption.enabled`: a passphrase is set). A backup is ONE file holding the database and the platform secrets (the key without which the database's encrypted data cannot be read). `persistent: false` means the backups folder is not a volume of its own, so the backups would be lost when the container is replaced.",
+        "description": "The backups that exist (newest first, at most 200) with how each went, their total size, the schedule and when the next scheduled backup is due (`nextRunAt`, `null` when the schedule is off), and whether they are encrypted (`encryption.enabled`: a passphrase is set). A backup of Shipdok is ONE file holding the database and the platform secrets (the key without which the database's encrypted data cannot be read); a backup of an app's volumes (`kind: volumes`, with `appName`) is one file with every mounted volume of that app. `apps` lists the apps that have mounted volumes with how their backups are set. `persistent: false` means the backups folder is not a volume of its own, so the backups would be lost when the container is replaced.",
         "parameters": [],
         "responses": {
           "200": {
@@ -4592,6 +4592,100 @@
         "security": []
       }
     },
+    "/api/backups/volumes/{appId}": {
+      "post": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Back up the persistent volumes of an app now",
+        "description": "Records a request; the worker makes ONE file with every mounted volume of the app (read-only; the app keeps running unless its \"stop while copying\" switch is on, see `PUT /api/backups/volumes/{appId}/settings`) beside the deployment queue. Refused by the worker, with the reason in the backup's `error`, when the disk would be left nearly full. Poll `GET /api/backups`. One backup may wait or run per app.",
+        "parameters": [
+          {
+            "name": "appId",
+            "in": "path",
+            "required": true,
+            "description": "The app.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Asked for.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The app has no persistent volumes (`code: no_volumes`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A backup of this app is already waiting or running (`code: already_running`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/backups/{id}/download": {
       "post": {
         "tags": [
@@ -5598,6 +5692,74 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/BackupSchedule"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/backups/volumes/{appId}/settings": {
+      "put": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Set how the volumes of an app are backed up",
+        "description": "`enabled`: include the app in the scheduled backups (the schedule is the one of `PUT /api/backups/settings`; off by default; switching it on does not back up at once for a time that already passed today). `stop`: stop the app while its volumes are copied and start it again afterwards, so a database in a volume is copied consistently (default off: the copy is made while the app runs). `keep`: how many of this app's newest volume backups to keep (1 to 60, default 3). Answers with the new overview.",
+        "parameters": [
+          {
+            "name": "appId",
+            "in": "path",
+            "required": true,
+            "description": "The app.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupsOverview"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VolumeBackupSettings"
               }
             }
           }
@@ -7064,6 +7226,30 @@
             "format": "uuid",
             "description": "The backup."
           },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "platform",
+              "volumes"
+            ],
+            "description": "Shipdok itself (the database and the platform secrets), or the persistent volumes of one app."
+          },
+          "appId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "For `volumes`: the app (`null` once it is deleted: the backup stays)."
+          },
+          "appName": {
+            "type": "string",
+            "nullable": true,
+            "description": "For `volumes`: the name the app had."
+          },
+          "volumeCount": {
+            "type": "integer",
+            "nullable": true,
+            "description": "For `volumes`: how many volumes the file holds."
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -7136,6 +7322,10 @@
         },
         "required": [
           "id",
+          "kind",
+          "appId",
+          "appName",
+          "volumeCount",
           "status",
           "trigger",
           "requestedAt",
@@ -7217,6 +7407,61 @@
               "enabled"
             ]
           },
+          "apps": {
+            "type": "array",
+            "description": "The apps that have mounted persistent volumes.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "The app."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Its name."
+                },
+                "volumeCount": {
+                  "type": "integer",
+                  "description": "Mounted volumes."
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "nullable": true,
+                  "description": "Their size together, from the last measurement; `null` when any was never measured."
+                },
+                "lastBackupAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "nullable": true,
+                  "description": "When the latest good volume backup finished."
+                },
+                "enabled": {
+                  "type": "boolean",
+                  "description": "Included in the scheduled backups."
+                },
+                "stop": {
+                  "type": "boolean",
+                  "description": "Stopped while its volumes are copied."
+                },
+                "keep": {
+                  "type": "integer",
+                  "description": "How many of its newest volume backups to keep."
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "volumeCount",
+                "sizeBytes",
+                "lastBackupAt",
+                "enabled",
+                "stop",
+                "keep"
+              ]
+            }
+          },
           "persistent": {
             "type": "boolean",
             "description": "The backups folder is a volume of its own, so the backups survive the container being replaced."
@@ -7228,7 +7473,30 @@
           "schedule",
           "nextRunAt",
           "encryption",
+          "apps",
           "persistent"
+        ]
+      },
+      "VolumeBackupSettings": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Include the app in the scheduled backups."
+          },
+          "stop": {
+            "type": "boolean",
+            "description": "Stop the app while its volumes are copied."
+          },
+          "keep": {
+            "type": "integer",
+            "description": "How many of its newest volume backups to keep (1 to 60)."
+          }
+        },
+        "required": [
+          "enabled",
+          "stop",
+          "keep"
         ]
       },
       "BackupPassphraseRequest": {
