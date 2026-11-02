@@ -99,6 +99,19 @@ describe('a restore of a running app', () => {
     assert.deepEqual([done.status, done.volume_count, done.error, done.passphrase_enc, !!done.finished_at], ['ok', 1, null, null, true]);
     assert.equal((await pool.query('SELECT state FROM app_runtime WHERE app_id = $1', [appId])).rows[0].state, 'running');
   });
+  test('a finished restore is an entry of the activity log (the machine\'s, with what was done); a failed one says why', async () => {
+    await pool.query('TRUNCATE audit_log');
+    const { r } = await answer(await ask(await aBackup(), { mode: 'add', safety: false }));
+    assert.equal(r.ok, true, r.error);
+    const entry = (await pool.query('SELECT * FROM audit_log')).rows[0];
+    assert.deepEqual([entry.category, entry.action, entry.source, entry.app_id, entry.summary], ['backups', 'restore_finished', 'system', appId, `Restore of ${appName} finished`]);
+    assert.equal(entry.details.find((d) => d.label === 'Volumes restored').value, '1');
+    assert.equal(entry.details.find((d) => d.label === 'Backup of the current data first').value, 'no');
+    await pool.query('TRUNCATE audit_log');
+    const failed = await answer(await ask(null));
+    assert.equal(failed.r.ok, false);
+    assert.deepEqual((await pool.query('SELECT action, source FROM audit_log')).rows, [{ action: 'restore_failed', source: 'system' }]);
+  });
   test('the safety backup is in the list, made from the data as it was, with its own trigger, and the restore says which it is', async () => {
     const backup = await aBackup();
     const row = await ask(backup);

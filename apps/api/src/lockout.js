@@ -6,30 +6,16 @@
 // the wait. The per-account wait is shorter than the per-address one: anyone can type the administrator's name, so a
 // long account lock would let a stranger keep the administrator out.
 
+import { KEEP_DAYS_CHOICES, KEEP_DAYS_KEY, DEFAULT_KEEP_DAYS, keepDays, trimLog } from '@shipdok/shared';
+
+// How long the rows are kept (and the trimming itself) is in the shared package: the activity log is written by the worker too.
+export { KEEP_DAYS_CHOICES, KEEP_DAYS_KEY, DEFAULT_KEEP_DAYS, keepDays, trimLog };
+
 export const FREE_TRIES = 4;
 export const FIRST_WAIT_SECONDS = 30;
 export const ACCOUNT_CAP_SECONDS = 15 * 60;
 export const ADDRESS_CAP_SECONDS = 60 * 60;
 const WINDOW = '24 hours'; // failures older than this are forgotten
-export const KEEP_DAYS_CHOICES = [7, 30, 90, 365];
-export const KEEP_DAYS_KEY = 'activity_keep_days';
-export const DEFAULT_KEEP_DAYS = 30;
-
-// The days a row is kept: the stored choice when it is a whole number of at least 7 (a damaged value can never stop a sign-in from being recorded), else 30.
-const KEEP_DAYS_SQL = `GREATEST(7, COALESCE((SELECT CASE WHEN value #>> '{}' ~ '^[0-9]{1,4}$' THEN (value #>> '{}')::int END FROM settings WHERE key = '${KEEP_DAYS_KEY}'), ${DEFAULT_KEEP_DAYS}))`;
-
-/** The days attempts and activity are kept for now. */
-export async function keepDays(client) {
-  const { rows } = await client.query(`SELECT ${KEEP_DAYS_SQL} AS days`);
-  return rows[0].days;
-}
-
-/** Deletes the sign-in rows and the activity rows older than the kept days; says how many of each. */
-export async function trimLog(client) {
-  const attempts = await client.query(`DELETE FROM login_attempts WHERE at < now() - make_interval(days => ${KEEP_DAYS_SQL})`);
-  const audit = await client.query(`DELETE FROM audit_log WHERE at < now() - make_interval(days => ${KEEP_DAYS_SQL})`);
-  return { attempts: attempts.rowCount, audit: audit.rowCount };
-}
 
 /** How long to wait after `failures` failures in a row. */
 export function waitSeconds(failures, cap) {

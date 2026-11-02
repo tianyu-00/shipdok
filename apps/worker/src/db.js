@@ -2,6 +2,8 @@ import './loadsecrets.js';
 // The worker's view of the deployments table. Every update is guarded by "still active"
 // so a late or duplicate update can never overwrite a final status.
 import pg from 'pg';
+import { recordAudit } from '@shipdok/shared';
+import { crashEntry } from './audit.js';
 
 export const pool = new pg.Pool({
   host: process.env.POSTGRES_HOST ?? '127.0.0.1',
@@ -12,6 +14,15 @@ export const pool = new pg.Pool({
 });
 
 const ACTIVE = `('queued','building','starting','validating')`;
+
+/** One entry of the activity log about something Shipdok did by itself (see audit.js). It never throws: a log entry must not break the work it is about. */
+export async function recordAutomatic(entry) {
+  try {
+    await recordAudit(pool, entry);
+  } catch (err) {
+    console.error('Activity log entry not written:', err.message);
+  }
+}
 
 // Take ownership of a queued deployment. Returns false if it is no longer queued (cancelled or
 // superseded while waiting, or already handled), in which case the worker must do nothing.
@@ -242,6 +253,11 @@ export async function applyMonitorUpdate(appId, u, at = Date.now()) {
     throw err;
   } finally {
     client.release();
+  }
+  // After the commit and outside the transaction: a log entry that fails must not undo the runtime update.
+  if (u.event) {
+    const { rows } = await pool.query('SELECT id, name FROM apps WHERE id = $1', [appId]).catch(() => ({ rows: [] }));
+    if (rows[0]) await recordAutomatic(crashEntry(rows[0], u.event));
   }
 }
 

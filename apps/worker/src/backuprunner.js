@@ -10,6 +10,7 @@ import { makeBackup, removeBackupFiles } from './backup.js';
 import { makeVolumeBackup } from './volumebackup.js';
 import { backupFileExists, makeRestore } from './volumerestore.js';
 import { controlApp } from './control.js';
+import { backupEntry, restoreEntry } from './audit.js';
 
 export const PASSPHRASE_CONTEXT = BACKUP_PASSPHRASE_CONTEXT;
 
@@ -82,12 +83,14 @@ export async function answerBackup(request, { db = store, eng = realEngine, secr
         lastMigration: async () => (await db.lastMigrationName?.()) ?? null,
       });
     await db.markBackupOk(request.id, result);
+    await db.recordAutomatic?.(backupEntry(request, { ok: true, ...result }));
     log(`Backup ${request.id} finished`);
     await prune({ db, dir, log });
     return { ok: true, ...result };
   } catch (err) {
     log(`Backup ${request.id} failed: ${err.message}`);
     await db.markBackupFailed(request.id, err.message).catch(() => {});
+    await db.recordAutomatic?.(backupEntry(request, { ok: false, error: err.message }));
     await prune({ db, dir, log }).catch(() => {});
     return { ok: false, error: err.message };
   }
@@ -153,6 +156,7 @@ export async function answerRestore(restore, { db = store, eng = realEngine, sec
     const warning = [addedNote, restartNote].filter(Boolean).join('. ');
     if (warning) result = { ...result, warning };
     await db.markRestoreOk(restore.id, { volumeCount: result.volumeCount, warning: result.warning ?? null });
+    await db.recordAutomatic?.(restoreEntry(restore, { ok: true, volumeCount: result.volumeCount, warning: result.warning ?? null }));
     log(`Restore ${restore.id} finished`);
     return { ok: true, ...result };
   } catch (err) {
@@ -161,6 +165,7 @@ export async function answerRestore(restore, { db = store, eng = realEngine, sec
       : err.message;
     log(`Restore ${restore.id} failed: ${message}`);
     await db.markRestoreFailed(restore.id, message).catch(() => {});
+    await db.recordAutomatic?.(restoreEntry(restore, { ok: false, error: message }));
     return { ok: false, error: message };
   }
 }

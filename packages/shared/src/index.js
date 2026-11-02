@@ -21,3 +21,6 @@ export {
   MAX_LINE_BYTES, LOG_FILE_NAMES, RUNTIME_FILE_NAMES, logRoot, logDirFor, logFilePath, runtimeLogPath, formatLine, createRedactor, secretsFromGitEnv,
   readChunk, readTail, removeDeploymentLogs, removeRuntimeLogs, removeAppLogs,
 } from './logstore.js';
+export {
+  AUDIT_CATEGORIES, AUDIT_SOURCES, KEEP_DAYS_CHOICES, KEEP_DAYS_KEY, DEFAULT_KEEP_DAYS, keepDays, trimLog, change, fact, recordAudit, changesOf,
+} from './auditlog.js';
