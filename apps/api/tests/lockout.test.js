@@ -159,12 +159,12 @@ describe("recent logins", () => {
     expect(res.body.logins.map((l) => [l.kind, l.success])).toEqual([["setup", true]]);
   });
 
-  test("limit is honoured and capped at 100", async () => {
+  test("limit is honoured and capped at 500", async () => {
     const ok = await attempt(PASSWORD);
-    await testPool.query(`INSERT INTO login_attempts (kind, username, address, success) SELECT 'login','admin','1.2.3.4',true FROM generate_series(1,150)`);
+    await testPool.query(`INSERT INTO login_attempts (kind, username, address, success) SELECT 'login','admin','1.2.3.4',true FROM generate_series(1,600)`);
     const cookie = ok.headers["set-cookie"];
     expect((await list(cookie, "?limit=3")).body.logins).toHaveLength(3);
-    expect((await list(cookie, "?limit=1000")).body.logins).toHaveLength(100);
+    expect((await list(cookie, "?limit=1000")).body.logins).toHaveLength(500);
     expect((await list(cookie, "?limit=abc")).body.logins).toHaveLength(20);
   });
 
@@ -173,6 +173,99 @@ describe("recent logins", () => {
     await attempt(PASSWORD);
     const { rows } = await testPool.query("SELECT count(*)::int AS n FROM login_attempts WHERE username = 'old'");
     expect(rows[0].n).toBe(0);
+  });
+});
+
+describe("sign-ins apart from activity, and how long they are kept", () => {
+  const list = async (cookie, query = "") => request(app).get(`/api/auth/logins${query}`).set("Cookie", cookie);
+  const put = (cookie, body) => request(app).put("/api/auth/logins/settings").set("Cookie", cookie).send(body);
+  const SIGNIN = ["login", "setup", "recovery", "reset"];
+  const OTHER = ["settings", "github", "backup", "download", "restore", "logsettings"];
+  const row = (kind, username = "admin", success = true) => testPool.query("INSERT INTO login_attempts (kind, username, address, success) VALUES ($1, $2, '1.2.3.4', $3)", [kind, username, success]);
+  let cookie;
+  beforeEach(async () => {
+    await testPool.query("DELETE FROM settings WHERE key = 'activity_keep_days'");
+    cookie = (await attempt(PASSWORD)).headers["set-cookie"];
+    await testPool.query("DELETE FROM login_attempts");
+  });
+
+  test("scope signins lists only the sign-in kinds (failed ones included), activity only the others, none lists both", async () => {
+    for (const k of [...SIGNIN, ...OTHER]) await row(k);
+    await row("login", "stranger", false);
+    const kinds = async (q) => (await list(cookie, q)).body.logins.map((l) => l.kind).sort();
+    expect(await kinds("?scope=signins")).toEqual([...SIGNIN, "login"].sort());
+    expect(await kinds("?scope=activity")).toEqual([...OTHER].sort());
+    expect(await kinds("")).toHaveLength(SIGNIN.length + OTHER.length + 1);
+    expect((await list(cookie, "?scope=signins")).body.logins.some((l) => l.success === false)).toBe(true);
+  });
+
+  test("a scope that is not known is a 400", async () => {
+    expect((await list(cookie, "?scope=everything")).status).toBe(400);
+  });
+
+  test("the limit applies inside a scope", async () => {
+    for (let i = 0; i < 12; i++) await row("login");
+    for (let i = 0; i < 12; i++) await row("github");
+    expect((await list(cookie, "?scope=signins&limit=5")).body.logins).toHaveLength(5);
+    expect((await list(cookie, "?scope=activity&limit=500")).body.logins).toHaveLength(12);
+  });
+
+  test("it is kept for 30 days unless a choice was saved; a damaged value falls back to 30 and never stops a sign-in", async () => {
+    expect((await list(cookie)).body.keepDays).toBe(30);
+    for (const bad of ['"abc"', "3", "-5", "99999", "null", "{}"]) {
+      await testPool.query("INSERT INTO settings (key, value) VALUES ('activity_keep_days', $1::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", [bad]);
+      expect((await attempt(PASSWORD)).status).toBe(200);
+    }
+  });
+
+  test("a stored number below 7 never keeps rows for less than 7 days", async () => {
+    await testPool.query("INSERT INTO settings (key, value) VALUES ('activity_keep_days', '3'::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value");
+    await testPool.query(`INSERT INTO login_attempts (at, kind, username, address, success) VALUES (now() - interval '5 days', 'login', 'five', '1.1.1.1', true)`);
+    await attempt(PASSWORD);
+    expect((await testPool.query("SELECT count(*)::int AS n FROM login_attempts WHERE username = 'five'")).rows[0].n).toBe(1);
+  });
+
+  test("saving needs a session, a password, and one of 7, 30, 90, 365", async () => {
+    expect((await request(app).put("/api/auth/logins/settings").send({ password: PASSWORD, keepDays: 7 })).status).toBe(401);
+    expect((await put(cookie, { keepDays: 7 })).status).toBe(400);
+    expect((await put(cookie, { password: "", keepDays: 7 })).status).toBe(400);
+    for (const bad of [6, 31, "30", null, 7.5]) expect((await put(cookie, { password: PASSWORD, keepDays: bad })).status).toBe(400);
+    expect((await list(cookie)).body.keepDays).toBe(30);
+  });
+
+  test("a wrong password is a 403 and saves nothing; each right choice is saved", async () => {
+    const wrong = await put(cookie, { password: "not-the-password-123", keepDays: 7 });
+    expect(wrong.status).toBe(403);
+    expect(wrong.body.code).toBe("wrong_password");
+    expect((await list(cookie)).body.keepDays).toBe(30);
+    for (const days of [7, 30, 90, 365]) {
+      const res = await put(cookie, { password: PASSWORD, keepDays: days });
+      expect(res.status).toBe(200);
+      expect(res.body.keepDays).toBe(days);
+      expect((await list(cookie)).body.keepDays).toBe(days);
+    }
+  });
+
+  test("a shorter time removes older rows at once, a longer one keeps them, and the change is recorded as activity", async () => {
+    const old = (days, kind = "login") => testPool.query(`INSERT INTO login_attempts (at, kind, username, address, success) VALUES (now() - make_interval(days => $1), $2, 'old${days}', '1.1.1.1', true)`, [days, kind]);
+    await old(8); await old(40); await old(100, "github");
+    expect((await put(cookie, { password: PASSWORD, keepDays: 90 })).status).toBe(200);
+    let names = (await testPool.query("SELECT username FROM login_attempts WHERE username LIKE 'old%'")).rows.map((r) => r.username).sort();
+    expect(names).toEqual(["old40", "old8"]); // 100 days is older than 90
+    expect((await put(cookie, { password: PASSWORD, keepDays: 7 })).status).toBe(200);
+    names = (await testPool.query("SELECT username FROM login_attempts WHERE username LIKE 'old%'")).rows.map((r) => r.username);
+    expect(names).toEqual([]);
+    const activity = (await list(cookie, "?scope=activity")).body.logins;
+    expect(activity.map((l) => l.kind)).toEqual(["logsettings", "logsettings"]);
+    expect(activity[0].username).toBe("admin");
+  });
+
+  test("a row just inside the chosen time stays, and recording a new attempt trims by the chosen time", async () => {
+    await put(cookie, { password: PASSWORD, keepDays: 7 });
+    await testPool.query(`INSERT INTO login_attempts (at, kind, username, address, success) VALUES (now() - interval '6 days', 'login', 'inside', '1.1.1.1', true), (now() - interval '8 days', 'login', 'outside', '1.1.1.1', true)`);
+    await attempt(PASSWORD);
+    const names = (await testPool.query("SELECT username FROM login_attempts WHERE username IN ('inside', 'outside')")).rows.map((r) => r.username);
+    expect(names).toEqual(["inside"]);
   });
 });
 

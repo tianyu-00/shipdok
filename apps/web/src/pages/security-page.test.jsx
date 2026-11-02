@@ -19,11 +19,17 @@ const LOGINS = {
     { at: at(90000), kind: 'reset', username: 'admin', address: 'host', success: true },
   ],
 }
+// The API answers for the scope asked: sign-ins, or the activity (everything else).
+const SIGNIN_KINDS = ['login', 'setup', 'recovery', 'reset']
+const scoped = (body) => (call) => {
+  const scope = new URL(call.path, 'http://x').searchParams.get('scope')
+  return { keepDays: 30, ...body, logins: body.logins.filter((l) => (scope === 'activity') !== SIGNIN_KINDS.includes(l.kind)) }
+}
 const page = () => renderWithProviders(<SecurityPage />, { route: '/security' })
 
 describe('the security page', () => {
   test('lists recent sign-ins with when, who, from where and how it went', async () => {
-    mockApi({ 'GET /api/auth/logins': LOGINS })
+    mockApi({ 'GET /api/auth/logins': scoped(LOGINS) })
     page()
     const rows = await screen.findAllByRole('row')
     const body = rows.slice(1) // header row first
@@ -41,16 +47,16 @@ describe('the security page', () => {
   })
 
   test('names typed by strangers are shown as plain text', async () => {
-    mockApi({ 'GET /api/auth/logins': { logins: [{ at: at(5), kind: 'login', username: '<img src=x onerror=alert(1)>', address: '1.2.3.4', success: false }] } })
+    mockApi({ 'GET /api/auth/logins': scoped({ logins: [{ at: at(5), kind: 'login', username: '<img src=x onerror=alert(1)>', address: '1.2.3.4', success: false }] }) })
     const { container } = page()
     expect(await screen.findByText('<img src=x onerror=alert(1)>')).toBeInTheDocument()
     expect(container.querySelector('img')).toBeNull()
   })
 
   test('says so when there is nothing yet', async () => {
-    mockApi({ 'GET /api/auth/logins': { logins: [] } })
+    mockApi({ 'GET /api/auth/logins': scoped({ logins: [] }) })
     page()
-    expect(await screen.findByText(/no sign-ins recorded/i)).toBeInTheDocument()
+    expect(await screen.findByText(/no activity recorded/i)).toBeInTheDocument()
   })
 
   test('shows an error with a retry when the list cannot be loaded', async () => {
@@ -60,7 +66,7 @@ describe('the security page', () => {
   })
 
   test('is honest that there is no second login step', async () => {
-    mockApi({ 'GET /api/auth/logins': LOGINS })
+    mockApi({ 'GET /api/auth/logins': scoped(LOGINS) })
     page()
     expect(await screen.findByText(/no second login step|no two-factor/i)).toBeInTheDocument()
   })
@@ -68,7 +74,7 @@ describe('the security page', () => {
 
 describe('sign out everywhere', () => {
   test('asks first, and cancelling sends nothing', async () => {
-    const api = mockApi({ 'GET /api/auth/logins': LOGINS, 'POST /api/auth/logout-all': null })
+    const api = mockApi({ 'GET /api/auth/logins': scoped(LOGINS), 'POST /api/auth/logout-all': null })
     page()
     await userEvent.click(await screen.findByRole('button', { name: /sign out everywhere/i }))
     const dialog = await screen.findByRole('alertdialog')
@@ -78,7 +84,7 @@ describe('sign out everywhere', () => {
   })
 
   test('confirming ends the sessions and the dashboard returns to the login screen', async () => {
-    const api = mockApi({ 'GET /api/auth/logins': LOGINS, 'POST /api/auth/logout-all': null })
+    const api = mockApi({ 'GET /api/auth/logins': scoped(LOGINS), 'POST /api/auth/logout-all': null })
     const { client } = page()
     client.setQueryData(['auth'], { authenticated: true, username: 'admin' })
     await userEvent.click(await screen.findByRole('button', { name: /sign out everywhere/i }))
@@ -88,7 +94,7 @@ describe('sign out everywhere', () => {
   })
 
   test('a failure is reported and the session stays', async () => {
-    mockApi({ 'GET /api/auth/logins': LOGINS, 'POST /api/auth/logout-all': () => { throw { status: 500, body: { error: 'nope' } } } })
+    mockApi({ 'GET /api/auth/logins': scoped(LOGINS), 'POST /api/auth/logout-all': () => { throw { status: 500, body: { error: 'nope' } } } })
     const { client } = page()
     client.setQueryData(['auth'], { authenticated: true, username: 'admin' })
     await userEvent.click(await screen.findByRole('button', { name: /sign out everywhere/i }))
@@ -100,7 +106,7 @@ describe('sign out everywhere', () => {
 
 describe('change password from here', () => {
   test('opens the same dialog as the header key', async () => {
-    mockApi({ 'GET /api/auth/logins': LOGINS })
+    mockApi({ 'GET /api/auth/logins': scoped(LOGINS) })
     page()
     await userEvent.click(await screen.findByRole('button', { name: /change password/i }))
     expect(await screen.findByRole('dialog')).toHaveTextContent(/other browser or device/i)
@@ -110,7 +116,7 @@ describe('change password from here', () => {
 describe('recovery codes', () => {
   const NEWCODES = Array.from({ length: 10 }, (_, i) => `NNNN-EEEE-WWWW-CCC${i}`)
   const routes = (over = {}) => ({
-    'GET /api/auth/logins': LOGINS,
+    'GET /api/auth/logins': scoped(LOGINS),
     'GET /api/auth/recovery': { remaining: 10, createdAt: '2026-10-19T12:00:00Z' },
     ...over,
   })
@@ -214,7 +220,7 @@ describe('recovery codes', () => {
 describe('public access', () => {
   const ACCESS = { mode: 'local', publicUrl: '', modeLocked: false, urlLocked: false, visitor: 'local' }
   const routes = (access = {}, over = {}) => ({
-    'GET /api/auth/logins': LOGINS,
+    'GET /api/auth/logins': scoped(LOGINS),
     'GET /api/auth/recovery': { remaining: 10, createdAt: '2026-10-19T12:00:00Z' },
     'GET /api/settings/public': { ...ACCESS, ...access },
     ...over,
@@ -429,7 +435,7 @@ describe('public access', () => {
 describe('the sign-ins list', () => {
   test('a GitHub change is named', async () => {
     mockApi({
-      'GET /api/auth/logins': { logins: [{ at: new Date().toISOString(), kind: 'github', username: 'admin', address: '192.168.1.20', success: true }] },
+      'GET /api/auth/logins': scoped({ logins: [{ at: new Date().toISOString(), kind: 'github', username: 'admin', address: '192.168.1.20', success: true }] }),
       'GET /api/auth/recovery': { remaining: 10, createdAt: null },
       'GET /api/settings/public': { mode: 'local', publicUrl: '', modeLocked: false, urlLocked: false, visitor: 'local' },
     })
@@ -439,7 +445,7 @@ describe('the sign-ins list', () => {
 
   test('a public access change is named', async () => {
     mockApi({
-      'GET /api/auth/logins': { logins: [{ at: new Date().toISOString(), kind: 'settings', username: 'admin', address: '192.168.1.20', success: true }] },
+      'GET /api/auth/logins': scoped({ logins: [{ at: new Date().toISOString(), kind: 'settings', username: 'admin', address: '192.168.1.20', success: true }] }),
       'GET /api/auth/recovery': { remaining: 10, createdAt: null },
       'GET /api/settings/public': { mode: 'local', publicUrl: '', modeLocked: false, urlLocked: false, visitor: 'local' },
     })

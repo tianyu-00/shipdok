@@ -85,8 +85,8 @@ export const useImages = (id) => useQuery({ queryKey: ['images', id], queryFn: (
 // The last hour of CPU and memory readings (the worker takes one every 15 seconds).
 export const useStats = (id) => useQuery({ queryKey: ['stats', id], queryFn: () => api(`/apps/${id}/stats`), refetchInterval: 15_000 })
 
-// The latest sign-in attempts, good and bad.
-export const useLogins = () => useQuery({ queryKey: ['logins'], queryFn: () => api('/auth/logins?limit=50'), refetchInterval: 30_000 })
+// Sign-in attempts, good and bad (scope 'signins'), or what was done with the password (scope 'activity'); up to 500, the dashboard pages through them.
+export const useLogins = (scope) => useQuery({ queryKey: ['logins', scope], queryFn: () => api(`/auth/logins?limit=500&scope=${scope}`), refetchInterval: 30_000 })
 
 // How many recovery codes are left (never the codes themselves).
 export const useRecovery = () => useQuery({ queryKey: ['recovery'], queryFn: () => api('/auth/recovery') })

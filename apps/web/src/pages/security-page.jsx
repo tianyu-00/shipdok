@@ -3,29 +3,20 @@ import { Link } from 'react-router-dom'
 import { ArrowLeft, KeyRound, LifeBuoy, LogOut, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { api } from '@/lib/api'
-import { useLogins, useRecovery } from '@/lib/queries'
-import { shortAddress, timeAgo } from '@/lib/format'
+import { useRecovery } from '@/lib/queries'
 import { forgetSession } from '@/lib/session'
 import { ChangePasswordDialog } from '@/components/change-password-dialog'
 import { NewRecoveryCodesDialog } from '@/components/new-recovery-codes-dialog'
 import { PublicAccessCard } from '@/components/public-access-card'
-import { Empty, ListSkeleton, LoadError } from '@/components/states'
-
-const KIND = { setup: 'Account created', recovery: 'Recovery code used', reset: 'Password reset on the host', settings: 'Public access changed', github: 'GitHub changed', backup: 'Backup passphrase changed', download: 'Backup downloaded' }
-
-function Result({ login }) {
-  if (!login.success) return <Badge variant="outline" className="border-destructive/40 bg-destructive/10 text-destructive">Failed</Badge>
-  return <Badge variant="outline" className="border-success/40 bg-success/10 text-success">{KIND[login.kind] ?? 'Signed in'}</Badge>
-}
+import { SignInsCard, ActivityCard } from '@/components/activity-cards'
+import { LoadError } from '@/components/states'
 
 function SignOutEverywhere() {
   const client = useQueryClient()
@@ -89,7 +80,6 @@ function RecoveryCard() {
 }
 
 export default function SecurityPage() {
-  const logins = useLogins()
   const [changing, setChanging] = useState(false)
   return (
     <div className="space-y-6">
@@ -115,35 +105,9 @@ export default function SecurityPage() {
 
       <PublicAccessCard />
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Recent sign-ins</CardTitle>
-          <CardDescription>The latest attempts to log in, including wrong ones and names that do not exist. If you see an address you do not know, change your password and sign out everywhere.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {logins.isPending && <ListSkeleton rows={2} />}
-          {logins.isError && <LoadError error={logins.error} title="Could not load the sign-ins" onRetry={() => logins.refetch()} />}
-          {logins.data && (logins.data.logins.length === 0 ? <Empty title="No sign-ins recorded yet" /> : (
-            <div className="overflow-x-auto rounded-lg border">
-              <Table>
-                <TableHeader>
-                  <TableRow><TableHead>When</TableHead><TableHead>Name</TableHead><TableHead>From</TableHead><TableHead>Result</TableHead></TableRow>
-                </TableHeader>
-                <TableBody>
-                  {logins.data.logins.map((l, i) => (
-                    <TableRow key={`${l.at}-${i}`}>
-                      <TableCell className="whitespace-nowrap" title={new Date(l.at).toLocaleString()}>{timeAgo(l.at)}</TableCell>
-                      <TableCell className="break-all">{l.username}</TableCell>
-                      <TableCell className="whitespace-nowrap font-mono text-xs">{shortAddress(l.address)}</TableCell>
-                      <TableCell><Result login={l} /></TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
+      <SignInsCard />
+
+      <ActivityCard />
     </div>
   )
 }

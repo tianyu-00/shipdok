@@ -6,7 +6,7 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { limiter, startSession } from "../authutil.js";
 import { replaceCodes } from "../recovery.js";
 import { passwordProblem } from "@shipdok/shared";
-import { addressOf, cleanName, lockedFor, lockMessage, recordAttempt, withAttemptLock } from "../lockout.js";
+import { addressOf, cleanName, KEEP_DAYS_CHOICES, KEEP_DAYS_KEY, keepDays, lockedFor, lockMessage, recordAttempt, withAttemptLock } from "../lockout.js";
 
 const USERNAME_RE = /^[A-Za-z0-9_.-]{3,64}$/;
 
@@ -137,15 +137,47 @@ export function authRouter(db) {
     }
   });
 
-  // The latest sign-in attempts, good and bad (names typed by strangers included), newest first.
+  // The sign-in attempts and the things done with the password, newest first. `scope`: signins (logins, recovery, setup, host reset), activity
+  // (everything else) or, left out, both. Up to 500 at a time (the dashboard pages through them); `keepDays` says how long rows are kept.
+  const SIGNIN_KINDS = ["login", "setup", "recovery", "reset"];
   r.get("/logins", requireAuth, async (req, res, next) => {
     try {
-      const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 20));
+      const limit = Math.min(500, Math.max(1, Number.parseInt(req.query.limit, 10) || 20));
+      const scope = req.query.scope;
+      if (scope !== undefined && scope !== "signins" && scope !== "activity") return res.status(400).json({ error: "scope is signins or activity" });
+      const where = scope === "signins" ? "WHERE kind = ANY($2)" : scope === "activity" ? "WHERE NOT (kind = ANY($2))" : "WHERE $2::text[] IS NOT NULL";
       const { rows } = await db.query(
-        "SELECT at, kind, username, address, success FROM login_attempts ORDER BY at DESC, id DESC LIMIT $1",
-        [limit],
+        `SELECT at, kind, username, address, success FROM login_attempts ${where} ORDER BY at DESC, id DESC LIMIT $1`,
+        [limit, SIGNIN_KINDS],
       );
-      res.json({ logins: rows });
+      res.json({ logins: rows, keepDays: await keepDays(db) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // How long attempts and activity are kept. It needs the password: a shorter time erases evidence at once, so a stolen session alone must not do it.
+  // The change itself is recorded (kind logsettings).
+  r.put("/logins/settings", requireAuth, limiter(10), async (req, res, next) => {
+    try {
+      const { password, keepDays: days } = req.body ?? {};
+      if (typeof password !== "string" || password === "") return res.status(400).json({ error: "Give your password" });
+      if (!KEEP_DAYS_CHOICES.includes(days)) return res.status(400).json({ error: `keepDays is one of ${KEEP_DAYS_CHOICES.join(", ")}` });
+      const { rows } = await db.query("SELECT id, username, password_hash FROM users WHERE id = $1", [req.session.userId]);
+      if (!rows[0]) return res.status(401).json({ error: "Not authenticated" });
+      let ok = false;
+      try {
+        ok = await verify(rows[0].password_hash, password);
+      } catch {
+        ok = false;
+      }
+      if (!ok) return res.status(403).json({ error: "The current password is not correct", code: "wrong_password" });
+      await db.query(
+        "INSERT INTO settings (key, value, updated_at) VALUES ($1, to_jsonb($2::int), now()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+        [KEEP_DAYS_KEY, days],
+      );
+      await recordAttempt(db, { kind: "logsettings", username: rows[0].username, address: addressOf(req), success: true });
+      res.json({ keepDays: await keepDays(db) });
     } catch (err) {
       next(err);
     }

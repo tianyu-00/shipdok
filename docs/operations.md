@@ -62,7 +62,7 @@ secrets volume), so it is a complete backup on its own. It is made by the worker
 - **Encrypt them with a passphrase** (recommended: a backup holds every secret and is meant to leave this machine). It applies to the NEXT backups.
   Shipdok keeps the passphrase (encrypted with its own key) so that scheduled backups can use it, but **on a new machine it is the only way to open a
   backup: write it down**. A backup made with a passphrase cannot be opened without it, by anyone.
-- **Download** needs your password again and is recorded in the sign-ins list on the Security page, as is setting or removing the passphrase.
+- **Download** needs your password again and is recorded in the Activity log on the Security page, as is setting or removing the passphrase.
 - **Copy backups off this machine.** They are stored on the same disk as Shipdok (the `shipdok_backups` volume), which does not protect you from losing
   the disk or the machine. Download them, regularly.
 - **Not included:** your apps' own data volumes (they have their own backups, see [Persistent storage](#persistent-storage-of-your-apps)), the job queue and the logs.
@@ -201,7 +201,7 @@ mounts, so the files survive redeploys, rollbacks, restarts and image clean-ups.
 - **What to do with the files that are there now:** **Replace** (the default: the volume ends up exactly as the backup was, files that are not in the backup are removed), **Add over** (the backup's files are written over the current ones, files that are only in the volume now stay) or **Only into empty volumes** (refused if a volume holds anything; nothing is overwritten).
 - **Make a backup of the current data first** (ticked by default). It is a normal volume backup, marked with a "Safety copy before a restore" badge so it is not mistaken for the others. If it fails, nothing is restored. Untick it only if you are sure: after a Replace without it the old data is gone. Safety backups count toward "Keep the newest" like any other, so with a small number they can push older backups (even the one you restored from) out after the next backup.
 - **The passphrase of that backup**, only if it was made with a different passphrase than the current one (otherwise the current one is used).
-- **Your password** (the restore overwrites live data; it is recorded in the sign-ins list).
+- **Your password** (the restore overwrites live data; it is recorded in the Activity log).
 
 What happens: the worker stops the app (an app that is already stopped stays stopped; if a deployment or another job is working on the app, the restore fails instead of stopping it), makes the safety backup if asked, empties or checks the volumes, writes the files in (owners and permissions are kept), reads the volumes back to check them, and starts the app again. The app is stopped only after everything that can be checked in advance has passed (the file opens, every path of the backup still has a volume, there is room). Each volume of the backup goes to the app's mounted volume **at the same path**; if the app has no storage at one of those paths any more, nothing is changed and the restore says which (add the path in Settings, then restore). Volumes of the app that are not in the backup are left alone.
 

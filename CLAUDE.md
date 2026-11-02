@@ -32,7 +32,7 @@ Read the relevant section of the spec before building a new feature.
 
 ```text
 apps/api/        Express 5 API, Postgres, sessions in Postgres, BullMQ producer; Jest + Supertest
-  migrations/    001_init ... 035_restore_history
+  migrations/    001_init ... 036_activity_log
   src/           app.js, config.js, deployments.js (supersede/cancel/rollback requests), control.js (start/stop/restart requests), disk.js (free-space levels), images.js (which versions keep an image), ports.js (automatic host ports), lockout.js (sign-in lockout and attempt record), recovery.js (recovery codes), version.js (running version and newest published one), openbackup.js (opens a backup file on the host),  resetpassword.js (host-side reset), authutil.js, settings.js + publicurl.js (public-access settings), visitor.js (local or outside), middleware/ (originCheck, publicAccess, requireAuth), routes/ (auth, recovery, settings, apps, env, webhooks, github, logs, volumes, buildcache, backups, images, version)
   openapi/       API documentation: operations/*.js (one description per route), schemas.js, build.js, inventory.js (real routes), generate.js, openapi.json (generated, committed)
   scripts/       send-webhook.js (signed fake webhook; `npm run webhook`), reset-password.js (host-side password reset; `npm run reset-password`), open-backup.js (decrypt and unpack a backup file for a restore)
@@ -75,7 +75,7 @@ test projects do): `POSTGRES_USER`/`POSTGRES_DB` (default `shipdok`), `API_HOST_
 requests from whatever address it is opened at), `MONITOR_INTERVAL_MS`, `STATS_INTERVAL_MS`, and the four secrets below (your value wins).
 `LOG_DIR` is set by compose to the `shipdok_logs` volume (outside Docker it defaults to `~/.shipdok/logs`); `BACKUP_DIR` likewise to the `shipdok_backups` volume (default `~/.shipdok/backups`), and `BACKUP_POSTGRES_CONTAINER` names Shipdok's own Postgres container when the worker cannot find it itself. **`DOCKER_GID` is gone.**
 
-Tests: API 1526, worker 907, shared 290, web 1378. Worker tests reuse the `_test` database the API tests create and
+Tests: API 1535, worker 907, shared 290, web 1393. Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` is now needed only for development with npm (`POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY`: 64 hex, losing
 it makes stored secrets unrecoverable) and for the optional settings above. **The GitHub App is NOT configured here any more** (dashboard,
@@ -101,7 +101,7 @@ feature. Below: what exists, the administrator's decisions (do not re-litigate),
   rate limits. Change password needs the session AND the current password (wrong one = 403, not 401).
 - **Password policy and lockout:** 12-256 characters, no repeated unit, no plain run, no username inside. **Decision: no bundled word lists** (so `password123456` is not
   caught). Lockout per typed name AND per address after 5 failures in a row (30 s doubling, caps 15 min per name, 60 min per address; while locked even the right
-  password is refused); advisory locks make the check and record one step. Security page: recent sign-ins, Sign out everywhere.
+  password is refused); advisory locks make the check and record one step. Security page: two paged cards, Sign-ins and Activity log (password-protected actions: backup passphrase, GitHub, public access, downloads, restores), kept 7/30/90/365 days (default 30, a choice that needs the password and is itself logged), Sign out everywhere.
 - **Recovery codes:** 10 at setup (shown once, must be acknowledged), stored as SHA-256 only, each works once, same lockout as login; "Make new codes" needs the password.
   Host reset: `docker compose exec api node scripts/reset-password.js` (prints a new password once, ends all sessions, forgives failed tries). Notice bar at 3 or fewer left.
 - **Public access:** modes `local` (default) / `webhook` / `full`, set in the DASHBOARD (Security page, needs the password); `SHIPDOK_PUBLIC` / `PUBLIC_URL` override and lock.

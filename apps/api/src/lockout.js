@@ -11,7 +11,21 @@ export const FIRST_WAIT_SECONDS = 30;
 export const ACCOUNT_CAP_SECONDS = 15 * 60;
 export const ADDRESS_CAP_SECONDS = 60 * 60;
 const WINDOW = '24 hours'; // failures older than this are forgotten
-const KEEP = '30 days'; // attempt rows older than this are deleted
+export const KEEP_DAYS_CHOICES = [7, 30, 90, 365];
+export const KEEP_DAYS_KEY = 'activity_keep_days';
+export const DEFAULT_KEEP_DAYS = 30;
+
+// The days a row is kept: the stored choice when it is a whole number of at least 7 (a damaged value can never stop a sign-in from being recorded), else 30.
+const KEEP_DAYS_SQL = `GREATEST(7, COALESCE((SELECT CASE WHEN value #>> '{}' ~ '^[0-9]{1,4}$' THEN (value #>> '{}')::int END FROM settings WHERE key = '${KEEP_DAYS_KEY}'), ${DEFAULT_KEEP_DAYS}))`;
+
+/** The days attempts and activity are kept for now. */
+export async function keepDays(client) {
+  const { rows } = await client.query(`SELECT ${KEEP_DAYS_SQL} AS days`);
+  return rows[0].days;
+}
+
+/** Deletes the rows older than the kept days. */
+export const trimAttempts = (client) => client.query(`DELETE FROM login_attempts WHERE at < now() - make_interval(days => ${KEEP_DAYS_SQL})`);
 
 /** How long to wait after `failures` failures in a row. */
 export function waitSeconds(failures, cap) {
@@ -44,7 +58,7 @@ export async function lockedFor(client, { username, address }) {
 
 export async function recordAttempt(client, { kind, username, address, success }) {
   await client.query('INSERT INTO login_attempts (kind, username, address, success) VALUES ($1, $2, $3, $4)', [kind, username, address, success]);
-  await client.query(`DELETE FROM login_attempts WHERE at < now() - interval '${KEEP}'`);
+  await trimAttempts(client);
 }
 
 export function lockMessage(seconds) {

@@ -2151,31 +2151,45 @@
         "tags": [
           "Account"
         ],
-        "summary": "Recent sign-in attempts",
-        "description": "The latest sign-in attempts and security changes, good and bad (names typed by strangers included), newest first. Kinds: `login`, `setup`, `recovery`, `reset` (a password reset on the machine), `settings` (public access changed), `github` (GitHub connected or changed).",
+        "summary": "Sign-ins and activity",
+        "description": "The sign-in attempts and the things done with the password, good and bad (names typed by strangers included), newest first. Kinds: `login`, `setup`, `recovery`, `reset` (a password reset on the machine) are sign-ins; `settings` (public access changed), `github` (GitHub connected or changed), `backup` (backup passphrase), `download` (a backup downloaded), `restore` (a restore or reclaim asked for), `logsettings` (how long this log is kept) are activity.",
         "parameters": [
           {
             "name": "limit",
             "in": "query",
             "required": false,
-            "description": "How many, 1 to 100 (default 20).",
+            "description": "How many, 1 to 500 (default 20).",
             "schema": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 100,
+              "maximum": 500,
               "default": 20
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "description": "`signins` for the sign-in kinds only, `activity` for the others only; left out, both.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "signins",
+                "activity"
+              ]
             }
           }
         ],
         "responses": {
           "200": {
-            "description": "The attempts.",
+            "description": "The attempts, and for how many days rows are kept.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "required": [
-                    "logins"
+                    "logins",
+                    "keepDays"
                   ],
                   "properties": {
                     "logins": {
@@ -2183,8 +2197,22 @@
                       "items": {
                         "$ref": "#/components/schemas/LoginAttempt"
                       }
+                    },
+                    "keepDays": {
+                      "type": "integer",
+                      "description": "7, 30 (the default), 90 or 365."
                     }
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`scope` is not `signins` or `activity`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -6036,6 +6064,109 @@
         ]
       }
     },
+    "/api/auth/logins/settings": {
+      "put": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "How long sign-ins and activity are kept",
+        "description": "Needs a session AND the password: a shorter time deletes older rows at once. Rows older than the chosen number of days are removed now and whenever something new is recorded. The change is recorded as `logsettings`. A wrong password is a **403** (`wrong_password`). Limited to 10 tries per 15 minutes.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "keepDays"
+                  ],
+                  "properties": {
+                    "keepDays": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No password, or `keepDays` is not one of the choices.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The password is wrong (`code: wrong_password`) or the Origin is not allowed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "password",
+                  "keepDays"
+                ],
+                "properties": {
+                  "password": {
+                    "type": "string"
+                  },
+                  "keepDays": {
+                    "type": "integer",
+                    "enum": [
+                      7,
+                      30,
+                      90,
+                      365
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/backups/passphrase": {
       "put": {
         "tags": [
@@ -8795,9 +8926,11 @@
               "settings",
               "github",
               "backup",
-              "download"
+              "download",
+              "restore",
+              "logsettings"
             ],
-            "description": "What was attempted or changed (`backup`: the backup passphrase was set or removed; `download`: a backup was downloaded)."
+            "description": "What was attempted or changed (`backup`: the backup passphrase was set or removed; `download`: a backup was downloaded; `restore`: a restore or reclaim was asked for; `logsettings`: how long this log is kept was changed)."
           },
           "username": {
             "type": "string",

@@ -36,10 +36,21 @@ export default Object.fromEntries([
     responses: { 200: ok('The signed-in administrator.', ref('Username')) },
   })),
   route('GET', '/api/auth/logins', op({
-    tag: TAG, summary: 'Recent sign-in attempts',
-    description: 'The latest sign-in attempts and security changes, good and bad (names typed by strangers included), newest first. Kinds: `login`, `setup`, `recovery`, `reset` (a password reset on the machine), `settings` (public access changed), `github` (GitHub connected or changed).',
-    parameters: [{ name: 'limit', in: 'query', required: false, description: 'How many, 1 to 100 (default 20).', schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 } }],
-    responses: { 200: ok('The attempts.', { type: 'object', required: ['logins'], properties: { logins: { type: 'array', items: ref('LoginAttempt') } } }) },
+    tag: TAG, summary: 'Sign-ins and activity',
+    description: 'The sign-in attempts and the things done with the password, good and bad (names typed by strangers included), newest first. Kinds: `login`, `setup`, `recovery`, `reset` (a password reset on the machine) are sign-ins; `settings` (public access changed), `github` (GitHub connected or changed), `backup` (backup passphrase), `download` (a backup downloaded), `restore` (a restore or reclaim asked for), `logsettings` (how long this log is kept) are activity.',
+    parameters: [
+      { name: 'limit', in: 'query', required: false, description: 'How many, 1 to 500 (default 20).', schema: { type: 'integer', minimum: 1, maximum: 500, default: 20 } },
+      { name: 'scope', in: 'query', required: false, description: '`signins` for the sign-in kinds only, `activity` for the others only; left out, both.', schema: { type: 'string', enum: ['signins', 'activity'] } },
+    ],
+    responses: { 200: ok('The attempts, and for how many days rows are kept.', { type: 'object', required: ['logins', 'keepDays'], properties: { logins: { type: 'array', items: ref('LoginAttempt') }, keepDays: { type: 'integer', description: '7, 30 (the default), 90 or 365.' } } }) },
+    errors: { 400: '`scope` is not `signins` or `activity`.' },
+  })),
+  route('PUT', '/api/auth/logins/settings', op({
+    tag: TAG, summary: 'How long sign-ins and activity are kept',
+    description: 'Needs a session AND the password: a shorter time deletes older rows at once. Rows older than the chosen number of days are removed now and whenever something new is recorded. The change is recorded as `logsettings`. A wrong password is a **403** (`wrong_password`). Limited to 10 tries per 15 minutes.',
+    body: { type: 'object', required: ['password', 'keepDays'], properties: { password: { type: 'string' }, keepDays: { type: 'integer', enum: [7, 30, 90, 365] } } },
+    responses: { 200: ok('Saved.', { type: 'object', required: ['keepDays'], properties: { keepDays: { type: 'integer' } } }) },
+    errors: { 400: 'No password, or `keepDays` is not one of the choices.', 403: 'The password is wrong (`code: wrong_password`) or the Origin is not allowed.', 429: 'Too many tries.' },
   })),
   route('POST', '/api/auth/password', op({
     tag: TAG, summary: 'Change the password',
