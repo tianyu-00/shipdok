@@ -2,6 +2,7 @@
 // whole: how much old versions could free in total, one button that cleans every app, one switch for the automatic clean-up of every app, and the size at
 // which the dashboard should say so. The worker does the cleaning (the API never talks to Docker): here the jobs are queued, one per app.
 import { Router } from 'express';
+import { change, fact, recordAuditFor } from '../audit.js';
 import { z } from 'zod';
 import { listVersions, prunableBytes } from '../images.js';
 
@@ -64,6 +65,10 @@ export function imagesRouter({ db, queue }) {
           break; // some were queued: say how many rather than pretend all were
         }
       }
+      await recordAuditFor(db, req, {
+        category: 'storage', action: 'image_cleanup_all', summary: `Old images clean-up asked for ${queued} of ${rows.length} apps`,
+        details: [fact('Apps', `${queued} of ${rows.length}`), fact('Effect', 'older versions beyond those kept are removed; logs and volumes are not touched')],
+      });
       res.status(202).json({ queued, apps: rows.length });
     } catch (err) { next(err); }
   });
@@ -74,6 +79,10 @@ export function imagesRouter({ db, queue }) {
       const body = autoCleanupSchema.safeParse(req.body ?? {});
       if (!body.success) return res.status(400).json(invalid(body));
       const { rowCount } = await db.query('UPDATE apps SET auto_prune = $1, updated_at = now() WHERE deleting_at IS NULL AND auto_prune IS DISTINCT FROM $1', [body.data.enabled]);
+      await recordAuditFor(db, req, {
+        category: 'storage', action: 'image_auto_cleanup', summary: `Automatic clean-up of old images turned ${body.data.enabled ? 'on' : 'off'} for every app`,
+        details: [change('Clean up old images automatically', body.data.enabled ? 'off' : 'on', body.data.enabled ? 'on' : 'off'), fact('Apps changed', rowCount)],
+      });
       res.json({ enabled: body.data.enabled, changed: rowCount });
     } catch (err) { next(err); }
   });
@@ -83,8 +92,15 @@ export function imagesRouter({ db, queue }) {
     try {
       const body = noticeSchema.safeParse(req.body ?? {});
       if (!body.success) return res.status(400).json(invalid(body));
+      const { rows: beforeRows } = await db.query('SELECT value FROM settings WHERE key = $1', [NOTICE_KEY]);
+      const beforeBytes = beforeRows[0] ? Number(beforeRows[0].value) : null;
       if (body.data.thresholdBytes === null) await db.query('DELETE FROM settings WHERE key = $1', [NOTICE_KEY]);
       else await db.query(`INSERT INTO settings (key, value) VALUES ($1, to_jsonb($2::bigint)) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, [NOTICE_KEY, body.data.thresholdBytes]);
+      const gb = (n) => (n === null ? 'never' : `${Math.round((n / 1024 ** 3) * 100) / 100} GB`);
+      await recordAuditFor(db, req, {
+        category: 'storage', action: 'image_notice', summary: body.data.thresholdBytes === null ? 'Old-images notice turned off' : `Old-images notice set to ${gb(body.data.thresholdBytes)}`,
+        details: [change('Say so when old images reach', gb(beforeBytes), gb(body.data.thresholdBytes))],
+      });
       res.json(await overview());
     } catch (err) { next(err); }
   });

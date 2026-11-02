@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { changesOf, fact, recordAuditFor } from '../audit.js';
 import { z } from 'zod';
 import { requestDeployment, cancelDeployment } from '../deployments.js';
 import { requestControl, CONTROL_ACTIONS } from '../control.js';
@@ -152,6 +153,14 @@ export const deploySchema = z.object({ start: z.boolean().optional(), ignoreDisk
 const NO_GITHUB_APP = { error: 'No such GitHub app. Connect it on the GitHub page first.', code: 'github_app_not_found' };
 
 // `github` is a function from a GitHub App's id to its client (or null), or a client used for every id (tests).
+const APP_LABELS = {
+  name: 'Name', branch: 'Branch', root_dir: 'Folder', container_port: 'Container port', host_port: 'Host port', health_path: 'Health check path', memory_mb: 'Memory (MB)',
+  cpus: 'CPUs', max_restarts: 'Restarts allowed in 10 minutes', keep_previous_images: 'Earlier versions kept', auto_prune: 'Clean up old images automatically',
+  build_timeout_minutes: 'Build time limit (minutes)', github_app_id: 'GitHub app', build_method: 'Build method', install_command: 'Install command', build_command: 'Build command',
+  start_command: 'Start command', output_dir: 'Output folder', node_version: 'Node version', spa_fallback: 'Single-page fallback', static_server: 'Web server',
+};
+const short = (id) => String(id).slice(0, 8);
+
 export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = defaultDiskUsage, portRange = parsePortRange() }) {
   const r = Router();
 
@@ -219,6 +228,11 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
         const looked = await lookUpInstallation(created.id, a.repo, a.github_app_id);
         if (looked.installationId) created.github_installation_id = looked.installationId;
         const warning = looked.warning;
+        await recordAuditFor(db, req, {
+          category: 'apps', action: 'app_created', summary: `App created: ${created.name}`, appId: created.id, appName: created.name,
+          details: [fact('Repository', created.repo), fact('Branch', created.branch), fact('Build method', created.build_method), fact('Host port', created.host_port),
+            fact('Memory (MB)', created.memory_mb), fact('GitHub app', a.github_app_id ? await githubAppName(a.github_app_id) : 'none (a public repository)')],
+        });
         res.status(201).json(warning ? { ...created, warning } : created);
       } catch (err) {
         if (err.code === '23505') return res.status(409).json({ error: UNIQUE_MESSAGES[err.constraint] ?? 'App already exists' });
@@ -237,6 +251,13 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       res.json(rows.map((r) => ({ ...r, stats: shapeStats(r.stats) })));
     } catch (err) { next(err); }
   });
+
+  // The name of a connected GitHub app, for an entry of the activity log.
+  async function githubAppName(id) {
+    if (!id) return 'none';
+    const { rows } = await db.query('SELECT name, slug FROM github_apps WHERE id = $1', [id]);
+    return rows[0]?.name ?? rows[0]?.slug ?? 'unknown';
+  }
 
   // The app as the dashboard shows it, plus which edited settings the running version does not have yet (null: nothing deployed).
   async function appDetail(id) {
@@ -278,7 +299,7 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       }
       const v = parsed.data;
       if (v.name !== undefined && !slugify(v.name)) return res.status(400).json({ error: 'Name must contain letters or numbers' });
-      const { rows: found } = await db.query('SELECT id, deleting_at, repo, github_app_id, build_method, container_port FROM apps WHERE id = $1', [req.params.id]);
+      const { rows: found } = await db.query('SELECT * FROM apps WHERE id = $1', [req.params.id]);
       if (!found[0]) return res.status(404).json({ error: 'App not found' });
       if (found[0].deleting_at) return res.status(409).json(DELETING);
       if (v.github_app_id && !(await githubAppExists(v.github_app_id))) return res.status(400).json(NO_GITHUB_APP);
@@ -309,6 +330,13 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       if ('github_app_id' in v && (v.github_app_id ?? null) !== found[0].github_app_id) {
         warning = (await lookUpInstallation(req.params.id, found[0].repo, v.github_app_id)).warning;
       }
+      const changes = changesOf(found[0], v, APP_LABELS);
+      const gh = changes.find((c) => c.label === APP_LABELS.github_app_id);
+      if (gh) { gh.from = await githubAppName(found[0].github_app_id); gh.to = await githubAppName(v.github_app_id); }
+      await recordAuditFor(db, req, {
+        category: 'apps', action: 'app_edited', appId: found[0].id, appName: v.name ?? found[0].name, details: changes,
+        summary: changes.length ? `Settings of ${v.name ?? found[0].name} changed: ${changes.map((c) => c.label.toLowerCase()).join(', ')}` : `Settings of ${found[0].name} saved, nothing changed`,
+      });
       const detail = await appDetail(req.params.id);
       res.json(warning ? { ...detail, warning } : detail);
     } catch (err) { next(err); }
@@ -384,6 +412,13 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       if (!result.ok) {
         return res.status(503).json({ error: 'Could not enqueue the deployment job', deploymentId: result.deploymentId });
       }
+      await recordAuditFor(db, req, {
+        category: 'deployments', action: 'deploy_requested', summary: `Deployment requested for ${app.name}`, appId: app.id, appName: app.name,
+        details: [fact('App', app.name), fact('Branch', app.branch), fact('Deployment', short(result.deploymentId)),
+          ...(body.data.noCache === true ? [fact('Cache', 'built without the cache')] : []),
+          ...(body.data.start === true ? [fact('Afterwards', 'the app is started even if it was stopped')] : []),
+          ...(body.data.ignoreDiskWarning === true ? [fact('Disk warning', 'ignored')] : [])],
+      });
       const { rows } = await db.query(`SELECT ${DEPLOYMENT_COLUMNS} FROM deployments WHERE id = $1`, [result.deploymentId]);
       const warning = disk?.level === 'critical' ? 'Deployed although the disk is almost full.'
         : disk?.level === 'low' ? `The disk is getting full (${disk.freePercent}% free). Consider pruning old images or deleting old logs.` : undefined;
@@ -424,6 +459,11 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
         rollbackOf: { id: target.deploymentId, image: target.image, commit: target.commit },
       });
       if (!result.ok) return res.status(503).json({ error: 'Could not enqueue the rollback job', deploymentId: result.deploymentId });
+      await recordAuditFor(db, req, {
+        category: 'deployments', action: 'rollback_requested', summary: `Rollback of ${app.name} to ${target.commit ? short(target.commit) : short(target.deploymentId)}`, appId: app.id, appName: app.name,
+        details: [fact('App', app.name), fact('Back to the version of deployment', short(target.deploymentId)), fact('Commit', target.commit ? short(target.commit) : 'unknown'),
+          fact('Replaces', live.commit ? `commit ${short(live.commit)}` : 'the running version'), fact('Settings', 'the app\'s current settings and variables are used')],
+      });
       const { rows } = await db.query(`SELECT ${DEPLOYMENT_COLUMNS} FROM deployments WHERE id = $1`, [result.deploymentId]);
       res.status(202).json(rows[0]);
     } catch (err) { next(err); }
@@ -458,6 +498,11 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
         console.error('Enqueue failed:', err.message);
         return res.status(503).json({ error: 'Could not queue the clean-up' });
       }
+      const { rows: named } = await db.query('SELECT name FROM apps WHERE id = $1', [req.params.id]);
+      await recordAuditFor(db, req, {
+        category: 'storage', action: 'image_cleanup', summary: `Old images of ${named[0].name} clean-up asked for`, appId: req.params.id, appName: named[0].name,
+        details: [fact('Effect', 'older versions beyond those kept are removed; logs and volumes are not touched')],
+      });
       res.status(202).json({ queued: true });
     } catch (err) { next(err); }
   });
@@ -468,6 +513,7 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
       if (!isUuid(req.params.id)) return res.status(404).json({ error: 'App not found' });
       const body = retentionSchema.safeParse(req.body ?? {});
       if (!body.success) return res.status(400).json({ error: 'Invalid settings', details: body.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`) });
+      const { rows: before } = await db.query('SELECT name, keep_previous_images, auto_prune FROM apps WHERE id = $1', [req.params.id]);
       const { rows } = await db.query(
         `UPDATE apps SET keep_previous_images = COALESCE($2, keep_previous_images), auto_prune = COALESCE($3, auto_prune), updated_at = now()
           WHERE id = $1 AND deleting_at IS NULL RETURNING keep_previous_images, auto_prune`,
@@ -476,6 +522,11 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
         const { rows: exists } = await db.query('SELECT deleting_at FROM apps WHERE id = $1', [req.params.id]);
         return exists[0]?.deleting_at ? res.status(409).json(DELETING) : res.status(404).json({ error: 'App not found' });
       }
+      const changes = changesOf(before[0], rows[0], APP_LABELS);
+      await recordAuditFor(db, req, {
+        category: 'storage', action: 'image_retention', appId: req.params.id, appName: before[0].name, details: changes,
+        summary: changes.length ? `Image keeping of ${before[0].name} changed: ${changes.map((c) => c.label.toLowerCase()).join(', ')}` : `Image keeping of ${before[0].name} saved, nothing changed`,
+      });
       res.json(rows[0]);
     } catch (err) { next(err); }
   });
@@ -508,6 +559,10 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
         if (!app.deleting_at) await db.query(`UPDATE apps SET deleting_at = NULL, desired_state = $2 WHERE id = $1`, [app.id, app.desired_state]);
         return res.status(503).json({ error: 'Could not queue the deletion' });
       }
+      await recordAuditFor(db, req, {
+        category: 'apps', action: 'app_deleted', summary: `App deletion started: ${app.name}`, appId: app.id, appName: app.name,
+        details: [fact('App', app.name), fact('Containers, images, logs and variables', 'removed'), fact('Persistent volumes', deleteVolumes ? 'deleted' : 'kept (reclaim them on the Storage page)')],
+      });
       res.status(202).json({ deleting: true });
     } catch (err) { next(err); }
   });
@@ -524,6 +579,10 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
 
         const result = await requestControl({ db, queue }, rows[0], action);
         if (!result.ok) return res.status(503).json({ error: 'Could not queue the request' });
+        await recordAuditFor(db, req, {
+          category: 'apps', action: `app_${action}`, summary: `${action[0].toUpperCase()}${action.slice(1)} requested for ${rows[0].name}`, appId: rows[0].id, appName: rows[0].name,
+          details: [fact('App', rows[0].name), fact('Wanted state', result.desired_state)],
+        });
         res.status(202).json({ action: result.action, desired_state: result.desired_state });
       } catch (err) { next(err); }
     });
@@ -596,6 +655,11 @@ export function deploymentsRouter({ db, queue, logDir = '' }) {
           image = 'kept (another deployment uses it)';
         }
       }
+      const { rows: owner } = await db.query('SELECT name FROM apps WHERE id = $1', [d.app_id]);
+      await recordAuditFor(db, req, {
+        category: 'storage', action: 'deployment_deleted', summary: `Deployment record deleted: ${owner[0]?.name ?? 'an app'} ${short(d.id)}`, appId: d.app_id, appName: owner[0]?.name ?? null,
+        details: [fact('Deployment', short(d.id)), fact('Its build log', 'deleted'), fact('Its image', image)],
+      });
       res.json({ deleted: true, freedLogBytes, image });
     } catch (err) { next(err); }
   });
@@ -609,6 +673,11 @@ export function deploymentsRouter({ db, queue, logDir = '' }) {
       if (outcome.kind === 'not_found') return res.status(404).json({ error: 'Deployment not found' });
       if (outcome.kind === 'final') return res.status(409).json({ error: 'This deployment has already finished' });
       const { rows } = await db.query(`SELECT ${DEPLOYMENT_COLUMNS} FROM deployments WHERE id = $1`, [req.params.id]);
+      const { rows: owner } = await db.query('SELECT a.id, a.name FROM apps a JOIN deployments d ON d.app_id = a.id WHERE d.id = $1', [req.params.id]);
+      await recordAuditFor(db, req, {
+        category: 'deployments', action: 'deploy_cancelled', summary: `Deployment cancelled: ${owner[0]?.name ?? 'an app'} ${short(req.params.id)}`, appId: owner[0]?.id ?? null, appName: owner[0]?.name ?? null,
+        details: [fact('Deployment', short(req.params.id)), fact('How', outcome.kind === 'cancelled' ? 'it had not started, so it ended at once' : 'the worker was asked to stop it')],
+      });
       res.status(outcome.kind === 'cancelled' ? 200 : 202).json(rows[0]);
     } catch (err) { next(err); }
   });

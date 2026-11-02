@@ -23,7 +23,8 @@ function fakeApi({ signins = [], log = [], keepDays = 30, ...more } = {}) {
       const u = new URL(call.path, 'http://x')
       const category = u.searchParams.get('category')
       const q = (u.searchParams.get('q') ?? '').toLowerCase()
-      return { keepDays, entries: log.filter((e) => (!category || e.category === category) && e.summary.toLowerCase().includes(q)) }
+      const automatic = u.searchParams.get('automatic') === '1'
+      return { keepDays, entries: log.filter((e) => (!category || e.category === category) && e.summary.toLowerCase().includes(q) && (automatic || e.source === 'user')) }
     },
     ...more,
   })
@@ -140,7 +141,7 @@ describe('the activity log card', () => {
     const card = await screen.findByLabelText('Activity log')
     await within(card).findByText('A sec')
     const group = within(card).getByRole('group', { name: 'Category' })
-    expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['All', 'Security', 'GitHub', 'Backups and restores'])
+    expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['All', 'Security', 'GitHub', 'Apps', 'Deployments', 'Variables', 'Storage', 'Backups and restores'])
     expect(within(group).getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
     await userEvent.click(within(group).getByRole('button', { name: 'GitHub' }))
     await waitFor(() => expect(within(card).queryByText('A sec')).toBeNull())
@@ -168,6 +169,47 @@ describe('the activity log card', () => {
     await userEvent.click(within(card).getByRole('button', { name: 'Security' }))
     expect(await within(card).findByText('Nothing matches')).toBeInTheDocument()
     expect(mock.calls.map((c) => c.path)).toContain('/api/audit?limit=500&category=security&q=connected')
+  })
+
+  test('what Shipdok did by itself is hidden until the switch is on, then it is asked for and marked Automatic', async () => {
+    const mock = fakeApi({ log: [entry(1, { summary: 'Mine' }), entry(2, { summary: 'Push to main deployed Site', category: 'deployments', source: 'webhook', actor: 'GitHub' })] })
+    cards()
+    const card = await screen.findByLabelText('Activity log')
+    await within(card).findByText('Mine')
+    expect(within(card).queryByText('Push to main deployed Site')).toBeNull()
+    expect(within(card).queryByText('Automatic')).toBeNull()
+    const toggle = within(card).getByRole('switch', { name: 'Show automatic events' })
+    expect(toggle).not.toBeChecked()
+    expect(mock.calls.map((c) => c.path).some((p) => p.includes('automatic'))).toBe(false)
+    await userEvent.click(toggle)
+    expect(await within(card).findByText('Push to main deployed Site')).toBeInTheDocument()
+    expect(mock.calls.map((c) => c.path)).toContain('/api/audit?limit=500&automatic=1')
+    expect(within(entriesOf(card)[1]).getByText('Automatic')).toBeInTheDocument() // the older entry
+    expect(within(entriesOf(card)[0]).queryByText('Automatic')).toBeNull()
+    await userEvent.click(toggle)
+    await waitFor(() => expect(within(card).queryByText('Push to main deployed Site')).toBeNull())
+  })
+
+  test('the switch works with a category and a search, and with it on "Nothing matches" is still said when it should be', async () => {
+    const mock = fakeApi({ log: [entry(1, { summary: 'Mine', category: 'apps' })] })
+    cards()
+    const card = await screen.findByLabelText('Activity log')
+    await within(card).findByText('Mine')
+    await userEvent.click(within(card).getByRole('switch', { name: 'Show automatic events' }))
+    await userEvent.click(within(card).getByRole('button', { name: 'Deployments' }))
+    expect(await within(card).findByText('Nothing matches')).toBeInTheDocument()
+    expect(mock.calls.map((c) => c.path)).toContain('/api/audit?limit=500&category=deployments&automatic=1')
+  })
+
+  test('the switch goes back to page 1', async () => {
+    fakeApi({ log: [...entries(15), entry(50, { summary: 'Auto', source: 'schedule' })] })
+    cards()
+    const card = await screen.findByLabelText('Activity log')
+    await within(card).findByText('Summary 1')
+    await userEvent.click(within(card).getByRole('button', { name: 'Older' }))
+    expect(within(card).getByText('Page 2 of 2')).toBeInTheDocument()
+    await userEvent.click(within(card).getByRole('switch', { name: 'Show automatic events' }))
+    expect(await within(card).findByText('Page 1 of 2')).toBeInTheDocument()
   })
 
   test('shows 10 at a time with the paging controls; a filter or a search goes back to page 1', async () => {

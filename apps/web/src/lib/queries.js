@@ -88,10 +88,10 @@ export const useStats = (id) => useQuery({ queryKey: ['stats', id], queryFn: () 
 // Sign-in attempts, good and bad; up to 500, the dashboard pages through them.
 export const useLogins = () => useQuery({ queryKey: ['logins'], queryFn: () => api('/auth/logins?limit=500'), refetchInterval: 30_000 })
 
-// The activity log: what was done with the password, newest first, up to 500 of one category and/or matching a search text.
-export const useAudit = ({ category, q } = {}) => useQuery({
-  queryKey: ['audit', category ?? 'all', q ?? ''],
-  queryFn: () => api(`/audit?limit=500${category ? `&category=${category}` : ''}${q ? `&q=${encodeURIComponent(q)}` : ''}`),
+// The activity log, newest first, up to 500 of one category and/or matching a search text; `automatic` adds what Shipdok did by itself (a push that deployed).
+export const useAudit = ({ category, q, automatic } = {}) => useQuery({
+  queryKey: ['audit', category ?? 'all', q ?? '', automatic === true],
+  queryFn: () => api(`/audit?limit=500${category ? `&category=${category}` : ''}${q ? `&q=${encodeURIComponent(q)}` : ''}${automatic === true ? '&automatic=1' : ''}`),
   refetchInterval: 30_000,
   placeholderData: (previous) => previous, // keep showing the last list while a filter or a search loads
 })

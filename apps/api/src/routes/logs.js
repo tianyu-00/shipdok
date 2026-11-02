@@ -4,6 +4,7 @@
 //   deployment  -> its build log (one per deployment, kept until the deployment is deleted)
 //   app         -> its runtime log and the run before it (one pair per app, reset on every restart or deployment)
 import { Router } from 'express';
+import { fact, recordAuditFor } from '../audit.js';
 import { stat } from 'node:fs/promises';
 import { defaultDiskUsage, diskStatus } from '../disk.js';
 import { logFilePath, runtimeLogPath, readChunk, readTail, removeDeploymentLogs, removeRuntimeLogs } from '@shipdok/shared';
@@ -87,7 +88,7 @@ export function appLogsRouter({ db, logDir }) {
   r.delete('/:id/logs', async (req, res, next) => {
     try {
       if (!isUuid(req.params.id)) return res.status(404).json({ error: 'App not found' });
-      const { rows: apps } = await db.query('SELECT 1 FROM apps WHERE id = $1', [req.params.id]);
+      const { rows: apps } = await db.query('SELECT name FROM apps WHERE id = $1', [req.params.id]);
       if (!apps[0]) return res.status(404).json({ error: 'App not found' });
       const { rows: collecting } = await db.query(
         `SELECT 1 FROM runtime_logs WHERE app_id = $1 AND kind = 'runtime' AND ended_at IS NULL`, [req.params.id]);
@@ -102,6 +103,10 @@ export function appLogsRouter({ db, logDir }) {
       }
       const removed = await db.query('DELETE FROM runtime_logs WHERE app_id = $1', [req.params.id]);
       if (removed.rowCount === 0 && freedBytes === 0) return res.status(404).json({ error: 'No runtime logs for this app' });
+      await recordAuditFor(db, req, {
+        category: 'storage', action: 'logs_deleted', appId: req.params.id, appName: apps[0].name, summary: `Runtime logs of ${apps[0].name} deleted`,
+        details: [fact('App', apps[0].name), fact('Which', 'the current and the previous run'), fact('Freed', `${freedBytes} bytes`)],
+      });
       res.json({ freedBytes });
     } catch (err) { next(err); }
   });
@@ -134,7 +139,7 @@ export function deploymentLogsRouter({ db, logDir }) {
   r.delete('/:id/logs', async (req, res, next) => {
     try {
       if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Deployment not found' });
-      const { rows } = await db.query('SELECT app_id, status FROM deployments WHERE id = $1', [req.params.id]);
+      const { rows } = await db.query('SELECT d.app_id, d.status, a.name FROM deployments d JOIN apps a ON a.id = d.app_id WHERE d.id = $1', [req.params.id]);
       if (!rows[0]) return res.status(404).json({ error: 'Deployment not found' });
       if (ACTIVE.includes(rows[0].status)) return res.status(409).json({ error: 'The deployment is still running; its log is still being written' });
 
@@ -148,6 +153,10 @@ export function deploymentLogsRouter({ db, logDir }) {
       }
       const removed = await db.query('DELETE FROM log_files WHERE deployment_id = $1', [req.params.id]);
       if (removed.rowCount === 0 && freedBytes === 0) return res.status(404).json({ error: 'No logs for this deployment' });
+      await recordAuditFor(db, req, {
+        category: 'storage', action: 'logs_deleted', appId: rows[0].app_id, appName: rows[0].name, summary: `Build log deleted: ${rows[0].name} ${String(req.params.id).slice(0, 8)}`,
+        details: [fact('Deployment', String(req.params.id).slice(0, 8)), fact('Its status and error summary', 'stay'), fact('Freed', `${freedBytes} bytes`)],
+      });
       res.json({ freedBytes });
     } catch (err) { next(err); }
   });

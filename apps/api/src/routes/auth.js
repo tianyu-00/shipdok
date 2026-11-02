@@ -7,7 +7,7 @@ import { limiter, startSession } from "../authutil.js";
 import { replaceCodes } from "../recovery.js";
 import { passwordProblem } from "@shipdok/shared";
 import { addressOf, cleanName, KEEP_DAYS_CHOICES, KEEP_DAYS_KEY, keepDays, lockedFor, lockMessage, recordAttempt, trimLog, withAttemptLock } from "../lockout.js";
-import { change, fact, recordAudit } from "../audit.js";
+import { change, fact, recordAudit, recordAuditFor } from "../audit.js";
 
 const USERNAME_RE = /^[A-Za-z0-9_.-]{3,64}$/;
 
@@ -127,6 +127,7 @@ export function authRouter(db) {
   // Sign out every browser and device, this one included.
   r.post("/logout-all", requireAuth, async (req, res, next) => {
     try {
+      await recordAuditFor(db, req, { category: "security", action: "sign_out_everywhere", summary: "Signed out everywhere", details: [fact("Effect", "every browser and device, this one included, has to sign in again")] });
       await db.query(`DELETE FROM "session" WHERE sess->>'userId' = $1`, [String(req.session.userId)]);
       req.session.destroy((err) => {
         if (err) return next(err);
@@ -210,6 +211,10 @@ export function authRouter(db) {
       await db.query("UPDATE users SET password_hash = $2 WHERE id = $1", [rows[0].id, await hash(newPassword)]);
       await db.query(`DELETE FROM "session" WHERE sess->>'userId' = $1`, [String(rows[0].id)]); // all of them, this one included
       await startSession(req, rows[0].id); // ... and this one comes back with a new id
+      await recordAudit(db, {
+        category: "security", action: "password_changed", summary: "Password changed", actor: who[0]?.username ?? "unknown", address: addressOf(req),
+        details: [fact("Effect", "every other browser and device was signed out"), fact("Password", "never recorded")],
+      }).catch((err) => console.error("Activity log entry not written:", err.message));
       res.status(204).end();
     } catch (err) {
       next(err);

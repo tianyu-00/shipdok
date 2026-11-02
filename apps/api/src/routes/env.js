@@ -1,6 +1,7 @@
 // Environment variables for an app. Values are encrypted at rest (AES-256-GCM, bound to app + name)
 // and are NEVER returned by any route except the explicit reveal endpoint.
 import { Router } from "express";
+import { change, fact, recordAuditFor } from "../audit.js";
 import {
   encryptSecret,
   decryptSecret,
@@ -121,13 +122,18 @@ export function envRouter({ db, secretsKey }) {
     }
   };
 
+  // An entry of the activity log about a variable: its name and where it is used, NEVER a value.
+  const logVariable = (req, summary, action, details) =>
+    recordAuditFor(db, req, { category: "variables", action, summary, appId: req.appId, appName: req.appName, details: [fact("App", req.appName), ...details] });
+
   // Every route below needs an existing app.
   r.use(async (req, res, next) => {
     try {
       const id = req.params.id;
-      const ok = UUID_RE.test(id) && (await db.query("SELECT 1 FROM apps WHERE id = $1", [id])).rowCount === 1;
-      if (!ok) return res.status(404).json({ error: "App not found" });
+      const found = UUID_RE.test(id) ? (await db.query("SELECT name FROM apps WHERE id = $1", [id])).rows[0] : null;
+      if (!found) return res.status(404).json({ error: "App not found" });
       req.appId = id;
+      req.appName = found.name;
       next();
     } catch (err) {
       next(err);
@@ -191,6 +197,9 @@ export function envRouter({ db, secretsKey }) {
         }
         return { created, updated };
       });
+      await logVariable(req, `Variables imported into ${req.appName}: ${result.created} added, ${result.updated} changed`, "var_imported", [
+        fact("Added", result.created), fact("Changed (an existing name)", result.updated), fact("Names", vars.map((v) => v.key).join(", ")), fact("Values", "never recorded"),
+      ]);
       res.json({ ...result, keys: vars.map((v) => v.key), duplicates });
     }),
   );
@@ -244,16 +253,16 @@ export function envRouter({ db, secretsKey }) {
                   WHERE app_id = $1 AND key = $2 RETURNING updated_at, scope, build_as`,
                 [req.appId, key, target, token, newScope, newBuildAs],
               );
-              return { created: false, renamed: true, ...rows[0] };
+              return { created: false, renamed: true, before: current, ...rows[0] };
             }
-            if (current.scope === newScope && current.build_as === newBuildAs) return { created: false, scope: newScope, build_as: newBuildAs, updated_at: current.updated_at };
+            if (current.scope === newScope && current.build_as === newBuildAs) return { created: false, unchanged: true, scope: newScope, build_as: newBuildAs, updated_at: current.updated_at };
             // Only the scope or how it is passed changes. A name that is allowed for the new scope was checked above.
             const { rows } = await c.query(
               `UPDATE app_env_vars SET scope = $3, build_as = $4, version = nextval('app_env_var_version_seq'), updated_at = now()
                 WHERE app_id = $1 AND key = $2 RETURNING updated_at, scope, build_as`,
               [req.appId, key, newScope, newBuildAs],
             );
-            return { created: false, ...rows[0] };
+            return { created: false, before: current, ...rows[0] };
           }
 
           if (!current) {
@@ -261,12 +270,25 @@ export function envRouter({ db, secretsKey }) {
             if (n >= MAX_ENV_VARS) throw new ClientError(400, `An app can have at most ${MAX_ENV_VARS} variables`);
           }
           const token = encryptSecret(value, secretsKey, envVarContext(req.appId, key));
-          return (await c.query(UPSERT, [req.appId, key, token, scope ?? null, buildAs ?? null])).rows[0];
+          return { before: current ?? null, ...(await c.query(UPSERT, [req.appId, key, token, scope ?? null, buildAs ?? null])).rows[0] };
         });
       } catch (err) {
         // A name another variable already has (or two requests racing for the same new name): the primary key lets exactly one in.
         if (err?.code === "23505" && renaming) throw new ClientError(409, `A variable named ${target} already exists`, { code: "name_taken" });
         throw err;
+      }
+      const how = [
+        ...(out.before && out.before.scope !== out.scope ? [change("Available in", out.before.scope, out.scope)] : []),
+        ...(out.before && out.before.build_as !== out.build_as ? [change("Passed to the build as", out.before.build_as, out.build_as)] : []),
+      ];
+      if (out.renamed) {
+        await logVariable(req, `Variable renamed in ${req.appName}: ${key} → ${target}`, "var_renamed", [change("Name", key, target), ...how, ...(value !== undefined ? [fact("Value", "changed (never recorded)")] : [])]);
+      } else if (out.created) {
+        await logVariable(req, `Variable added to ${req.appName}: ${target}`, "var_added", [fact("Name", target), fact("Available in", out.scope), ...(reachesBuild(out.scope) ? [fact("Passed to the build as", out.build_as)] : []), fact("Value", "never recorded")]);
+      } else if (value !== undefined) {
+        await logVariable(req, `Variable value changed in ${req.appName}: ${key}`, "var_changed", [fact("Name", key), fact("Value", "changed (never recorded)"), ...how]);
+      } else if (!out.unchanged) {
+        await logVariable(req, `Variable settings changed in ${req.appName}: ${key}`, "var_changed", [fact("Name", key), ...how]);
       }
       res.status(out.created ? 201 : 200).json({
         key: target,
@@ -287,6 +309,7 @@ export function envRouter({ db, secretsKey }) {
         ENV_KEY_RE.test(key) &&
         (await db.query("DELETE FROM app_env_vars WHERE app_id = $1 AND key = $2", [req.appId, key])).rowCount === 1;
       if (!gone) throw new ClientError(404, "Variable not found");
+      await logVariable(req, `Variable deleted from ${req.appName}: ${key}`, "var_deleted", [fact("Name", key)]);
       res.status(204).end();
     }),
   );
@@ -310,6 +333,7 @@ export function envRouter({ db, secretsKey }) {
         console.error("Reveal failed: a stored variable could not be decrypted"); // no key name, no value
         throw new ClientError(500, "Could not decrypt this value. Has APP_SECRETS_KEY changed?");
       }
+      await logVariable(req, `Variable value shown: ${key} of ${req.appName}`, "var_revealed", [fact("Name", key), fact("Value", "shown in the dashboard (never recorded here)")]);
       res.set("Cache-Control", "no-store");
       res.json({ key, value });
     }),

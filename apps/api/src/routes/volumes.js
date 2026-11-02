@@ -2,6 +2,7 @@
 // app mounts. The API only keeps the records: the worker creates, mounts and removes the Docker volumes (the API never touches Docker).
 // Removing a path DETACHES its volume (the data stays); only an explicit delete, or "delete the volumes too" when deleting the app, removes data.
 import { Router } from 'express';
+import { fact, recordAuditFor } from '../audit.js';
 import { randomUUID } from 'node:crypto';
 import { normalizeVolumePath, normalizeVolumePaths } from '../volumepaths.js';
 export { mountedVolumes } from '../volumes.js';
@@ -72,6 +73,14 @@ export function appVolumesRouter({ db }) {
       const { rows } = await client.query(
         `SELECT * FROM app_volumes WHERE app_id = $1 AND state IN ('in_use', 'detached') ORDER BY container_path, state_changed_at DESC`, [app.id]);
       await client.query('COMMIT');
+      const added = parsed.paths.filter((p) => !inUse.has(p));
+      const removed = [...inUse.keys()].filter((p) => !parsed.paths.includes(p));
+      await recordAuditFor(db, req, {
+        category: 'storage', action: 'storage_paths', appId: app.id, appName: app.name,
+        summary: added.length || removed.length ? `Persistent storage of ${app.name} changed` : `Persistent storage of ${app.name} saved, nothing changed`,
+        details: [...(added.length ? [fact('Paths added', added.join(', '))] : []), ...(removed.length ? [fact('Paths detached (the data is kept)', removed.join(', '))] : []),
+          ...(added.length || removed.length ? [fact('Takes effect', 'with the next deployment')] : [])],
+      });
       res.json({ volumes: rows.map(shape) });
     } catch (err) {
       await client?.query('ROLLBACK').catch(() => {});
@@ -138,7 +147,7 @@ export function volumesRouter({ db, queue }) {
       const app = apps[0];
       if (!app) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'App not found' }); }
       if (app.deleting_at) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'This app is being deleted', code: 'deleting' }); }
-      const { rows: vols } = await client.query('SELECT id, state FROM app_volumes WHERE id = $1 FOR UPDATE', [req.params.id]);
+      const { rows: vols } = await client.query('SELECT id, state, app_name FROM app_volumes WHERE id = $1 FOR UPDATE', [req.params.id]);
       if (!vols[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Volume not found' }); }
       if (vols[0].state === 'in_use') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'This volume is mounted by an app already', code: 'volume_in_use' }); }
 
@@ -155,6 +164,10 @@ export function volumesRouter({ db, queue }) {
         [vols[0].id, app.id, app.name, one.path]);
       const { rows } = await client.query('SELECT * FROM app_volumes WHERE id = $1', [vols[0].id]);
       await client.query('COMMIT');
+      await recordAuditFor(db, req, {
+        category: 'storage', action: 'volume_reclaimed', appId: app.id, appName: app.name, summary: `Kept volume attached to ${app.name} at ${one.path}`,
+        details: [fact('Volume', rows[0].docker_name), fact('Was kept from', vols[0].app_name ?? 'a deleted app'), fact('Attached to', app.name), fact('Mounted at', one.path), fact('Takes effect', 'with the next deployment; nothing was copied')],
+      });
       res.json({ volume: shape(rows[0]) });
     } catch (err) {
       await client?.query('ROLLBACK').catch(() => {});
@@ -169,7 +182,7 @@ export function volumesRouter({ db, queue }) {
   r.delete('/:id', async (req, res, next) => {
     try {
       if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Volume not found' });
-      const { rows } = await db.query('SELECT id, state FROM app_volumes WHERE id = $1', [req.params.id]);
+      const { rows } = await db.query('SELECT id, state, container_path, docker_name, app_name FROM app_volumes WHERE id = $1', [req.params.id]);
       if (!rows[0]) return res.status(404).json({ error: 'Volume not found' });
       if (rows[0].state === 'in_use') return res.status(409).json({ error: 'This volume is mounted by an app. Remove its path from the app\'s persistent storage first.', code: 'volume_in_use' });
       if (!queue) return res.status(503).json({ error: 'Job queue unavailable' });
@@ -179,6 +192,10 @@ export function volumesRouter({ db, queue }) {
         console.error('Enqueue failed:', err.message);
         return res.status(503).json({ error: 'Could not queue the deletion' });
       }
+      await recordAuditFor(db, req, {
+        category: 'storage', action: 'volume_deleted', appName: rows[0].app_name, summary: `Volume deletion asked for: ${rows[0].container_path} of ${rows[0].app_name ?? 'a deleted app'}`,
+        details: [fact('Volume', rows[0].docker_name), fact('Path', rows[0].container_path), fact('Was kept from', rows[0].app_name ?? 'a deleted app'), fact('Its data', 'deleted for good')],
+      });
       res.status(202).json({ queued: true });
     } catch (err) { next(err); }
   });

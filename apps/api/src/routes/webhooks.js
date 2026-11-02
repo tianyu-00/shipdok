@@ -9,6 +9,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { requestDeployment } from '../deployments.js';
 import { diskStatus, defaultDiskUsage } from '../disk.js';
 import { createRefusals } from '../webhookrefusals.js';
+import { addressOf } from '../lockout.js';
+import { fact, recordAudit } from '../audit.js';
 
 const MAX_BODY = '5mb'; // GitHub allows up to 25 MB; real push payloads are far smaller
 const SIGNATURE_RE = /^sha256=[0-9a-f]{64}$/;
@@ -191,6 +193,12 @@ export function webhookReceiver({ db, queue, secrets, rateLimitPerMinute = 120, 
         } else {
           details.push({ app: app.slug, result: 'deployed', deploymentId: out.deploymentId });
           deployments.push(out.deploymentId);
+          // What the machine did by itself: a push to the branch the app follows. Hidden from the activity log unless asked for.
+          await recordAudit(db, {
+            category: 'deployments', action: 'deploy_webhook', source: 'webhook', actor: 'GitHub', address: addressOf(req), appId: app.id, appName: app.name,
+            summary: `Push to ${branch} deployed ${app.name}`,
+            details: [fact('App', app.name), fact('Repository', repo), fact('Branch', branch), fact('Commit', String(sha).slice(0, 8)), fact('Deployment', String(out.deploymentId).slice(0, 8))],
+          }).catch((err) => console.error('Activity log entry not written:', err.message));
         }
       }
 

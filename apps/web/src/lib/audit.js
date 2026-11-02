@@ -1,7 +1,11 @@
-/** The categories of the activity log as the dashboard offers them (the API knows more: apps, deployments, variables and storage come with what records them). */
+/** The categories of the activity log, in the order the buttons show them. */
 export const AUDIT_CATEGORIES = [
   { value: 'security', label: 'Security' },
   { value: 'github', label: 'GitHub' },
+  { value: 'apps', label: 'Apps' },
+  { value: 'deployments', label: 'Deployments' },
+  { value: 'variables', label: 'Variables' },
+  { value: 'storage', label: 'Storage' },
   { value: 'backups', label: 'Backups and restores' },
 ]
 

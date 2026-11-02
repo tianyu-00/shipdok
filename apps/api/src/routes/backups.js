@@ -12,7 +12,7 @@ import { normalizeVolumePaths } from '../volumepaths.js';
 import { BACKUP_PASSPHRASE_CONTEXT, backupFilePath, backupPassphraseProblem, encryptSecret, nextSlot, normalizeSchedule, restorePassphraseContext } from '@shipdok/shared';
 import { limiter } from '../authutil.js';
 import { addressOf } from '../lockout.js';
-import { fact, recordAudit } from '../audit.js';
+import { change, changesOf, fact, recordAudit, recordAuditFor } from '../audit.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const SCHEDULE_KEY = 'backup_schedule';
@@ -140,6 +140,7 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
     try {
       const { rows } = await db.query(`INSERT INTO backups (trigger) VALUES ('manual') ON CONFLICT DO NOTHING RETURNING id`);
       if (!rows[0]) return res.status(409).json({ error: 'A backup is already waiting or running', code: 'already_running' });
+      await recordAuditFor(db, req, { category: 'backups', action: 'backup_requested', summary: 'Backup of Shipdok asked for', details: [fact('Backup', 'Shipdok itself (database and secrets)'), fact('Made by', 'the worker, within a few seconds')] });
       res.status(202).json({ id: rows[0].id });
     } catch (err) { next(err); }
   });
@@ -148,7 +149,7 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
   r.post('/volumes/:appId', limiter(20), async (req, res, next) => {
     try {
       if (!UUID_RE.test(req.params.appId)) return res.status(404).json({ error: 'App not found' });
-      const { rows: apps } = await db.query('SELECT id FROM apps WHERE id = $1 AND deleting_at IS NULL', [req.params.appId]);
+      const { rows: apps } = await db.query('SELECT id, name FROM apps WHERE id = $1 AND deleting_at IS NULL', [req.params.appId]);
       if (!apps[0]) return res.status(404).json({ error: 'App not found' });
       const { rows: restoring } = await db.query(`SELECT 1 FROM volume_restores WHERE app_id = $1 AND status IN ('queued', 'running') LIMIT 1`, [req.params.appId]);
       if (restoring[0]) return res.status(409).json({ error: 'A restore of this app is waiting or running', code: 'restore_running' });
@@ -157,7 +158,10 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
            SELECT 'manual', 'volumes', a.id, a.name FROM apps a
             WHERE a.id = $1 AND EXISTS (SELECT 1 FROM app_volumes v WHERE v.app_id = a.id AND v.state = 'in_use')
          ON CONFLICT DO NOTHING RETURNING id`, [req.params.appId]);
-      if (rows[0]) return res.status(202).json({ id: rows[0].id });
+      if (rows[0]) {
+        await recordAuditFor(db, req, { category: 'backups', action: 'backup_requested', appId: apps[0].id, appName: apps[0].name, summary: `Backup of ${apps[0].name}'s data asked for`, details: [fact('App', apps[0].name), fact('Backup', 'the files of its persistent volumes')] });
+        return res.status(202).json({ id: rows[0].id });
+      }
       const { rows: mounted } = await db.query(`SELECT 1 FROM app_volumes WHERE app_id = $1 AND state = 'in_use' LIMIT 1`, [req.params.appId]);
       if (!mounted[0]) return res.status(400).json({ error: 'This app has no persistent volumes', code: 'no_volumes' });
       res.status(409).json({ error: 'A backup of this app is already waiting or running', code: 'already_running' });
@@ -171,6 +175,7 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
       const parsed = volumeSettingsSchema.safeParse(req.body ?? {});
       if (!parsed.success) return res.status(400).json(invalid(parsed));
       const { frequency, hour, weekday, stop, keep, restoreKeep } = parsed.data;
+      const { rows: was } = await db.query('SELECT name, volume_backup_frequency, volume_backup_hour, volume_backup_weekday, volume_backup_stop, volume_backup_keep, restore_history_keep FROM apps WHERE id = $1', [req.params.appId]);
       const { rowCount } = await db.query(
         `UPDATE apps SET volume_backup_frequency = $2, volume_backup_hour = $3, volume_backup_weekday = $4, volume_backup_stop = $5, volume_backup_keep = $6, updated_at = now(),
                 restore_history_keep = CASE WHEN $7::boolean THEN $8::int ELSE restore_history_keep END,
@@ -178,6 +183,17 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
           WHERE id = $1 AND deleting_at IS NULL`, [req.params.appId, frequency, hour, weekday, stop, keep, restoreKeep !== undefined, restoreKeep ?? null]);
       if (rowCount === 0) return res.status(404).json({ error: 'App not found' });
       if (restoreKeep !== undefined) await db.query(TRIM_RESTORES_SQL); // a lower number takes effect now
+      const labels = { frequency: 'Automatic backups', hour: 'Hour (UTC)', weekday: 'Day of the week (0 = Sunday)', stop: 'Stop the app while copying', keep: 'Backups kept', restoreKeep: 'Restores remembered' };
+      const before = { frequency: was[0].volume_backup_frequency, hour: was[0].volume_backup_hour, weekday: was[0].volume_backup_weekday, stop: was[0].volume_backup_stop, keep: was[0].volume_backup_keep, restoreKeep: was[0].restore_history_keep ?? 'all' };
+      const after = { frequency, hour, weekday, stop, keep, ...(restoreKeep !== undefined ? { restoreKeep: restoreKeep ?? 'all' } : {}) };
+      // The hour and the day only matter for the schedule that uses them.
+      if (frequency === 'off') { delete after.hour; delete after.weekday; }
+      if (frequency === 'daily') delete after.weekday;
+      const changes = changesOf(before, after, labels);
+      await recordAuditFor(db, req, {
+        category: 'backups', action: 'volume_backup_settings', appId: req.params.appId, appName: was[0].name, details: changes,
+        summary: changes.length ? `Backup settings of ${was[0].name} changed: ${changes.map((c) => c.label.toLowerCase()).join(', ')}` : `Backup settings of ${was[0].name} saved, nothing changed`,
+      });
       res.json(await overview());
     } catch (err) { next(err); }
   });
@@ -205,9 +221,19 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
     try {
       const parsed = scheduleSchema.safeParse(req.body ?? {});
       if (!parsed.success) return res.status(400).json(invalid(parsed));
+      const { rows: stored } = await db.query('SELECT value FROM settings WHERE key = $1', [SCHEDULE_KEY]);
+      const before = normalizeSchedule(stored[0]?.value);
       await db.query(
         `INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, now()) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now()`,
         [SCHEDULE_KEY, JSON.stringify(parsed.data)]);
+      const after = { ...parsed.data };
+      if (after.frequency === 'off') { delete after.hour; delete after.weekday; }
+      if (after.frequency === 'daily') delete after.weekday;
+      const changes = changesOf(before, after, { frequency: 'Automatic backups', hour: 'Hour (UTC)', weekday: 'Day of the week (0 = Sunday)', keep: 'Backups kept' });
+      await recordAuditFor(db, req, {
+        category: 'backups', action: 'backup_schedule', details: changes,
+        summary: changes.length ? `Schedule of the backups of Shipdok changed: ${changes.map((c) => c.label.toLowerCase()).join(', ')}` : 'Schedule of the backups of Shipdok saved, nothing changed',
+      });
       res.json(await overview());
     } catch (err) { next(err); }
   });
@@ -355,12 +381,18 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
   r.delete('/:id', limiter(30), async (req, res, next) => {
     try {
       if (!UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'Backup not found' });
-      const { rows } = await db.query(`SELECT filename, status FROM backups WHERE id = $1`, [req.params.id]);
+      const { rows } = await db.query(`SELECT filename, status, kind, app_name, finished_at FROM backups WHERE id = $1`, [req.params.id]);
       if (!rows[0]) return res.status(404).json({ error: 'Backup not found' });
       if (rows[0].status === 'queued' || rows[0].status === 'running') return res.status(409).json({ error: 'That backup is still being made', code: 'in_progress' });
       const path = backupFilePath(backupDir, rows[0].filename);
       if (path) await rm(path, { force: true });
       await db.query('DELETE FROM backups WHERE id = $1 AND status IN (\'ok\', \'failed\')', [req.params.id]);
+      await recordAuditFor(db, req, {
+        category: 'backups', action: 'backup_deleted', appName: rows[0].kind === 'volumes' ? rows[0].app_name : null,
+        summary: rows[0].kind === 'volumes' ? `Backup of ${rows[0].app_name ?? 'an app'}'s data deleted` : 'Backup of Shipdok deleted',
+        details: [fact('Backup', rows[0].kind === 'volumes' ? `the data of ${rows[0].app_name ?? 'an app'}` : 'Shipdok itself'), fact('Made', rows[0].finished_at ? new Date(rows[0].finished_at).toISOString() : 'unfinished'),
+          fact('Its file', 'deleted from the backups folder')],
+      });
       res.status(204).end();
     } catch (err) { next(err); }
   });

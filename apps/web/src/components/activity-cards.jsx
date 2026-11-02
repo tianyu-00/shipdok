@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -124,6 +125,7 @@ function Entry({ entry }) {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
             <Badge variant="outline">{categoryLabel(entry.category)}</Badge>
+            {entry.source !== 'user' && <Badge variant="outline" className="border-info/40 bg-info/10 text-info">Automatic</Badge>}
             <span title={new Date(entry.at).toLocaleString()}>{timeAgo(entry.at)}</span>
             <span aria-hidden="true">·</span>
             <span className="break-all">{entry.actor}</span>
@@ -143,10 +145,11 @@ function Entry({ entry }) {
 
 export function ActivityCard() {
   const [category, setCategory] = useState(undefined)
+  const [automatic, setAutomatic] = useState(false)
   const [text, setText] = useState('')
   const [q, setQ] = useState('')
   useEffect(() => { const t = setTimeout(() => setQ(text.trim()), 300); return () => clearTimeout(t) }, [text])
-  const audit = useAudit({ category, q })
+  const audit = useAudit({ category, q, automatic })
   const paging = usePaging('shipdok.activityPageSize')
   const [asking, setAsking] = useState(null)
   const entries = audit.data?.entries ?? []
@@ -160,7 +163,7 @@ export function ActivityCard() {
         <CardHeader>
           <CardTitle className="text-base">Activity log{audit.data && entries.length > 0 && <span className="ml-2 text-sm font-normal text-muted-foreground">({entries.length})</span>}</CardTitle>
           <CardDescription>
-            What was done with your password, and what it changed: backup passphrase, GitHub, public access, downloads and restores. Open an entry to see the details. If you see something you did not do, change your password and sign out everywhere.
+            What you did and what it changed: your account, GitHub, public access, apps, deployments, variables (the names, never the values), storage and backups. Open an entry to see the details. If you see something you did not do, change your password and sign out everywhere.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -177,6 +180,10 @@ export function ActivityCard() {
               {[{ value: undefined, label: 'All' }, ...AUDIT_CATEGORIES].map((c) => (
                 <Button key={c.label} type="button" size="sm" variant={category === c.value ? 'default' : 'outline'} aria-pressed={category === c.value} onClick={() => choose(c.value)}>{c.label}</Button>
               ))}
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <Switch id="audit-automatic" checked={automatic} onCheckedChange={(on) => { setAutomatic(on); paging.setAt(0) }} />
+              <label htmlFor="audit-automatic" className="text-muted-foreground">Show automatic events</label>
             </div>
             <div className="relative ml-auto w-full sm:w-56">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />

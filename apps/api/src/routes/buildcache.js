@@ -1,6 +1,7 @@
 // Docker's build cache. It is shared by every build, so it belongs to no app: this is one figure and two actions. The worker measures it
 // now and then and does the cleaning (the API never talks to Docker); here we read its last figures and queue the job.
 import { Router } from 'express';
+import { fact, recordAuditFor } from '../audit.js';
 import { z } from 'zod';
 
 // A clean-up that was asked for and never reported back (the worker died) stops blocking new requests after this long.
@@ -48,6 +49,10 @@ export function buildCacheRouter({ db, queue }) {
         await db.query('UPDATE build_cache SET requested_at = NULL, requested_all = NULL WHERE id = 1').catch(() => {});
         return res.status(503).json({ error: 'Could not queue the clean-up' });
       }
+      await recordAuditFor(db, req, {
+        category: 'storage', action: 'build_cache_clean', summary: all ? 'Build cache clean-up asked for: everything unused' : 'Build cache clean-up asked for: what was not used for a day',
+        details: [fact('What', all ? 'every unused entry, so the next builds start from nothing' : 'entries no build used for 24 hours')],
+      });
       res.status(202).json({ queued: true });
     } catch (err) { next(err); }
   });

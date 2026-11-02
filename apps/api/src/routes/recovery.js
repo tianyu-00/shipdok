@@ -5,6 +5,7 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { limiter, startSession } from "../authutil.js";
 import { addressOf, cleanName, lockedFor, lockMessage, recordAttempt, withAttemptLock } from "../lockout.js";
 import { recoveryStatus, replaceCodes, spendCode } from "../recovery.js";
+import { fact, recordAuditFor } from "../audit.js";
 
 export function recoveryRouter(db) {
   const r = Router();
@@ -39,6 +40,10 @@ export function recoveryRouter(db) {
         await client.query("BEGIN");
         const codes = await replaceCodes(client, rows[0].id);
         await client.query("COMMIT");
+        await recordAuditFor(db, req, {
+          category: "security", action: "recovery_codes_new", summary: "New recovery codes made",
+          details: [fact("Effect", "the old set stops working; ten new codes were shown once"), fact("Codes", "never recorded")],
+        });
         res.json({ codes });
       } catch (err) {
         await client.query("ROLLBACK").catch(() => {});

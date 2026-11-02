@@ -1,7 +1,7 @@
 // The activity log: one row for each thing the administrator does that is worth knowing afterwards, with what changed.
 // `details` is a short list of facts: change('Mode', 'Local', 'Webhook only') or fact('Backup', 'made 3 Nov'). Never put a secret in one:
 // a password, passphrase, key or variable value is at most said to have changed.
-import { trimLog } from './lockout.js';
+import { addressOf, trimLog } from './lockout.js';
 
 export const AUDIT_CATEGORIES = ['security', 'github', 'backups', 'apps', 'deployments', 'variables', 'storage'];
 export const AUDIT_SOURCES = ['user', 'webhook', 'schedule', 'system'];
@@ -23,4 +23,24 @@ export async function recordAudit(client, { category, action, summary, details =
     [category, action, text(summary), details.length ? JSON.stringify(details.slice(0, MAX_DETAILS)) : null, actor, address, source, appId, appName],
   );
   await trimLog(client);
+}
+
+/**
+ * Records what the signed-in administrator just did (the name and the address come from the request). It runs AFTER the thing was done and
+ * never fails it: an entry that cannot be written is logged and the answer to the person is unchanged.
+ */
+export async function recordAuditFor(db, req, fields) {
+  try {
+    const { rows } = await db.query('SELECT username FROM users WHERE id = $1', [req.session?.userId]);
+    await recordAudit(db, { actor: rows[0]?.username ?? 'unknown', address: addressOf(req), ...fields });
+  } catch (err) {
+    console.error('Activity log entry not written:', err.message);
+  }
+}
+
+/** The changes between two versions of a record: one `change` for each key whose value differs (null and empty count as the same). */
+export function changesOf(before, after, labels) {
+  const numeric = (x) => x !== null && x !== undefined && x !== '' && typeof x !== 'boolean' && !Number.isNaN(Number(x));
+  const same = (a, b) => (numeric(a) && numeric(b) ? Number(a) === Number(b) : (a ?? '') === (b ?? '') || String(a) === String(b));
+  return Object.keys(after).filter((k) => !same(before[k], after[k])).map((k) => change(labels[k] ?? k, before[k], after[k]));
 }
