@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { api } from '@/lib/api'
+import { useAppVolumes, useApps } from '@/lib/queries'
+import { AppChoice, receivingApps } from '@/components/app-choice'
 import { RESTORE_MODES, downloadBackup } from '@/lib/backups'
 import { Field } from '@/components/field'
 
@@ -167,6 +169,85 @@ export function RestoreDialog({ backup, onClose }) {
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
             <Button type="submit" variant="destructive" disabled={!password || restore.isPending}>{restore.isPending ? 'Asking…' : 'Restore'}</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Putting the data of a backup into ANOTHER app (usually a new one): its storage paths are added to that app when it lacks them. */
+export function ReclaimBackupDialog({ backup, onClose }) {
+  const client = useQueryClient()
+  const [appId, setAppId] = useState('')
+  const [mode, setMode] = useState('replace')
+  const [safety, setSafety] = useState(true)
+  const [passphrase, setPassphrase] = useState('')
+  const [password, setPassword] = useState('')
+  const [problem, setProblem] = useState(null)
+  const apps = useApps()
+  const theirs = useAppVolumes(appId || undefined)
+  const chosen = receivingApps(apps.data).find((a) => a.id === appId)
+  const have = (theirs.data?.volumes ?? []).filter((v) => v.state === 'in_use').map((v) => v.path)
+  const known = Array.isArray(backup.paths)
+  const added = known ? backup.paths.filter((p) => !have.includes(p)) : null
+  const overlap = known ? backup.paths.filter((p) => have.includes(p)) : null
+  const when = new Date(backup.finishedAt ?? backup.requestedAt).toLocaleString()
+  const reclaim = useMutation({
+    mutationFn: () => api(`/backups/${backup.id}/reclaim`, { method: 'POST', body: { password, appId, mode, safetyBackup: safety, ...(passphrase ? { passphrase } : {}) } }),
+    onSuccess: () => { toast.success(`The data of ${backup.appName ?? 'the backup'} is being put into ${chosen?.name}`); client.invalidateQueries({ queryKey: ['backups'] }); onClose() },
+    onError: (err) => setProblem(err.status === 403 ? 'That is not your current password' : err.message),
+  })
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
+        <form onSubmit={(e) => { e.preventDefault(); setProblem(null); reclaim.mutate() }} noValidate className="space-y-4">
+          <DialogHeader>
+            <DialogTitle>Reclaim the data of {backup.appName ?? 'this backup'}</DialogTitle>
+            <DialogDescription>
+              From the backup made {when}. Its files are put into the app you choose. A storage path the backup has and that app does not is <strong>added to the app</strong> as a new volume,
+              and the app mounts it from its next deployment.
+            </DialogDescription>
+          </DialogHeader>
+          <AppChoice id="reclaim-backup-app" label="Put it into" value={appId} onChange={(v) => { setAppId(v); setProblem(null) }} />
+          {appId && (
+            <div className="rounded-md border p-3 text-sm" aria-label="What will happen">
+              {known ? (
+                <>
+                  {added.length > 0 && <p>Storage paths that will be <strong>added</strong> to {chosen?.name}: <span className="font-mono">{added.join(', ')}</span></p>}
+                  {overlap.length > 0 && <p>Paths {chosen?.name} already keeps, restored into as you choose below: <span className="font-mono">{overlap.join(', ')}</span></p>}
+                </>
+              ) : (
+                <p>The storage paths this backup holds that {chosen?.name} does not keep yet will be added to it, and the files go into them.</p>
+              )}
+            </div>
+          )}
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-medium">For a path the app already keeps: what to do with the files there now</legend>
+            {RESTORE_MODES.map((m) => (
+              <label key={m.value} className="flex cursor-pointer items-start gap-2 rounded-md border p-2 text-sm has-[:checked]:border-primary">
+                <input type="radio" name="reclaim-mode" className="mt-1 accent-primary" value={m.value} checked={mode === m.value} onChange={() => setMode(m.value)} />
+                <span><span className="font-medium">{m.label}</span><span className="block text-xs text-muted-foreground">{m.hint}</span></span>
+              </label>
+            ))}
+          </fieldset>
+          {(overlap === null || overlap.length > 0) && (
+            <label className="flex cursor-pointer items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-1 accent-primary" checked={safety} onChange={(e) => setSafety(e.target.checked)} />
+              <span>Make a backup of the current data first <span className="block text-xs text-muted-foreground">Only for the paths the app already keeps (new ones are empty). The app is stopped while that happens.</span></span>
+            </label>
+          )}
+          {backup.encrypted && (
+            <Field id="reclaim-passphrase" label="Passphrase of this backup (optional)" hint="Only needed if it was made with a different passphrase than the current one.">
+              <Input id="reclaim-passphrase" type="password" autoComplete="off" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
+            </Field>
+          )}
+          <Field id="reclaim-password" label="Your password" error={problem}>
+            <Input id="reclaim-password" type="password" autoComplete="current-password" aria-invalid={problem ? true : undefined} value={password} onChange={(e) => { setPassword(e.target.value); setProblem(null) }} />
+          </Field>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" variant="destructive" disabled={!appId || !password || reclaim.isPending}>{reclaim.isPending ? 'Asking…' : 'Reclaim'}</Button>
           </DialogFooter>
         </form>
       </DialogContent>

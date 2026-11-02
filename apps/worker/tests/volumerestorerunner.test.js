@@ -28,6 +28,7 @@ const read = (d, f) => readFile(join(d, f), 'utf8');
 // Fake Docker: stop/start from fakeEngine; the backup helper and the restore helper both work on the folders in `vols`.
 const engine = (over = {}) => {
   const base = fakeEngine({ previous: ['live-1'] });
+  base.ensured = [];
   const note = (e) => base.events.push(e);
   return Object.assign(base, {
     appImage: async () => 'sha256:app', ownImage: async () => 'sha256:worker',
@@ -40,6 +41,7 @@ const engine = (over = {}) => {
       const dirs = h.names.map((n) => vols[n]);
       try { return { code: 0, output: execFileSync('sh', ['-c', h.script.replace('/vrestore/*', dirs.join(' '))], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) }; } catch (err) { return { code: err.status, output: String(err.stdout) }; }
     },
+    ensureVolume: async ({ name, labels }) => { note(`ensure ${name}`); base.ensured.push({ name, labels }); vols[name] ??= await mkdtemp(join(tmpdir(), 'rr-new-')); },
     putVolumeArchive: async (h, i, file) => { note(`write ${i}`); execFileSync('tar', ['xf', file, '-C', vols[h.names[i]]]); },
     removeStaleHelpers: async () => 0,
   }, over);
@@ -57,8 +59,8 @@ async function aBackup({ passphrase = null, kind = 'volumes', status = 'ok' } = 
 }
 const ask = async (backupId, o = {}) => {
   const { rows } = await pool.query(
-    `INSERT INTO volume_restores (backup_id, app_id, app_name, mode, safety_backup, passphrase_enc, status) VALUES ($1, $2, $3, $4, $5, $6, 'running') RETURNING *`,
-    [backupId, o.appId === undefined ? appId : o.appId, appName, o.mode ?? 'replace', o.safety ?? true, o.passphraseEnc ?? null]);
+    `INSERT INTO volume_restores (backup_id, app_id, app_name, mode, safety_backup, passphrase_enc, reclaim, status) VALUES ($1, $2, $3, $4, $5, $6, $7, 'running') RETURNING *`,
+    [backupId, o.appId === undefined ? appId : o.appId, o.appName ?? appName, o.mode ?? 'replace', o.safety ?? true, o.passphraseEnc ?? null, o.reclaim ?? false]);
   return rows[0];
 };
 const answer = async (row, o = {}) => { const eng = o.eng ?? engine(); const r = await answerRestore(row, { db, secretsKey: KEY, dir, version: '0.1.20', log, ...o, eng }); return { r, eng }; };
@@ -184,6 +186,92 @@ describe('a restore of a running app', () => {
     assert.match(out.r.error, /working on this app right now/);
     assert.equal(await read(vols['vol-data'], 'a.txt'), 'CURRENT');
     assert.deepEqual(orderOf(out.eng), []);
+  });
+});
+
+describe('a reclaim into another app', () => {
+  let other;
+  const inUse = async (id) => (await pool.query(`SELECT container_path, docker_name, state FROM app_volumes WHERE app_id = $1 ORDER BY container_path`, [id])).rows;
+  beforeEach(async () => { other = await makeApp(); await setApp(other, { desired_state: 'running' }); await db.setRuntime(other, { state: 'running', action: 'start' }); });
+  const reclaim = async (o = {}) => { const backup = o.backup ?? await aBackup(); const row = await ask(backup, { appId: other, appName: 'Other app', reclaim: true, ...o }); const out = await answer(row, o); return { row, ...out }; };
+
+  test('into an app with no storage: the path is added with a new labelled volume, the files go in, nothing is stopped and no safety backup is made', async () => {
+    const { row, r, eng } = await reclaim();
+    assert.equal(r.ok, true, r.error);
+    const rows = await inUse(other);
+    assert.deepEqual(rows.map((x) => [x.container_path, x.state]), [['/data', 'in_use']]);
+    assert.match(rows[0].docker_name, /^shipdok-vol-[0-9a-f-]{36}$/);
+    assert.deepEqual(eng.ensured, [{ name: rows[0].docker_name, labels: { 'shipdok.managed': 'true', 'shipdok.app-id': other } }]);
+    assert.equal(await read(vols[rows[0].docker_name], 'a.txt'), 'from the backup');
+    assert.ok(!orderOf(eng).some((e) => /^(stop|start|safety)/.test(e)), 'the running app does not use the new volume yet');
+    assert.equal((await restoreRow(row.id)).safety_backup_id, null);
+    assert.equal(await read(vols['vol-data'], 'a.txt'), 'CURRENT', 'the volume of the backup\'s own app is not touched');
+  });
+  test('the restore says which paths were added and that the app must be deployed', async () => {
+    const { row } = await reclaim();
+    const done = await restoreRow(row.id);
+    assert.equal(done.status, 'ok');
+    assert.equal(done.warning, 'Added the storage path /data to the app: deploy it to mount it');
+  });
+  test('the app that receives it is the one the row names (the backup stays the other app\'s)', async () => {
+    const { row } = await reclaim();
+    const done = await restoreRow(row.id);
+    assert.deepEqual([done.app_id, done.app_name, done.reclaim], [other, 'Other app', true]);
+  });
+  test('into an app that already has the path: the same as a restore (stop, safety copy, replace), and no path is added', async () => {
+    await pool.query(`INSERT INTO app_volumes (app_id, app_name, container_path, docker_name) VALUES ($1, 'x', '/data', 'vol-otherdata')`, [other]);
+    vols['vol-otherdata'] = await mkdtemp(join(tmpdir(), 'rr-od-'));
+    await writeFile(join(vols['vol-otherdata'], 'old.txt'), 'old');
+    const { row, r, eng } = await reclaim();
+    assert.equal(r.ok, true, r.error);
+    assert.deepEqual(orderOf(eng).slice(0, 2), ['stop live-1', 'safety helper']);
+    assert.deepEqual(await tree(vols['vol-otherdata']), ['a.txt']);
+    assert.equal((await inUse(other)).length, 1);
+    assert.equal((await restoreRow(row.id)).warning, null);
+    assert.ok((await restoreRow(row.id)).safety_backup_id);
+  });
+  test('a path the app has taken meanwhile fails it before anything is written, and says so', async () => {
+    const eng = engine({ ensureVolume: async () => { throw new Error('should not be reached'); } });
+    await db.pool.query(`SELECT 1`);
+    const backup = await aBackup();
+    const row = await ask(backup, { appId: other, appName: 'Other app', reclaim: true });
+    // the path appears between the checks and the provisioning
+    const original = db.addAppVolumes;
+    const racing = { ...db, addAppVolumes: async (id, v) => { await pool.query(`INSERT INTO app_volumes (app_id, app_name, container_path, docker_name) VALUES ($1, 'x', '/data', 'vol-race')`, [id]); return original(id, v); } };
+    const { r } = await answer(row, { eng, db: racing });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /taken in the meantime/);
+    assert.equal((await inUse(other)).length, 1, 'only the one that was already there');
+    assert.deepEqual(vols['vol-race'], undefined);
+  });
+  test('a restore that is NOT a reclaim into an app without storage is still refused', async () => {
+    const row = await ask(await aBackup(), { appId: other, appName: 'Other app', reclaim: false });
+    const { r } = await answer(row);
+    assert.match(r.error, /no persistent storage any more/);
+  });
+  test('a backup path that clashes with the app\'s storage is refused with nothing added', async () => {
+    await pool.query(`INSERT INTO app_volumes (app_id, app_name, container_path, docker_name) VALUES ($1, 'x', '/data/inner', 'vol-inner')`, [other]);
+    const { r, eng } = await reclaim();
+    assert.match(r.error, /\/data\/inner is inside \/data/);
+    assert.equal((await inUse(other)).length, 1);
+    assert.deepEqual(eng.ensured, []);
+  });
+  test('adding paths itself refuses an app that is gone or being deleted (the answer checks first, this is the last line against a race)', async () => {
+    await setApp(other, { deleting_at: new Date() });
+    await assert.rejects(db.addAppVolumes(other, [{ container_path: '/x', docker_name: 'shipdok-vol-x1' }]), /no longer exists or is being deleted/);
+    await assert.rejects(db.addAppVolumes('11111111-1111-4111-8111-111111111111', [{ container_path: '/x', docker_name: 'shipdok-vol-x2' }]), /no longer exists/);
+    assert.equal((await inUse(other)).length, 0);
+  });
+  test('adding several paths is all or nothing: one taken path adds none', async () => {
+    await pool.query(`INSERT INTO app_volumes (app_id, app_name, container_path, docker_name) VALUES ($1, 'x', '/b', 'vol-b')`, [other]);
+    await assert.rejects(db.addAppVolumes(other, [{ container_path: '/a', docker_name: 'shipdok-vol-a' }, { container_path: '/b', docker_name: 'shipdok-vol-b2' }]), /taken in the meantime/);
+    assert.deepEqual((await inUse(other)).map((r) => r.container_path), ['/b']);
+  });
+  test('an app that is being deleted cannot receive one', async () => {
+    await setApp(other, { deleting_at: new Date() });
+    const { r } = await reclaim();
+    assert.match(r.error, /being deleted/);
+    assert.equal((await inUse(other)).length, 0);
   });
 });
 

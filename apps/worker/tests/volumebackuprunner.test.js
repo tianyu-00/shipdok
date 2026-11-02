@@ -240,7 +240,7 @@ describe('stopping the app for the copy', () => {
 describe('the schedule', () => {
   const NOW = Date.parse('2026-10-22T12:00:00Z'); // after today's 03:00 slot
   const SLOT = Date.parse('2026-10-22T03:00:00Z');
-  const scheduled = (extra = {}) => setApp(appId, { volume_backup_enabled: true, ...extra });
+  const scheduled = (extra = {}) => setApp(appId, { volume_backup_frequency: 'daily', ...extra });
   const count = async () => (await pool.query(`SELECT count(*)::int AS n FROM backups WHERE kind = 'volumes'`)).rows[0].n;
   const ask = () => requestVolumeBackupsIfDue({ db, now: NOW, log });
 
@@ -254,10 +254,35 @@ describe('the schedule', () => {
     assert.equal(await ask(), 0);
     assert.equal(await count(), 0);
   });
-  test('none while the schedule is off', async () => {
+  test('an app whose own schedule is off gets none, and Shipdok\'s own schedule does not matter either way', async () => {
+    await scheduled({ volume_backup_frequency: 'off' });
+    assert.equal(await ask(), 0);
     await scheduled();
     await putSetting('backup_schedule', { frequency: 'off', hour: 3, weekday: 1, keep: 7 }, new Date(SLOT - DAY));
-    assert.equal(await ask(), 0);
+    assert.equal(await ask(), 1, 'the shared schedule is off, the app\'s is not');
+  });
+  test('an app has its own hour: not before it, once after it', async () => {
+    await scheduled({ volume_backup_hour: 15 }); // 15:00 UTC; NOW is 12:00, so the latest slot was yesterday 15:00
+    await pool.query(`INSERT INTO backups (kind, app_id, app_name, trigger, status, started_at, finished_at) VALUES ('volumes', $1, 'A', 'manual', 'ok', $2, $2)`, [appId, new Date(NOW - 3600_000)]);
+    assert.equal(await ask(), 0, 'a backup an hour ago is after yesterday\'s 15:00 slot');
+    assert.equal(await requestVolumeBackupsIfDue({ db, now: Date.parse('2026-10-22T16:00:00Z'), log }), 1, 'today\'s 15:00 has passed since that backup');
+  });
+  test('weekly means that weekday, at that hour', async () => {
+    // 2026-10-22 is a Thursday (4). The latest Monday (1) slot was 2026-10-19 03:00.
+    await scheduled({ volume_backup_frequency: 'weekly', volume_backup_weekday: 1 });
+    await pool.query(`INSERT INTO backups (kind, app_id, app_name, trigger, status, started_at, finished_at) VALUES ('volumes', $1, 'A', 'manual', 'ok', $2, $2)`, [appId, new Date('2026-10-20T10:00:00Z')]);
+    assert.equal(await ask(), 0, 'one made on Tuesday covers Monday\'s slot');
+    await setApp(appId, { volume_backup_weekday: 4 }); // Thursday: today 03:00 has passed, the Tuesday backup is older
+    assert.equal(await ask(), 1);
+  });
+  test('two apps with different schedules are asked for on their own', async () => {
+    const other = await makeApp(); await addVolume(other, '/x', 'shipdok-vol-x');
+    await scheduled();
+    await setApp(other, { volume_backup_frequency: 'daily', volume_backup_hour: 15 });
+    await pool.query(`INSERT INTO backups (kind, app_id, app_name, trigger, status, started_at, finished_at) VALUES ('volumes', $1, 'A', 'manual', 'ok', $2, $2)`, [other, new Date(NOW - 3600_000)]);
+    assert.equal(await ask(), 1, 'only the first is due');
+    const row = (await pool.query(`SELECT app_id FROM backups WHERE status = 'queued'`)).rows[0];
+    assert.equal(row.app_id, appId);
   });
   test('only once per slot: a volume backup that started after the slot is enough', async () => {
     await scheduled();
@@ -267,12 +292,11 @@ describe('the schedule', () => {
     await pool.query(`INSERT INTO backups (kind, app_id, app_name, trigger, status, started_at, finished_at) VALUES ('volumes', $1, 'A', 'manual', 'ok', $2, $2)`, [appId, new Date(SLOT - 60_000)]);
     assert.equal(await ask(), 1, 'one from before the slot is not enough');
   });
-  test('switching an app on after today\'s slot does not back up for that slot, and changing the schedule does not either', async () => {
+  test('changing an app\'s schedule after today\'s slot does not back up for that slot', async () => {
     await scheduled({ volume_backup_changed_at: new Date(SLOT + 3600_000) });
     assert.equal(await ask(), 0);
     await setApp(appId, { volume_backup_changed_at: new Date(SLOT - DAY) });
-    await putSetting('backup_schedule', { frequency: 'daily', hour: 3, weekday: 1, keep: 7 }, new Date(SLOT + 60_000));
-    assert.equal(await ask(), 0);
+    assert.equal(await ask(), 1);
   });
   test('an app without a mounted volume, or being deleted, is skipped', async () => {
     await scheduled();
@@ -284,7 +308,7 @@ describe('the schedule', () => {
   });
   test('each app is asked for on its own, and one already waiting is not asked for twice', async () => {
     const other = await makeApp(); await addVolume(other, '/x', 'shipdok-vol-x');
-    await scheduled(); await setApp(other, { volume_backup_enabled: true });
+    await scheduled(); await setApp(other, { volume_backup_frequency: 'daily' });
     assert.equal(await ask(), 2);
     assert.equal(await ask(), 0);
   });
@@ -318,21 +342,27 @@ describe('keeping the newest', () => {
   };
   const left = async () => (await pool.query('SELECT id FROM backups')).rows.map((r) => r.id);
 
-  test('each app keeps the number it is set to, counted on its own (default 3)', async () => {
+  test('each app keeps the number it is set to, counted on its own (default 2)', async () => {
     const other = await makeApp(); await addVolume(other, '/x', 'shipdok-vol-x');
     await setApp(other, { volume_backup_keep: 1 });
     const a = []; for (let i = 5; i >= 1; i--) a.push(await volumeBackup(appId, 'ok', i * 10));
     const b = []; for (let i = 3; i >= 1; i--) b.push(await volumeBackup(other, 'ok', i * 10));
-    assert.equal(await prune({ db, dir, log }), 2 + 2);
-    assert.deepEqual((await left()).sort(), [a[2].id, a[3].id, a[4].id, b[2].id].sort(), 'the newest of each stay');
-    assert.deepEqual((await readdir(dir)).sort(), [a[2].file, a[3].file, a[4].file, b[2].file].sort());
+    assert.equal(await prune({ db, dir, log }), 3 + 2);
+    assert.deepEqual((await left()).sort(), [a[3].id, a[4].id, b[2].id].sort(), 'the newest of each stay: 2 for the app on the default, 1 for the other');
+    assert.deepEqual((await readdir(dir)).sort(), [a[3].file, a[4].file, b[2].file].sort());
+  });
+  test('an app set to keep 3 keeps 3', async () => {
+    await setApp(appId, { volume_backup_keep: 3 });
+    const a = []; for (let i = 5; i >= 1; i--) a.push(await volumeBackup(appId, 'ok', i * 10));
+    await prune({ db, dir, log });
+    assert.deepEqual((await left()).sort(), [a[2].id, a[3].id, a[4].id].sort());
   });
   test('Shipdok\'s own keep setting does not touch the apps\' backups, nor theirs Shipdok\'s', async () => {
     await putSetting('backup_schedule', { frequency: 'daily', hour: 3, weekday: 1, keep: 1 });
     const p1 = await platform(30); const p2 = await platform(10);
     const v = []; for (let i = 3; i >= 1; i--) v.push(await volumeBackup(appId, 'ok', i * 10));
     await prune({ db, dir, log });
-    assert.deepEqual((await left()).sort(), [p2, ...v.map((x) => x.id)].sort());
+    assert.deepEqual((await left()).sort(), [p2, v[1].id, v[2].id].sort());
     assert.ok(!(await left()).includes(p1));
   });
   test('failed ones: the newest 3 per app are kept', async () => {
@@ -347,7 +377,7 @@ describe('keeping the newest', () => {
     await pool.query('DELETE FROM apps WHERE id = $1', [gone]);
     assert.equal((await pool.query(`SELECT count(*)::int AS n FROM backups WHERE app_id IS NULL AND app_name = 'Old blog'`)).rows[0].n, 5, 'the rows survive the app');
     await prune({ db, dir, log });
-    assert.deepEqual((await left()).sort(), kept.slice(2).map((x) => x.id).sort());
+    assert.deepEqual((await left()).sort(), kept.slice(3).map((x) => x.id).sort());
   });
 });
 

@@ -197,3 +197,101 @@ describe('the volumes that are kept without being mounted', () => {
     expect((await agent.get('/api/volumes')).body.volumes[0].removeError).toBe('in use by a container');
   });
 });
+
+describe('reclaiming a kept volume', () => {
+  const kept = async ({ state = 'orphaned', path = '/old', appRef = null } = {}) => (await testPool.query(
+    `INSERT INTO app_volumes (app_id, app_name, container_path, docker_name, state) VALUES ($1, 'Gone app', $2, $3, $4) RETURNING *`,
+    [appRef, path, `shipdok-vol-kept-${Math.random().toString(16).slice(2)}`, state])).rows[0];
+  const reclaim = (id, body) => agent.post(`/api/volumes/${id}/reclaim`).send(body);
+  const keptList = async () => (await agent.get('/api/volumes')).body.volumes;
+
+  test('attaches an orphaned volume to an app at the path chosen: the same volume (name and files), now in use, named for the app', async () => {
+    const v = await kept();
+    const res = await reclaim(v.id, { appId, path: '/data' });
+    expect(res.status).toBe(200);
+    expect(res.body.volume).toMatchObject({ id: v.id, path: '/data', state: 'in_use', dockerName: v.docker_name, appId, appName: 'App A' });
+    const [row] = await rows();
+    expect([row.id, row.docker_name, row.state, row.container_path]).toEqual([v.id, v.docker_name, 'in_use', '/data']);
+    expect(await keptList()).toEqual([]);
+  });
+  test('the app then mounts it at its next deployment (it is listed in its storage and in what a deployment mounts)', async () => {
+    const v = await kept();
+    await reclaim(v.id, { appId, path: '/data' });
+    expect((await get()).body.volumes.map((x) => [x.path, x.state])).toEqual([['/data', 'in_use']]);
+    const { mountedVolumes } = await import('../src/volumes.js');
+    expect(await mountedVolumes(testPool, appId)).toEqual([{ path: '/data', name: v.docker_name }]);
+  });
+  test('a volume detached from an app can be attached to another, or the same, app', async () => {
+    await put(['/data']);
+    await put([]);
+    const [detached] = await rows();
+    expect(detached.state).toBe('detached');
+    const other = (await agent.post('/api/apps').send({ name: 'App B', repo: 'o/b', container_port: 3000, host_port: 8081 })).body.id;
+    expect((await reclaim(detached.id, { appId: other, path: '/files' })).status).toBe(200);
+    expect((await rows(other)).map((r) => [r.container_path, r.state])).toEqual([['/files', 'in_use']]);
+    expect(await rows()).toEqual([]);
+  });
+  test('the path is tidied the way it is in Settings', async () => {
+    const v = await kept();
+    const res = await reclaim(v.id, { appId, path: ' //var//data/ ' });
+    expect(res.body.volume.path).toBe('/var/data');
+  });
+  test.each([['data'], ['/'], ['/proc/x'], ['/a/../b'], ['/with space'], [''], [null], [7]])('refuses the path %j', async (path) => {
+    const v = await kept();
+    const res = await reclaim(v.id, { appId, path });
+    expect([res.status, res.body.code]).toEqual([400, 'bad_path']);
+    expect((await keptList())).toHaveLength(1);
+  });
+  test('a path the app already keeps is a 409, and nothing changes', async () => {
+    await put(['/data']);
+    const v = await kept();
+    const res = await reclaim(v.id, { appId, path: '/data' });
+    expect([res.status, res.body.code]).toEqual([409, 'path_in_use']);
+    expect((await keptList())[0].id).toBe(v.id);
+  });
+  test('a path nested with one the app keeps is refused, so is an eleventh', async () => {
+    await put(['/data']);
+    const v = await kept();
+    expect((await reclaim(v.id, { appId, path: '/data/inner' })).body.code).toBe('bad_path');
+    expect((await reclaim(v.id, { appId, path: '/' })).status).toBe(400);
+    await put(Array.from({ length: 10 }, (_, i) => `/p${i}`));
+    const res = await reclaim(v.id, { appId, path: '/extra' });
+    expect([res.status, res.body.code]).toEqual([400, 'bad_path']);
+    expect(res.body.error).toMatch(/at most 10/);
+  });
+  test('a volume that is mounted already cannot be reclaimed', async () => {
+    await put(['/data']);
+    const [mounted] = await rows();
+    const res = await reclaim(mounted.id, { appId, path: '/elsewhere' });
+    expect([res.status, res.body.code]).toEqual([409, 'volume_in_use']);
+  });
+  test('an unknown volume or app, bad ids, and an app being deleted', async () => {
+    const v = await kept();
+    expect((await reclaim(ZERO, { appId, path: '/data' })).status).toBe(404);
+    expect((await reclaim('nope', { appId, path: '/data' })).status).toBe(404);
+    expect((await reclaim(v.id, { appId: ZERO, path: '/data' })).status).toBe(404);
+    expect((await reclaim(v.id, { appId: 'nope', path: '/data' })).status).toBe(400);
+    expect((await reclaim(v.id, { path: '/data' })).status).toBe(400);
+    await testPool.query(`UPDATE apps SET deleting_at = now() WHERE id = $1`, [appId]);
+    const res = await reclaim(v.id, { appId, path: '/data' });
+    expect([res.status, res.body.code]).toEqual([409, 'deleting']);
+    expect((await keptList())).toHaveLength(1);
+  });
+  test('needs a session', async () => {
+    const v = await kept();
+    const anon = request(await makeApp({ queue }));
+    expect((await anon.post(`/api/volumes/${v.id}/reclaim`).send({ appId, path: '/data' })).status).toBe(401);
+  });
+  test('a reclaimed volume can no longer be deleted as a kept one (it is in use)', async () => {
+    const v = await kept();
+    await reclaim(v.id, { appId, path: '/data' });
+    const res = await agent.delete(`/api/volumes/${v.id}`);
+    expect([res.status, res.body.code]).toEqual([409, 'volume_in_use']);
+  });
+  test('two reclaims at once of volumes to the same path: one wins', async () => {
+    const a = await kept(); const b = await kept({ path: '/b' });
+    const results = await Promise.all([reclaim(a.id, { appId, path: '/data' }), reclaim(b.id, { appId, path: '/data' })]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect((await rows()).filter((r) => r.state === 'in_use')).toHaveLength(1);
+  });
+});

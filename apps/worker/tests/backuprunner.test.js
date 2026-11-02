@@ -185,7 +185,7 @@ describe('the schedule', () => {
     assert.equal(await requestIfDue({ db, now: noon, log }), false);
     await answer(await db.claimQueuedBackup());
     assert.equal(await requestIfDue({ db, now: noon + 60_000, log }), false);
-    assert.equal(await requestIfDue({ db, now: Date.parse('2026-10-23T03:00:30Z'), log }), true, 'the next day\'s slot');
+    assert.equal(await requestIfDue({ db, now: Date.now() + 2 * 86_400_000, log }), true, 'a later day\'s slot (the backup above started at the real clock\'s now, so the test must not use a fixed date)');
   });
   test('not when it is off', async () => {
     await putSetting('backup_schedule', { frequency: 'off', hour: 3, weekday: 1, keep: 7 });

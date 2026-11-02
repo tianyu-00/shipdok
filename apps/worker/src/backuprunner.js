@@ -3,7 +3,7 @@
 //
 // Every few seconds: is a backup waiting (the dashboard asked, or the schedule asked a moment ago)? Once a minute: does the schedule say one is due?
 // If so, record a request: the same path as a click on "Back up now". The database allows ONE waiting or running backup, so a double request is dropped.
-import { isBackupDue, normalizeSchedule, backupRoot, backupFilePath, decryptSecret, restorePassphraseContext, backupPassphraseProblem, BACKUP_PASSPHRASE_CONTEXT } from '@shipdok/shared';
+import { isBackupDue, normalizeSchedule, backupRoot, backupFilePath, decryptSecret, LABEL, restorePassphraseContext, backupPassphraseProblem, BACKUP_PASSPHRASE_CONTEXT } from '@shipdok/shared';
 import * as realEngine from './docker.js';
 import * as store from './db.js';
 import { makeBackup, removeBackupFiles } from './backup.js';
@@ -114,15 +114,21 @@ export async function answerRestore(restore, { db = store, eng = realEngine, sec
       if (!openWith) throw new Error('That backup is encrypted, but no passphrase is set: give the passphrase of that backup');
     }
     const volumes = await db.listMountedVolumes(app.id);
-    if (volumes.length === 0) throw new Error('The app has no persistent storage any more');
+    if (volumes.length === 0 && !restore.reclaim) throw new Error('The app has no persistent storage any more');
+    // A reclaim may add storage paths to the app: new volumes in the database and in Docker (labelled as Shipdok's own, owned by this app)
+    const provision = restore.reclaim ? async (planned) => {
+      await db.addAppVolumes(app.id, planned);
+      for (const v of planned) await eng.ensureVolume({ name: v.docker_name, labels: { [LABEL.managed]: 'true', [LABEL.app]: app.id } });
+    } : null;
 
     // The app is stopped only when every check has passed (inside makeRestore's beforeWrite) and started again at the end, whatever happened.
     let held = null;
     let result; let failure = null;
     try {
       result = await makeRestore({
-        file, passphrase: openWith, mode: restore.mode, volumes, app, dir, eng, log,
-        beforeWrite: async () => {
+        file, passphrase: openWith, mode: restore.mode, volumes, app, dir, eng, log, provision,
+        beforeWrite: async ({ touchesExisting }) => {
+          if (!touchesExisting) return; // only new, empty volumes (not mounted by the running app) are written: nothing to stop, nothing to protect
           if (STOPPABLE.includes(app.runtime_state)) held = await stopApp(app, { db, eng, activity, log, forWhat: 'the restore' });
           if (!restore.safety_backup) return;
           log('Making a backup of the current data first');
@@ -142,7 +148,10 @@ export async function answerRestore(restore, { db = store, eng = realEngine, sec
     } catch (err) { failure = err; }
     const restartNote = held ? await held.release() : null;
     if (failure) { if (restartNote) failure.message = `${failure.message}. ${restartNote}`; throw failure; }
-    if (restartNote) result = { ...result, warning: restartNote };
+    const added = result.addedPaths ?? [];
+    const addedNote = added.length ? `Added the storage path${added.length === 1 ? '' : 's'} ${added.join(', ')} to the app: deploy it to mount ${added.length === 1 ? 'it' : 'them'}` : null;
+    const warning = [addedNote, restartNote].filter(Boolean).join('. ');
+    if (warning) result = { ...result, warning };
     await db.markRestoreOk(restore.id, { volumeCount: result.volumeCount, warning: result.warning ?? null });
     log(`Restore ${restore.id} finished`);
     return { ok: true, ...result };
@@ -167,15 +176,12 @@ export async function prune({ db = store, dir = backupRoot(), log = console.log 
   return old.length;
 }
 
-/** Asks for the scheduled backups of the apps' volumes that are due (the same schedule as Shipdok's own). Returns how many were asked for. */
+/** Asks for the scheduled backups of the apps' volumes that are due (each app has its own schedule). Returns how many were asked for. */
 export async function requestVolumeBackupsIfDue({ db = store, now = Date.now(), log = console.log } = {}) {
-  const row = await db.getSettingRow('backup_schedule');
-  const schedule = normalizeSchedule(row?.value);
   let asked = 0;
   for (const app of await db.appsForVolumeSchedule()) {
-    const changed = [row?.updated_at, app.changed_at].filter(Boolean).map((t) => new Date(t).getTime());
-    const changedAt = changed.length ? new Date(Math.max(...changed)) : null;
-    if (!isBackupDue({ schedule, now, lastStartedAt: app.last_at, changedAt })) continue;
+    const schedule = normalizeSchedule({ frequency: app.frequency, hour: app.hour, weekday: app.weekday });
+    if (!isBackupDue({ schedule, now, lastStartedAt: app.last_at, changedAt: app.changed_at })) continue;
     if (await db.requestVolumeBackup(app.id, 'scheduled')) { asked += 1; log(`A scheduled backup of the volumes of app ${app.id} is due`); }
   }
   return asked;

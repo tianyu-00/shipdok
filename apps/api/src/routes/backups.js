@@ -8,6 +8,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import { rm, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { normalizeVolumePaths } from '../volumepaths.js';
 import { BACKUP_PASSPHRASE_CONTEXT, backupFilePath, backupPassphraseProblem, encryptSecret, nextSlot, normalizeSchedule, restorePassphraseContext } from '@shipdok/shared';
 import { limiter } from '../authutil.js';
 import { addressOf, recordAttempt } from '../lockout.js';
@@ -25,7 +26,9 @@ export const scheduleSchema = z.object({
 }).strict();
 export const passphraseSchema = z.object({ password: z.string().min(1), passphrase: z.string().nullable() }).strict();
 export const volumeSettingsSchema = z.object({
-  enabled: z.boolean(),
+  frequency: z.enum(['off', 'daily', 'weekly']),
+  hour: z.number().int().min(0).max(23),
+  weekday: z.number().int().min(0).max(6),
   stop: z.boolean(),
   keep: z.number().int().min(1).max(60),
 }).strict();
@@ -36,6 +39,7 @@ export const restoreSchema = z.object({
   safetyBackup: z.boolean(),
   passphrase: z.string().min(1).max(256).nullable().optional(),
 }).strict();
+export const reclaimSchema = restoreSchema.extend({ appId: z.string().regex(UUID_RE) }).strict();
 export const downloadSchema = z.object({ password: z.string().min(1) }).strict();
 
 const invalid = (parsed) => ({ error: 'Invalid request', details: parsed.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`) });
@@ -43,6 +47,7 @@ const invalid = (parsed) => ({ error: 'Invalid request', details: parsed.error.i
 const shape = (r) => ({
   id: r.id, kind: r.kind, appId: r.app_id, appName: r.app_name, volumeCount: r.volume_count, status: r.status, trigger: r.trigger, requestedAt: r.requested_at, startedAt: r.started_at, finishedAt: r.finished_at,
   sizeBytes: r.size_bytes == null ? null : Number(r.size_bytes), encrypted: r.encrypted, verified: r.verified, version: r.version, warning: r.warning, error: r.error,
+  paths: r.volume_paths ?? null,
   downloadable: r.status === 'ok' && r.filename != null,
   restorable: r.kind === 'volumes' && r.status === 'ok' && r.filename != null && r.app_id != null,
 });
@@ -50,6 +55,7 @@ const shape = (r) => ({
 const restoreShape = (r) => ({
   id: r.id, backupId: r.backup_id, appId: r.app_id, appName: r.app_name, backupMadeAt: r.backup_made_at, mode: r.mode, safetyBackup: r.safety_backup, safetyBackupId: r.safety_backup_id,
   status: r.status, requestedAt: r.requested_at, startedAt: r.started_at, finishedAt: r.finished_at, volumeCount: r.volume_count, warning: r.warning, error: r.error,
+  reclaim: r.reclaim, backupAppName: r.backup_app_name,
 });
 
 /**
@@ -79,15 +85,19 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
   // The apps that have mounted volumes, with what is set for their backups. Sizes are the last measurement (null = never measured).
   async function appsWithVolumes() {
     const { rows } = await db.query(
-      `SELECT a.id, a.name, a.volume_backup_enabled, a.volume_backup_stop, a.volume_backup_keep,
+      `SELECT a.id, a.name, a.volume_backup_frequency, a.volume_backup_hour, a.volume_backup_weekday, a.volume_backup_stop, a.volume_backup_keep,
               count(v.id)::int AS volume_count, sum(v.size_bytes)::bigint AS size_bytes, count(v.size_bytes)::int AS measured,
               (SELECT max(b.finished_at) FROM backups b WHERE b.kind = 'volumes' AND b.app_id = a.id AND b.status = 'ok') AS last_ok_at
          FROM apps a JOIN app_volumes v ON v.app_id = a.id AND v.state = 'in_use'
         WHERE a.deleting_at IS NULL GROUP BY a.id ORDER BY lower(a.name), a.id`);
-    return rows.map((a) => ({
-      id: a.id, name: a.name, volumeCount: a.volume_count, sizeBytes: a.measured === a.volume_count ? Number(a.size_bytes) : null, lastBackupAt: a.last_ok_at,
-      enabled: a.volume_backup_enabled, stop: a.volume_backup_stop, keep: a.volume_backup_keep,
-    }));
+    return rows.map((a) => {
+      const next = nextSlot({ frequency: a.volume_backup_frequency, hour: a.volume_backup_hour, weekday: a.volume_backup_weekday });
+      return {
+        id: a.id, name: a.name, volumeCount: a.volume_count, sizeBytes: a.measured === a.volume_count ? Number(a.size_bytes) : null, lastBackupAt: a.last_ok_at,
+        schedule: { frequency: a.volume_backup_frequency, hour: a.volume_backup_hour, weekday: a.volume_backup_weekday }, nextRunAt: next ? next.toISOString() : null,
+        stop: a.volume_backup_stop, keep: a.volume_backup_keep,
+      };
+    });
   }
 
   async function overview() {
@@ -147,11 +157,11 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
       if (!UUID_RE.test(req.params.appId)) return res.status(404).json({ error: 'App not found' });
       const parsed = volumeSettingsSchema.safeParse(req.body ?? {});
       if (!parsed.success) return res.status(400).json(invalid(parsed));
-      const { enabled, stop, keep } = parsed.data;
+      const { frequency, hour, weekday, stop, keep } = parsed.data;
       const { rowCount } = await db.query(
-        `UPDATE apps SET volume_backup_enabled = $2, volume_backup_stop = $3, volume_backup_keep = $4, updated_at = now(),
-                volume_backup_changed_at = CASE WHEN volume_backup_enabled IS DISTINCT FROM $2 THEN now() ELSE volume_backup_changed_at END
-          WHERE id = $1 AND deleting_at IS NULL`, [req.params.appId, enabled, stop, keep]);
+        `UPDATE apps SET volume_backup_frequency = $2, volume_backup_hour = $3, volume_backup_weekday = $4, volume_backup_stop = $5, volume_backup_keep = $6, updated_at = now(),
+                volume_backup_changed_at = CASE WHEN (volume_backup_frequency, volume_backup_hour, volume_backup_weekday) IS DISTINCT FROM ($2, $3, $4) THEN now() ELSE volume_backup_changed_at END
+          WHERE id = $1 AND deleting_at IS NULL`, [req.params.appId, frequency, hour, weekday, stop, keep]);
       if (rowCount === 0) return res.status(404).json({ error: 'App not found' });
       res.json(await overview());
     } catch (err) { next(err); }
@@ -242,6 +252,45 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
         `INSERT INTO volume_restores (id, backup_id, app_id, app_name, backup_made_at, mode, safety_backup, passphrase_enc)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING RETURNING id`,
         [id, b.id, b.app_id, b.app_name, b.finished_at, mode, safetyBackup, stored]);
+      if (!made[0]) return res.status(409).json({ error: 'A restore of this app is already waiting or running', code: 'already_running' });
+      await recordAttempt(db, { kind: 'restore', username: user.username, address: addressOf(req), success: true });
+      res.status(202).json({ id });
+    } catch (err) { next(err); }
+  });
+
+  // Reclaim a volume backup into ANOTHER app (usually one that was made new): the storage paths the app lacks are added to it as new volumes and the files go in;
+  // the paths it has are restored as in a normal restore (mode, safety backup). Same checks and record as a restore. The app mounts the new paths from its next deployment.
+  r.post('/:id/reclaim', limiter(10), async (req, res, next) => {
+    try {
+      if (!UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'Backup not found' });
+      const parsed = reclaimSchema.safeParse(req.body ?? {});
+      if (!parsed.success) return res.status(400).json(invalid(parsed));
+      const { password, mode, safetyBackup, passphrase, appId } = parsed.data;
+      const user = await checkPassword(req, res, password);
+      if (!user) return;
+      const { rows } = await db.query(`SELECT id, kind, status, filename, finished_at, app_name, volume_paths FROM backups WHERE id = $1`, [req.params.id]);
+      const b = rows[0];
+      if (!b) return res.status(404).json({ error: 'Backup not found' });
+      if (b.kind !== 'volumes') return res.status(400).json({ error: 'Only a backup of an app\'s volumes can be reclaimed', code: 'not_volumes' });
+      if (b.status !== 'ok' || !backupFilePath(backupDir, b.filename)) return res.status(409).json({ error: 'That backup has no file to restore from', code: 'no_file' });
+      try { await stat(backupFilePath(backupDir, b.filename)); } catch { return res.status(410).json({ error: 'The file of that backup is gone from the backups folder', code: 'file_missing' }); }
+      const { rows: apps } = await db.query('SELECT id, name, deleting_at FROM apps WHERE id = $1', [appId]);
+      if (!apps[0]) return res.status(404).json({ error: 'App not found' });
+      if (apps[0].deleting_at) return res.status(409).json({ error: 'This app is being deleted', code: 'app_gone' });
+      // The paths the backup holds (when known) together with what the app keeps must make a valid list; otherwise say so now, before a worker is asked
+      if (Array.isArray(b.volume_paths) && b.volume_paths.length) {
+        const { rows: have } = await db.query(`SELECT container_path FROM app_volumes WHERE app_id = $1 AND state = 'in_use'`, [appId]);
+        const all = normalizeVolumePaths([...new Set([...have.map((h) => h.container_path), ...b.volume_paths])]);
+        if (all.error) return res.status(400).json({ error: `The storage paths of this backup cannot be added to ${apps[0].name}: ${all.error}`, code: 'bad_path' });
+      }
+      const { rows: busy } = await db.query(`SELECT 1 FROM backups WHERE app_id = $1 AND status IN ('queued', 'running') LIMIT 1`, [appId]);
+      if (busy[0]) return res.status(409).json({ error: 'A backup of this app is being made: try again when it is done', code: 'backup_running' });
+      const id = randomUUID();
+      const stored = passphrase ? encryptSecret(passphrase, secretsKey, restorePassphraseContext(id)) : null;
+      const { rows: made } = await db.query(
+        `INSERT INTO volume_restores (id, backup_id, app_id, app_name, backup_app_name, backup_made_at, mode, safety_backup, passphrase_enc, reclaim)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true) ON CONFLICT DO NOTHING RETURNING id`,
+        [id, b.id, appId, apps[0].name, b.app_name, b.finished_at, mode, safetyBackup, stored]);
       if (!made[0]) return res.status(409).json({ error: 'A restore of this app is already waiting or running', code: 'already_running' });
       await recordAttempt(db, { kind: 'restore', username: user.username, address: addressOf(req), success: true });
       res.status(202).json({ id });

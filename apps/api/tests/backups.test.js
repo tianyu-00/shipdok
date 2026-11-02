@@ -325,7 +325,7 @@ describe('backups of an app\'s volumes', () => {
     `INSERT INTO app_volumes (app_id, app_name, container_path, docker_name, state, size_bytes, measured_at) VALUES ($1, 'x', $2, $3, $4, $5, CASE WHEN $5::bigint IS NULL THEN NULL ELSE now() END)`,
     [id, path, `shipdok-vol-${Math.random().toString(16).slice(2)}`, state, size]);
   const volumeRow = async (id = appId) => (await testPool.query(`SELECT * FROM backups WHERE kind = 'volumes' AND app_id = $1`, [id])).rows;
-  const settings = (over = {}, id = appId) => agent.put(`/api/backups/volumes/${id}/settings`).send({ enabled: true, stop: true, keep: 5, ...over });
+  const settings = (over = {}, id = appId) => agent.put(`/api/backups/volumes/${id}/settings`).send({ frequency: 'daily', hour: 3, weekday: 1, stop: true, keep: 5, ...over });
 
   beforeEach(async () => {
     await testPool.query('TRUNCATE app_volumes');
@@ -341,11 +341,11 @@ describe('backups of an app\'s volumes', () => {
   });
 
   describe('the apps in the overview', () => {
-    test('lists the apps that have mounted volumes, with the defaults: not in the schedule, not stopped, keep 3', async () => {
+    test('lists the apps that have mounted volumes, with the defaults: schedule off (03:00 UTC, Monday), not stopped, keep 2', async () => {
       const bare = await addApp('No data');
       await addVolume(bare, '/old', 'detached');
       const o = await overview();
-      expect(o.apps).toEqual([{ id: appId, name: 'Blog', volumeCount: 1, sizeBytes: 1000, lastBackupAt: null, enabled: false, stop: false, keep: 3 }]);
+      expect(o.apps).toEqual([{ id: appId, name: 'Blog', volumeCount: 1, sizeBytes: 1000, lastBackupAt: null, schedule: { frequency: 'off', hour: 3, weekday: 1 }, nextRunAt: null, stop: false, keep: 2 }]);
     });
     test('adds the volumes of an app up, and says nothing about the size while any was never measured', async () => {
       await addVolume(appId, '/uploads', 'in_use', 234);
@@ -428,27 +428,47 @@ describe('backups of an app\'s volumes', () => {
 
   describe('the settings of an app', () => {
     test('are saved, answered with the new overview, and kept', async () => {
-      const res = await settings({ enabled: true, stop: true, keep: 5 });
+      const res = await settings({ frequency: 'weekly', hour: 14, weekday: 5, stop: true, keep: 5 });
       expect(res.status).toBe(200);
-      expect(res.body.apps[0]).toMatchObject({ id: appId, enabled: true, stop: true, keep: 5 });
-      expect((await overview()).apps[0]).toMatchObject({ enabled: true, stop: true, keep: 5 });
+      expect(res.body.apps[0]).toMatchObject({ id: appId, schedule: { frequency: 'weekly', hour: 14, weekday: 5 }, stop: true, keep: 5 });
+      const next = new Date((await overview()).apps[0].nextRunAt);
+      expect([next.getUTCHours(), next.getUTCDay()]).toEqual([14, 5]);
+      expect(next.getTime()).toBeGreaterThan(Date.now() - 1000);
     });
-    test('switching the schedule on records when (so that a slot that passed earlier today is not made up for), leaving it on does not move that', async () => {
+    test('the next run is only given while the schedule is on, and it is in the future', async () => {
+      expect((await overview()).apps[0].nextRunAt).toBeNull();
+      await settings({ frequency: 'daily', hour: 3 });
+      const at = new Date((await overview()).apps[0].nextRunAt);
+      expect(at.getUTCHours()).toBe(3);
+      expect(at.getTime()).toBeGreaterThan(Date.now());
+      await settings({ frequency: 'off' });
+      expect((await overview()).apps[0].nextRunAt).toBeNull();
+    });
+    test('changing the schedule records when (so that a slot that passed earlier today is not made up for); changing only the stop switch or the number to keep does not move that', async () => {
       expect((await testPool.query('SELECT volume_backup_changed_at FROM apps WHERE id = $1', [appId])).rows[0].volume_backup_changed_at).toBeNull();
-      await settings({ enabled: true });
+      await settings({ frequency: 'daily' });
       const first = (await testPool.query('SELECT volume_backup_changed_at AS t FROM apps WHERE id = $1', [appId])).rows[0].t;
       expect(first).not.toBeNull();
       await testPool.query(`UPDATE apps SET volume_backup_changed_at = '2020-01-01' WHERE id = $1`, [appId]);
-      await settings({ enabled: true, keep: 9 });
+      await settings({ frequency: 'daily', keep: 9, stop: false });
       expect((await testPool.query('SELECT volume_backup_changed_at AS t FROM apps WHERE id = $1', [appId])).rows[0].t.toISOString()).toBe('2020-01-01T00:00:00.000Z');
-      await settings({ enabled: false });
+      await settings({ frequency: 'daily', hour: 9 });
+      expect((await testPool.query('SELECT volume_backup_changed_at AS t FROM apps WHERE id = $1', [appId])).rows[0].t.getFullYear()).toBeGreaterThan(2020);
+      await testPool.query(`UPDATE apps SET volume_backup_changed_at = '2020-01-01' WHERE id = $1`, [appId]);
+      await settings({ frequency: 'weekly', hour: 9 });
+      expect((await testPool.query('SELECT volume_backup_changed_at AS t FROM apps WHERE id = $1', [appId])).rows[0].t.getFullYear()).toBeGreaterThan(2020);
+      await testPool.query(`UPDATE apps SET volume_backup_changed_at = '2020-01-01' WHERE id = $1`, [appId]);
+      await settings({ frequency: 'weekly', hour: 9, weekday: 2 });
+      expect((await testPool.query('SELECT volume_backup_changed_at AS t FROM apps WHERE id = $1', [appId])).rows[0].t.getFullYear()).toBeGreaterThan(2020);
+      await testPool.query(`UPDATE apps SET volume_backup_changed_at = '2020-01-01' WHERE id = $1`, [appId]);
+      await settings({ frequency: 'off' });
       expect((await testPool.query('SELECT volume_backup_changed_at AS t FROM apps WHERE id = $1', [appId])).rows[0].t.getFullYear()).toBeGreaterThan(2020);
     });
     test.each([
-      [{ keep: 0 }], [{ keep: 61 }], [{ keep: 2.5 }], [{ keep: '5' }], [{ enabled: 'yes' }], [{ stop: null }], [{ extra: 1 }],
+      [{ keep: 0 }], [{ keep: 61 }], [{ keep: 2.5 }], [{ keep: '5' }], [{ frequency: 'hourly' }], [{ frequency: 'yes' }], [{ hour: 24 }], [{ hour: -1 }], [{ hour: '3' }], [{ weekday: 7 }], [{ weekday: 1.5 }], [{ stop: null }], [{ extra: 1 }], [{ enabled: true }],
     ])('refuses %j', async (over) => {
       expect((await settings(over)).status).toBe(400);
-      expect((await overview()).apps[0]).toMatchObject({ enabled: false, stop: false, keep: 3 });
+      expect((await overview()).apps[0]).toMatchObject({ schedule: { frequency: 'off', hour: 3, weekday: 1 }, stop: false, keep: 2 });
     });
     test('both ends of the number to keep are fine', async () => {
       expect((await settings({ keep: 1 })).status).toBe(200);
@@ -461,7 +481,7 @@ describe('backups of an app\'s volumes', () => {
       expect((await settings()).status).toBe(404);
     });
     test('missing fields are refused: nothing is half-saved', async () => {
-      expect((await agent.put(`/api/backups/volumes/${appId}/settings`).send({ enabled: true })).status).toBe(400);
+      expect((await agent.put(`/api/backups/volumes/${appId}/settings`).send({ frequency: 'daily' })).status).toBe(400);
     });
   });
 
@@ -644,5 +664,141 @@ describe('restoring from a volume backup', () => {
       expect((await agent.delete(`/api/backups/${id}`)).status).toBe(204);
       expect((await overview()).restores[0]).toMatchObject({ backupId: null, status: 'ok' });
     });
+  });
+});
+
+// ---- Reclaiming a volume backup into another app
+describe('reclaiming a volume backup into another app', () => {
+  const VNAME = 'shipdok-volumes-20261022-030000-bbbbbbbb.tar';
+  let target;
+  const body = (over = {}) => ({ password: PASSWORD, appId: target, mode: 'replace', safetyBackup: true, ...over });
+  const makeApp2 = async (name, port) => (await agent.post('/api/apps').send({ name, repo: 'o/x', container_port: 3000, host_port: port })).body.id;
+  const kept = async ({ status = 'ok', kind = 'volumes', paths = ['/data', '/uploads'], file = true, appName = 'Old blog' } = {}) => {
+    if (file && status === 'ok') writeFileSync(join(dir, VNAME), CONTENT);
+    const { rows } = await testPool.query(
+      `INSERT INTO backups (kind, app_id, app_name, status, trigger, filename, size_bytes, encrypted, finished_at, volume_paths) VALUES ($1, NULL, $2, $3, 'manual', $4, 5, false, '2026-10-22T03:00:00Z', $5) RETURNING id`,
+      [kind, kind === 'volumes' ? appName : null, status, status === 'ok' ? VNAME : null, paths]);
+    return rows[0].id;
+  };
+  const reclaim = (id, over = {}) => agent.post(`/api/backups/${id}/reclaim`).send(body(over));
+  const restoreRows = async () => (await testPool.query('SELECT * FROM volume_restores')).rows;
+
+  beforeEach(async () => {
+    await testPool.query('TRUNCATE app_volumes');
+    target = await makeApp2('New blog', 8400);
+  });
+
+  test('is recorded as a reclaim into the chosen app (which needs no storage yet), naming whose backup it was, and the use is recorded in the sign-ins list', async () => {
+    const id = await kept();
+    const res = await reclaim(id, { mode: 'add', safetyBackup: false });
+    expect(res.status).toBe(202);
+    const [row] = await restoreRows();
+    expect(row).toMatchObject({ id: res.body.id, backup_id: id, app_id: target, app_name: 'New blog', backup_app_name: 'Old blog', reclaim: true, mode: 'add', safety_backup: false, status: 'queued', passphrase_enc: null });
+    expect(new Date(row.backup_made_at).toISOString()).toBe('2026-10-22T03:00:00.000Z');
+    expect(await attempts('restore')).toHaveLength(1);
+  });
+  test('a wrong password is a 403 and nothing is recorded', async () => {
+    const res = await reclaim(await kept(), { password: 'wrong-password-here' });
+    expect([res.status, res.body.code]).toEqual([403, 'wrong_password']);
+    expect(await restoreRows()).toHaveLength(0);
+    expect(await attempts('restore')).toHaveLength(0);
+  });
+  test('the passphrase given for an older backup is kept encrypted, bound to that one restore', async () => {
+    const id = await kept();
+    const res = await reclaim(id, { passphrase: 'the old passphrase of mine' });
+    const [row] = await restoreRows();
+    expect(row.passphrase_enc).not.toContain('old passphrase');
+    expect(decryptSecret(row.passphrase_enc, loadSecretsKeyForTests(), `restore:passphrase:${res.body.id}`)).toBe('the old passphrase of mine');
+  });
+  test.each([
+    [{ appId: undefined }], [{ appId: 'nope' }], [{ mode: 'wipe' }], [{ safetyBackup: undefined }], [{ password: undefined }], [{ extra: 1 }], [{ passphrase: '' }],
+  ])('refuses %j', async (over) => {
+    const id = await kept();
+    const res = await agent.post(`/api/backups/${id}/reclaim`).send({ ...body(), ...over });
+    expect(res.status).toBe(400);
+    expect(await restoreRows()).toHaveLength(0);
+  });
+  test('needs a session', async () => {
+    expect((await request(app).post('/api/backups/11111111-1111-4111-8111-111111111111/reclaim').send({})).status).toBe(401);
+  });
+
+  describe('what it refuses', () => {
+    const none = async () => expect(await restoreRows()).toHaveLength(0);
+    test('an unknown backup, a bad id and an unknown app are 404', async () => {
+      expect((await reclaim('11111111-1111-4111-8111-111111111111')).status).toBe(404);
+      expect((await reclaim('nope')).status).toBe(404);
+      expect((await reclaim(await kept(), { appId: '11111111-1111-4111-8111-111111111111' })).status).toBe(404);
+      await none();
+    });
+    test('a backup of Shipdok itself is a 400', async () => {
+      const res = await reclaim(await kept({ kind: 'platform' }));
+      expect([res.status, res.body.code]).toEqual([400, 'not_volumes']);
+      await none();
+    });
+    test('a backup that failed or is being made has no file', async () => {
+      for (const status of ['failed', 'queued', 'running']) {
+        await testPool.query('TRUNCATE volume_restores, backups');
+        const res = await reclaim(await kept({ status }));
+        expect([res.status, res.body.code]).toEqual([409, 'no_file']);
+      }
+    });
+    test('the file is gone from the folder: 410', async () => {
+      const res = await reclaim(await kept({ file: false }));
+      expect([res.status, res.body.code]).toEqual([410, 'file_missing']);
+    });
+    test('an app that is being deleted cannot receive one', async () => {
+      const id = await kept();
+      await testPool.query(`UPDATE apps SET deleting_at = now() WHERE id = $1`, [target]);
+      const res = await reclaim(id);
+      expect([res.status, res.body.code]).toEqual([409, 'app_gone']);
+      await none();
+    });
+    test('the backup\'s paths must fit the app\'s storage: nested ones, and more than ten, are refused at once with the reason', async () => {
+      await testPool.query(`INSERT INTO app_volumes (app_id, app_name, container_path, docker_name) VALUES ($1, 'x', '/data/inner', 'shipdok-vol-n1')`, [target]);
+      const res = await reclaim(await kept());
+      expect([res.status, res.body.code]).toEqual([400, 'bad_path']);
+      expect(res.body.error).toMatch(/New blog: \/data\/inner is inside \/data/);
+      await testPool.query('TRUNCATE app_volumes');
+      for (let i = 0; i < 10; i += 1) await testPool.query(`INSERT INTO app_volumes (app_id, app_name, container_path, docker_name) VALUES ($1, 'x', $2, $3)`, [target, `/q${i}`, `shipdok-vol-q${i}`]);
+      const many = await reclaim(await kept({ paths: ['/data'] }));
+      expect(many.body.error).toMatch(/at most 10/);
+      await none();
+    });
+    test('a path the app already has is fine (it is restored into, as in a normal restore)', async () => {
+      await testPool.query(`INSERT INTO app_volumes (app_id, app_name, container_path, docker_name) VALUES ($1, 'x', '/data', 'shipdok-vol-has')`, [target]);
+      expect((await reclaim(await kept())).status).toBe(202);
+    });
+    test('a backup made before its paths were recorded is not checked in advance (the worker checks when it opens the file)', async () => {
+      await testPool.query(`INSERT INTO app_volumes (app_id, app_name, container_path, docker_name) VALUES ($1, 'x', '/data/inner', 'shipdok-vol-n2')`, [target]);
+      expect((await reclaim(await kept({ paths: null }))).status).toBe(202);
+    });
+    test('a backup of the target app that is waiting or running blocks it, and so does a restore already waiting', async () => {
+      const id = await kept();
+      await testPool.query(`INSERT INTO app_volumes (app_id, app_name, container_path, docker_name) VALUES ($1, 'New blog', '/z', 'shipdok-vol-z')`, [target]);
+      expect((await agent.post(`/api/backups/volumes/${target}`)).status).toBe(202);
+      const res = await reclaim(id);
+      expect([res.status, res.body.code]).toEqual([409, 'backup_running']);
+      await testPool.query(`UPDATE backups SET status = 'failed' WHERE status = 'queued'`);
+      expect((await reclaim(id)).status).toBe(202);
+      const again = await reclaim(id);
+      expect([again.status, again.body.code]).toEqual([409, 'already_running']);
+      expect(await restoreRows()).toHaveLength(1);
+    });
+  });
+
+  test('a backup of an app\'s volumes cannot be asked for while a reclaim into that app waits or runs', async () => {
+    await testPool.query(`INSERT INTO app_volumes (app_id, app_name, container_path, docker_name) VALUES ($1, 'New blog', '/z', 'shipdok-vol-z')`, [target]);
+    expect((await reclaim(await kept())).status).toBe(202);
+    const res = await agent.post(`/api/backups/volumes/${target}`);
+    expect([res.status, res.body.code]).toEqual([409, 'restore_running']);
+  });
+
+  test('the overview shows a backup\'s paths, and says of a restore that it was a reclaim and whose backup it used', async () => {
+    const id = await kept();
+    expect((await overview()).backups.find((b) => b.id === id).paths).toEqual(['/data', '/uploads']);
+    await reclaim(id);
+    expect((await overview()).restores[0]).toMatchObject({ appId: target, appName: 'New blog', reclaim: true, backupAppName: 'Old blog' });
+    const old = await kept({ paths: null });
+    expect((await overview()).backups.find((b) => b.id === old).paths).toBeNull();
   });
 });

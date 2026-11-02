@@ -1,4 +1,4 @@
-import { Download, Lock, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react'
+import { Download, History, Lock, PackageOpen, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
@@ -18,9 +18,9 @@ const STATUS = {
   failed: { label: 'Failed', className: 'border-destructive/40 bg-destructive/10 text-destructive' },
 }
 
-const TRIGGER = { scheduled: 'Scheduled', manual: 'Made by hand', before_restore: 'Before a restore' }
+const TRIGGER = { scheduled: 'Scheduled', manual: 'Made by hand', before_restore: 'Automatic' }
 
-function Row({ backup, showApp, onDownload, onDelete, onRestore, restoreBlocked }) {
+function Row({ backup, showApp, onDownload, onDelete, onRestore, onReclaim, restoreBlocked }) {
   const s = STATUS[backup.status] ?? STATUS.failed
   return (
     <TableRow>
@@ -38,6 +38,7 @@ function Row({ backup, showApp, onDownload, onDelete, onRestore, restoreBlocked 
       <TableCell>
         <div className="flex flex-wrap items-center gap-1">
           <Badge variant="outline" className={s.className}>{s.label}</Badge>
+          {backup.trigger === 'before_restore' && <Badge variant="outline" className="border-info/40 bg-info/10 text-info" title="Made automatically just before a restore replaced the data, so there is a way back"><History className="size-3" aria-hidden="true" />Safety copy before a restore</Badge>}
           {backup.status === 'ok' && backup.encrypted && <Badge variant="outline"><Lock className="size-3" aria-hidden="true" />Encrypted</Badge>}
           {backup.status === 'ok' && !backup.encrypted && <Badge variant="outline" className="border-warning/40 text-warning">Not encrypted</Badge>}
           {backup.status === 'ok' && backup.verified && <Badge variant="outline" className="border-success/40 text-success"><ShieldCheck className="size-3" aria-hidden="true" />Checked</Badge>}
@@ -48,6 +49,7 @@ function Row({ backup, showApp, onDownload, onDelete, onRestore, restoreBlocked 
       <TableCell>
         <div className="flex justify-end gap-1">
           {onRestore && backup.restorable && <Button variant="ghost" size="sm" disabled={restoreBlocked?.(backup)} aria-label={`Restore from the backup of ${new Date(backup.requestedAt).toLocaleString()}`} onClick={() => onRestore(backup)}><RotateCcw className="size-4" aria-hidden="true" /></Button>}
+          {onReclaim && backup.status === 'ok' && backup.downloadable && <Button variant="ghost" size="sm" aria-label={`Reclaim the backup of ${new Date(backup.requestedAt).toLocaleString()} into an app`} title="Put this data into an app" onClick={() => onReclaim(backup)}><PackageOpen className="size-4" aria-hidden="true" /></Button>}
           {backup.downloadable && <Button variant="ghost" size="sm" aria-label={`Download the backup from ${new Date(backup.requestedAt).toLocaleString()}`} onClick={() => onDownload(backup)}><Download className="size-4" aria-hidden="true" /></Button>}
           {(backup.status === 'ok' || backup.status === 'failed') && <Button variant="ghost" size="sm" aria-label={`Delete the backup from ${new Date(backup.requestedAt).toLocaleString()}`} onClick={() => onDelete(backup)}><Trash2 className="size-4" aria-hidden="true" /></Button>}
         </div>
@@ -57,14 +59,14 @@ function Row({ backup, showApp, onDownload, onDelete, onRestore, restoreBlocked 
 }
 
 /** The list of backups (Shipdok's own, or the apps' volumes with the app named). */
-export function BackupTable({ backups, showApp = false, onDownload, onDelete, onRestore, restoreBlocked }) {
+export function BackupTable({ backups, showApp = false, onDownload, onDelete, onRestore, onReclaim, restoreBlocked }) {
   return (
     <div className="overflow-x-auto">
       <Table>
         <TableHeader>
           <TableRow>{showApp && <TableHead>App</TableHead>}<TableHead>When</TableHead><TableHead>Size</TableHead><TableHead>State</TableHead><TableHead className="text-right">Actions</TableHead></TableRow>
         </TableHeader>
-        <TableBody>{backups.map((b) => <Row key={b.id} backup={b} showApp={showApp} onDownload={onDownload} onDelete={onDelete} onRestore={onRestore} restoreBlocked={restoreBlocked} />)}</TableBody>
+        <TableBody>{backups.map((b) => <Row key={b.id} backup={b} showApp={showApp} onDownload={onDownload} onDelete={onDelete} onRestore={onRestore} onReclaim={onReclaim} restoreBlocked={restoreBlocked} />)}</TableBody>
       </Table>
     </div>
   )

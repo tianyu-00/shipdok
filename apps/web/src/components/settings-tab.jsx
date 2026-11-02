@@ -15,6 +15,7 @@ import { RepoLink } from '@/components/repo-link'
 import { DeleteApp } from '@/components/delete-app'
 import { GithubAppSetting } from '@/components/github-app-setting'
 import VolumesCard from '@/components/volumes-card'
+import AppVolumeBackups from '@/components/app-volume-backups'
 
 // Which field a refusal from the server belongs to.
 const SERVER_FIELD = { port_taken: 'host_port', name_taken: 'name' }
@@ -110,6 +111,7 @@ export default function SettingsTab({ app }) {
       </Card>
       <GithubAppSetting app={app} />
       <VolumesCard app={app} />
+      <AppVolumeBackups app={app} />
       <DeleteApp app={app} />
     </div>
   )

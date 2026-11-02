@@ -30,11 +30,27 @@ describe('backups on the storage page', () => {
     const backups = await screen.findByText('Backups of Shipdok')
     const cache = screen.getByText('Build cache')
     const kept = screen.getByText('Volumes kept without an app')
-    const appData = await screen.findByText("Backups of your apps' data")
     expect(cache.compareDocumentPosition(backups) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(backups.compareDocumentPosition(appData) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(appData.compareDocumentPosition(kept) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(backups.compareDocumentPosition(kept) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByText("Backups of your apps' data")).toBeNull() // (those are in each app's Settings tab)
     expect(await screen.findByRole('button', { name: 'Back up now' })).toBeInTheDocument()
+  })
+})
+
+describe('backups kept without an app on the storage page', () => {
+  const gone = { id: 'k', kind: 'volumes', appId: null, appName: 'Old blog', volumeCount: 1, status: 'ok', trigger: 'manual', requestedAt: '2026-10-20T10:00:00Z', finishedAt: '2026-10-20T10:01:00Z', sizeBytes: 5, encrypted: false, verified: true, warning: null, error: null, downloadable: true, restorable: false }
+  test('are a card after Shipdok\'s own backups when there are any', async () => {
+    mockApi(routes({ 'GET /api/backups': { ...BACKUPS, backups: [gone] } }))
+    page()
+    const kept = await screen.findByText('Backups kept without an app')
+    expect(screen.getByText('Backups of Shipdok').compareDocumentPosition(kept) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(kept.compareDocumentPosition(screen.getByText('Volumes kept without an app')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+  test('are not there when there are none', async () => {
+    mockApi(routes({ 'GET /api/backups': BACKUPS }))
+    page()
+    await screen.findByText('Backups of Shipdok')
+    expect(screen.queryByText('Backups kept without an app')).toBeNull()
   })
 })
 

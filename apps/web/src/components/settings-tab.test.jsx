@@ -26,6 +26,24 @@ describe('persistent storage on the settings tab', () => {
   })
 })
 
+describe('the data backups section on the settings tab', () => {
+  const overview = (apps) => ({ backups: [], restores: [], totalBytes: 0, schedule: { frequency: 'daily', hour: 3, weekday: 1, keep: 7 }, nextRunAt: null, apps, encryption: { enabled: false }, persistent: true })
+  const mine = { id: APP_ID, name: 'My app', volumeCount: 1, sizeBytes: null, lastBackupAt: null, schedule: { frequency: 'off', hour: 3, weekday: 1 }, nextRunAt: null, stop: false, keep: 2 }
+  test('is there for an app with persistent storage, right after the storage card and before the danger zone', async () => {
+    mockApi({ [`GET /api/apps/${APP_ID}/volumes`]: { volumes: [] }, 'GET /api/backups': overview([mine]) })
+    tab()
+    const section = await screen.findByText('Backups of this app\'s data')
+    expect(screen.getByText('Persistent storage').compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(section.compareDocumentPosition(screen.getByText('Delete this app')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+  test('is not there for an app without it', async () => {
+    mockApi({ [`GET /api/apps/${APP_ID}/volumes`]: { volumes: [] }, 'GET /api/backups': overview([{ ...mine, id: 'someone-else' }]) })
+    tab()
+    await screen.findByText('Persistent storage')
+    await waitFor(() => expect(screen.queryByText('Backups of this app\'s data')).toBeNull())
+  })
+})
+
 describe('the build method', () => {
   const put = () => `/api/apps/${APP_ID}`
 

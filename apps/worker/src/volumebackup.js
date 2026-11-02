@@ -98,7 +98,7 @@ export async function makeVolumeBackup({ id, trigger, dir, app, volumes, passphr
     await rename(finished, target);
     const { size } = await stat(target);
     log(`Volume backup ${filename} written (${size} bytes${encrypted ? ', encrypted' : ''}, ${entries.length} volume${entries.length === 1 ? '' : 's'})`);
-    return { filename, sizeBytes: size, encrypted, verified: true, version, warning: null, volumeCount: entries.length };
+    return { filename, sizeBytes: size, encrypted, verified: true, version, warning: null, volumeCount: entries.length, volumePaths: entries.map((e) => e.containerPath) };
   } finally {
     if (helper) await helper.remove({ force: true }).catch(() => {});
     await rm(work, { recursive: true, force: true });

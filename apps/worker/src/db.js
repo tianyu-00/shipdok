@@ -425,11 +425,11 @@ export async function claimQueuedBackup() {
   return rows[0] ?? null;
 }
 
-export const markBackupOk = (id, { filename, sizeBytes, encrypted, verified, version, warning = null, volumeCount = null }) =>
+export const markBackupOk = (id, { filename, sizeBytes, encrypted, verified, version, warning = null, volumeCount = null, volumePaths = null }) =>
   pool.query(
-    `UPDATE backups SET status = 'ok', finished_at = now(), filename = $2, size_bytes = $3, encrypted = $4, verified = $5, version = $6, warning = $7, volume_count = $8, error = NULL
+    `UPDATE backups SET status = 'ok', finished_at = now(), filename = $2, size_bytes = $3, encrypted = $4, verified = $5, version = $6, warning = $7, volume_count = $8, volume_paths = $9, error = NULL
       WHERE id = $1 AND status = 'running'`,
-    [id, filename, sizeBytes, encrypted, verified, version, warning, volumeCount]);
+    [id, filename, sizeBytes, encrypted, verified, version, warning, volumeCount, volumePaths]);
 
 export const markBackupFailed = (id, error) =>
   pool.query(`UPDATE backups SET status = 'failed', finished_at = now(), error = $2 WHERE id = $1 AND status IN ${BACKUP_ACTIVE}`, [id, String(error).slice(0, 1000)]);
@@ -467,13 +467,13 @@ export async function getVolumeBackupApp(appId) {
 export const listMountedVolumes = (appId) =>
   pool.query(`SELECT container_path, docker_name, size_bytes FROM app_volumes WHERE app_id = $1 AND state = 'in_use' ORDER BY container_path`, [appId]).then((r) => r.rows);
 
-/** The apps whose data is included in the schedule, with when their latest volume backup started. */
+/** The apps whose data is in the automatic backups (each has its own schedule), with when their latest volume backup started. */
 export async function appsForVolumeSchedule() {
   const { rows } = await pool.query(
-    `SELECT a.id, a.volume_backup_changed_at AS changed_at,
+    `SELECT a.id, a.volume_backup_frequency AS frequency, a.volume_backup_hour AS hour, a.volume_backup_weekday AS weekday, a.volume_backup_changed_at AS changed_at,
             (SELECT max(coalesce(b.started_at, b.requested_at)) FROM backups b WHERE b.kind = 'volumes' AND b.app_id = a.id) AS last_at
        FROM apps a
-      WHERE a.volume_backup_enabled AND a.deleting_at IS NULL
+      WHERE a.volume_backup_frequency <> 'off' AND a.deleting_at IS NULL
         AND EXISTS (SELECT 1 FROM app_volumes v WHERE v.app_id = a.id AND v.state = 'in_use')`);
   return rows;
 }
@@ -498,7 +498,7 @@ export async function backupsToPrune({ keep, keepFailed = 10, keepFailedVolumes 
     `SELECT id, filename FROM (
        SELECT b.id, b.filename, b.status, b.kind,
               row_number() OVER (PARTITION BY b.kind, coalesce(b.app_id::text, b.app_name, ''), (b.status = 'ok') ORDER BY coalesce(b.finished_at, b.requested_at) DESC) AS rank,
-              CASE WHEN b.kind = 'platform' THEN $1::int ELSE coalesce(a.volume_backup_keep, 3) END AS keep_ok
+              CASE WHEN b.kind = 'platform' THEN $1::int ELSE coalesce(a.volume_backup_keep, 2) END AS keep_ok
          FROM backups b LEFT JOIN apps a ON a.id = b.app_id WHERE b.status IN ('ok', 'failed')
      ) t WHERE (status = 'ok' AND rank > keep_ok) OR (status = 'failed' AND rank > CASE WHEN kind = 'platform' THEN $2::int ELSE $3::int END)`,
     [keep, keepFailed, keepFailedVolumes]);
@@ -515,7 +515,7 @@ export async function claimQueuedRestore() {
   const { rows } = await pool.query(
     `UPDATE volume_restores SET status = 'running', started_at = now()
       WHERE id = (SELECT id FROM volume_restores WHERE status = 'queued' ORDER BY requested_at LIMIT 1 FOR UPDATE SKIP LOCKED)
-      RETURNING id, backup_id, app_id, app_name, mode, safety_backup, passphrase_enc`);
+      RETURNING id, backup_id, app_id, app_name, mode, safety_backup, passphrase_enc, reclaim`);
   return rows[0] ?? null;
 }
 
@@ -545,3 +545,25 @@ export const interruptRunningRestores = () =>
     `UPDATE volume_restores SET status = 'failed', finished_at = now(), passphrase_enc = NULL,
             error = 'Interrupted: the worker stopped while it was running. The files of the app may be only partly restored' WHERE status = 'running' RETURNING app_id`)
     .then((r) => r.rows);
+
+/**
+ * Adds storage paths to an app (a reclaim): one new in-use volume row each, in one transaction. Throws when a path is taken meanwhile (the unique index says so)
+ * or the app is gone or being deleted. `volumes` are { container_path, docker_name }.
+ */
+export async function addAppVolumes(appId, volumes) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT name, deleting_at FROM apps WHERE id = $1 FOR UPDATE', [appId]);
+    if (!rows[0] || rows[0].deleting_at) throw new Error('The app no longer exists or is being deleted');
+    for (const v of volumes) {
+      await client.query(`INSERT INTO app_volumes (app_id, app_name, container_path, docker_name) VALUES ($1, $2, $3, $4)`, [appId, rows[0].name, v.container_path, v.docker_name]);
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err.code === '23505' ? new Error('A path of the backup was taken in the meantime') : err;
+  } finally {
+    client.release();
+  }
+}

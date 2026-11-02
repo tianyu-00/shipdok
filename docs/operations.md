@@ -52,7 +52,7 @@ restarting and changes nothing else. Go back by restoring the backup you took in
 
 ## Backup
 
-**Backups from the dashboard.** The Storage page has a **Backups of Shipdok** card (the data of your apps is backed up by the card below it, see [Persistent storage of your apps](#persistent-storage-of-your-apps)). A backup is ONE file that holds both things below (the database and the
+**Backups from the dashboard.** The Storage page has a **Backups of Shipdok** card (the data of your apps is backed up from each app's Settings tab, see [Persistent storage of your apps](#persistent-storage-of-your-apps)). A backup is ONE file that holds both things below (the database and the
 secrets volume), so it is a complete backup on its own. It is made by the worker, beside the build queue (it never waits behind a build), with
 `pg_dump` inside the Postgres container, and the dump is read back to check it before the backup counts as made.
 
@@ -172,7 +172,7 @@ mounts, so the files survive redeploys, rollbacks, restarts and image clean-ups.
   (`RUN mkdir -p /data && chown app:app /data`), or the app cannot write to it.
 - **Removing a path never deletes data.** The volume is kept (shown as "kept but not mounted"), and adding the same path again brings it back.
 - **Deleting an app keeps its volumes by default.** They stay listed on the **Storage** page as "Volumes kept without an app". Tick "Also permanently
-  delete its volumes" in the delete dialog to remove them with the app, or delete one later from the Storage page. Deleting is permanent.
+  delete its volumes" in the delete dialog to remove them with the app, delete one later from the Storage page, or **Reclaim** it into another app ([Reclaim](#persistent-storage-of-your-apps) below). Deleting is permanent.
 - **Image clean-up and log deletion never touch volumes.**
 - **How big they are.** Press **Measure sizes** (on the **Storage** page, or in an app's Settings → Persistent storage). Docker has to walk every file to
   add a volume up, which takes seconds (more for a big volume or a slow disk such as a Raspberry Pi's SD card), so Shipdok never does it by itself: the
@@ -181,28 +181,25 @@ mounts, so the files survive redeploys, rollbacks, restarts and image clean-ups.
   that was never measured says *not measured*; a path added since the last measurement is not counted until you measure again. The figures are a
   snapshot, not live: measure again to refresh them.
 
-**Back up the data of an app (from the dashboard).** The Storage page has a **Backups of your apps' data** card. Each app with persistent storage is listed with its
-volumes, their size and when it was last backed up. **Back up now** copies every mounted volume of that app into ONE file (a tar per volume plus a manifest), made by
-the worker beside the build queue. The files go in the same `shipdok_backups` volume and the same list as the backups of Shipdok, and use the same passphrase if you set one.
+**Back up the data of an app (from the dashboard).** Open the app's **Settings** tab: an app with persistent storage has a **Backups of this app's data** section (after Persistent storage). **Back up now** copies every mounted volume of that app into ONE file (a tar per volume plus a manifest), made by the worker beside the build queue. The files go in the same `shipdok_backups` volume and the same list as the backups of Shipdok, and use the same passphrase if you set one. The same section lists this app's backups and restores. The **Storage** page has a **Backups of your apps' data** card with only a summary (how many apps are backed up automatically) and the latest backups and restores of all apps; it is also where the backups of an app you have deleted can still be downloaded or deleted.
 
 - **The volumes are only read** (a helper container that is never started mounts them read-only and Docker streams their files out). The app keeps running and nothing
   about it changes. Because the app may write while its files are copied, a database that lives in a volume (SQLite, or a Postgres/MySQL data folder) can be copied
   half-written. For those, turn on **Stop the app while copying** for that app: it is stopped, copied and started again (a short downtime; if it is already stopped it
   stays stopped; if a deployment is running at that moment the backup fails and says so instead of stopping anything). If the app does not start again after the copy,
   the backup says so.
-- **Automatic backups are off for apps until you switch them on** (**Include in the automatic backups**). They use the schedule of the card above (one daily or weekly
-  time) and an app is backed up at most once per slot. Switching an app on after today's time has passed does not make a backup at once.
-- **Keep the newest** (per app, 1 to 60, default 3): older ones of that app are deleted after each backup. A backup of an app you have deleted stays (listed under the name it
+- **Each app has its own schedule** (**Automatic backups**: Off, Every day or Every week, with the hour in UTC and its local time shown, and the weekday for weekly). It is **Off until you turn it on**, and it is not the schedule of the Shipdok backups. An app is backed up at most once per slot. Changing an app's schedule after today's time has passed does not make a backup at once for that time.
+- **Keep the newest** (per app, 1 to 60, default **2**): older ones of that app are deleted after each backup. A backup of an app you have deleted stays (listed under the name it
   had) until you delete it.
 - **Room:** a backup needs up to twice the size of the volumes while it is made, and the disk must still have 10% free afterwards. If not, the backup is refused with the
   sizes in the message. Sizes come from **Measure sizes** on the Storage page, or are asked of Docker when a volume was never measured (slow on a Pi).
 - **Only mounted volumes** are copied (a detached volume, kept after its path was removed, is not).
 - **Copy the files away.** Like the others they are on this machine's disk: download them (password needed).
 
-**Restore the data of an app (from the dashboard).** In the **Backups of your apps' data** card, every finished backup whose app still exists has a **Restore** button (the arrow icon). It asks for:
+**Restore the data of an app (from the dashboard).** In the app's **Settings** tab, every finished backup whose app still exists has a **Restore** button (the arrow icon). It asks for:
 
 - **What to do with the files that are there now:** **Replace** (the default: the volume ends up exactly as the backup was, files that are not in the backup are removed), **Add over** (the backup's files are written over the current ones, files that are only in the volume now stay) or **Only into empty volumes** (refused if a volume holds anything; nothing is overwritten).
-- **Make a backup of the current data first** (ticked by default). It is a normal volume backup, listed with "Before a restore". If it fails, nothing is restored. Untick it only if you are sure: after a Replace without it the old data is gone. Safety backups count toward "Keep the newest" like any other, so with a small number they can push older backups (even the one you restored from) out after the next backup.
+- **Make a backup of the current data first** (ticked by default). It is a normal volume backup, marked with a "Safety copy before a restore" badge so it is not mistaken for the others. If it fails, nothing is restored. Untick it only if you are sure: after a Replace without it the old data is gone. Safety backups count toward "Keep the newest" like any other, so with a small number they can push older backups (even the one you restored from) out after the next backup.
 - **The passphrase of that backup**, only if it was made with a different passphrase than the current one (otherwise the current one is used).
 - **Your password** (the restore overwrites live data; it is recorded in the sign-ins list).
 
@@ -210,7 +207,14 @@ What happens: the worker stops the app (an app that is already stopped stays sto
 
 If a restore fails **after** it began to change files, the message says the files may be only partly restored and, when one was made, points at the safety backup in the list: restore from that one to go back. There is no automatic roll-back. If the worker is stopped in the middle, the restore is marked failed the same way and the app is started again when the worker comes back. Only one restore (or backup) of an app can wait or run at a time. Restoring Shipdok itself (the database) is not available from the dashboard: see [Restore](#restore) above.
 
-**Restore by hand.** Download the file, then open it (this decrypts it if needed and unpacks one `volume-N.tar` per volume; `manifest.json` says which path each was mounted at and which app it is):
+**Reclaim: getting kept data back into an app (a new project, for example).** Data outlives an app in two forms, and each has a **Reclaim** button on the Storage page:
+
+- **The volume is still there** (Storage page, **Volumes kept without an app**: left behind by a deleted app, or detached when a path was removed). **Reclaim** attaches that very volume, with its files exactly as they are, to an app you choose, at a path you choose (it starts as the old path). Nothing is copied. The app mounts it from its **next deployment**, like any change to its persistent storage, so deploy the app afterwards. A path the app already keeps is refused, and so is one that would sit inside (or around) another of its paths or make more than ten.
+- **Only the backup is left** (Storage page, **Backups kept without an app**: the app was deleted, or has no storage now). **Reclaim** (the box icon) puts the files into an app you choose: every storage path in the backup that the app does not keep yet is **added to the app** as a new volume (for example `/app/data/uploads`), and the files go into it; a path the app already keeps is restored into with the mode you choose, exactly as in a restore (Replace, Add over, Only into empty volumes). The dialog lists which paths will be added and which the app already has. Password, passphrase and the safety backup work as in a restore; the safety backup and stopping the app only happen when a volume that exists now is written to (the new volumes are empty and not mounted by the running app, so a reclaim into a brand new app touches nothing that runs). Deploy the app afterwards to mount the new paths: the result says so ("Added the storage path ... deploy it to mount it"). The new volume is an ordinary Shipdok volume (named `shipdok-vol-...`), and it appears in the app's Settings like any other path.
+
+If the volume is still there, reclaim the volume: it is instant. Use the backup only when the volume is gone. A reclaimed volume keeps the Docker label of the app it first belonged to (Docker does not change a volume's labels); this has no effect.
+
+**Restore by hand** (when the dashboard cannot, for example the backup of Shipdok itself is not covered here). Download the file, then open it (this decrypts it if needed and unpacks one `volume-N.tar` per volume; `manifest.json` says which path each was mounted at and which app it is):
 
 ```bash
 docker compose run --rm --no-deps -v "$PWD":/backup -e SHIPDOK_BACKUP_PASSPHRASE api node scripts/open-backup.js /backup/shipdok-volumes-FILE.tar.enc /backup/opened-volumes

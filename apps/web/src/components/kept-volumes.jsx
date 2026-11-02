@@ -11,8 +11,19 @@ import { api } from '@/lib/api'
 import { useKeptVolumes } from '@/lib/queries'
 import { formatBytes, timeAgo } from '@/lib/format'
 import { Empty, LoadError } from '@/components/states'
+import { ReclaimVolumeDialog } from '@/components/reclaim-volume-dialog'
 
 const origin = (v) => (v.state === 'orphaned' ? `Left behind by the deleted app ${v.appName}` : `Removed from ${v.appName}`)
+
+function ReclaimVolume({ volume }) {
+  const [asking, setAsking] = useState(false)
+  return (
+    <>
+      <Button variant="ghost" size="sm" onClick={() => setAsking(true)}>Reclaim</Button>
+      {asking && <ReclaimVolumeDialog volume={volume} onClose={() => setAsking(false)} />}
+    </>
+  )
+}
 
 function DeleteVolume({ volume }) {
   const client = useQueryClient()
@@ -52,7 +63,7 @@ export default function KeptVolumes() {
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Volumes kept without an app</CardTitle>
-        <CardDescription>Data that is kept on purpose: a path removed from an app's persistent storage, or the files of an app that was deleted. Nothing here is deleted unless you delete it.</CardDescription>
+        <CardDescription>Data that is kept on purpose: a path removed from an app's persistent storage, or the files of an app that was deleted. Nothing here is deleted unless you delete it. Reclaim attaches a volume, with its data as it is, to an app.</CardDescription>
       </CardHeader>
       <CardContent>
         {kept.isError && <LoadError error={kept.error} title="Could not load the kept volumes" onRetry={() => kept.refetch()} />}
@@ -75,7 +86,7 @@ export default function KeptVolumes() {
                       {v.measuredAt && <p className="text-xs text-muted-foreground">{timeAgo(v.measuredAt)}</p>}
                     </TableCell>
                     <TableCell className="font-mono text-xs">{v.dockerName}</TableCell>
-                    <TableCell className="text-right"><DeleteVolume volume={v} /></TableCell>
+                    <TableCell className="text-right whitespace-nowrap"><ReclaimVolume volume={v} /><DeleteVolume volume={v} /></TableCell>
                   </TableRow>
                 ))}
               </TableBody>

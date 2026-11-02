@@ -84,7 +84,7 @@ beforeEach(async () => {
 describe('replace', () => {
   test('the volume ends up exactly as the backup was: changed files restored, files the backup lacks removed, folders too', async () => {
     const r = await restore();
-    assert.deepEqual(r, { volumeCount: 2, paths: ['/data', '/up'] });
+    assert.deepEqual(r, { volumeCount: 2, paths: ['/data', '/up'], addedPaths: [] });
     assert.deepEqual(await tree(vols['v-data']), ['a.txt=from the backup', 'sub/b.txt=nested']);
     assert.deepEqual(await tree(vols['v-up']), ['pic.png=png']);
     assert.equal(await exists(join(vols['v-up'], 'old')), false);
@@ -99,6 +99,11 @@ describe('replace', () => {
     assert.equal(calls.helpers[0].image, 'sha256:worker');
     await restore({ eng: engine({ ownImage: async () => null }) });
     assert.equal(calls.helpers[1].image, 'sha256:app');
+  });
+  test('with no worker image and no image of the app (never deployed) it says why, before anything is changed', async () => {
+    await assert.rejects(restore({ eng: engine({ ownImage: async () => null, appImage: async () => { throw new Error('The app has no container') } }) }), /no image to run the restore helper with/);
+    assert.equal(calls.helpers.length, 0);
+    assert.deepEqual(await tree(vols['v-data']), ['a.txt=CURRENT', 'stale.txt=only in the current volume']);
   });
   test('the helper is removed and the work folder is gone, with nothing else left in the backups folder', async () => {
     await restore();
@@ -181,6 +186,83 @@ describe('before anything is changed', () => {
     let called = false;
     await assert.rejects(restore({ volumes: [], beforeWrite: async () => { called = true; } }));
     assert.equal(called, false);
+  });
+});
+
+describe('a reclaim (paths the app lacks are added)', () => {
+  // The app has /data but not /up; the backup holds both. `provision` records what it was asked to add and makes the folder the fake volume needs.
+  const lacking = () => volumes.filter((v) => v.container_path === '/data');
+  const provisioner = (over = {}) => {
+    const added = [];
+    return { added, fn: async (planned) => { added.push(...planned.map((v) => ({ ...v }))); for (const v of planned) vols[v.docker_name] = await mkdtemp(join(tmpdir(), 'rs-new-')); if (over.fail) throw over.fail; } };
+  };
+  test('without provision a missing path is refused, as before (a restore into the backup\'s own app)', async () => {
+    await assert.rejects(restore({ volumes: lacking() }), /no persistent storage at \/up any more/);
+  });
+  test('with it the missing path gets a NEW volume (a shipdok-vol- name of its own), and the files go in', async () => {
+    const p = provisioner();
+    const r = await restore({ volumes: lacking(), provision: p.fn });
+    assert.deepEqual([r.volumeCount, r.addedPaths], [2, ['/up']]);
+    assert.equal(p.added.length, 1);
+    assert.equal(p.added[0].container_path, '/up');
+    assert.match(p.added[0].docker_name, /^shipdok-vol-[0-9a-f-]{36}$/);
+    assert.deepEqual(await tree(vols[p.added[0].docker_name]), ['pic.png=png']);
+    assert.deepEqual(await tree(vols['v-data']), ['a.txt=from the backup', 'sub/b.txt=nested']);
+  });
+  test('an app with NO storage at all gets every path added, and nothing existing is touched', async () => {
+    const p = provisioner();
+    const seen = [];
+    const r = await restore({ volumes: [], provision: p.fn, beforeWrite: async (info) => { seen.push(info); } });
+    assert.deepEqual(r.addedPaths, ['/data', '/up']);
+    assert.deepEqual(seen, [{ touchesExisting: false }]);
+    assert.deepEqual(await tree(vols['v-data']), ['a.txt=CURRENT', 'stale.txt=only in the current volume'], 'the volume of that name that already existed in the fake Docker is not the new one');
+  });
+  test('beforeWrite is told whether a volume that exists now will be written to', async () => {
+    const seen = [];
+    await restore({ volumes: lacking(), provision: provisioner().fn, beforeWrite: async (info) => { seen.push(info); } });
+    assert.deepEqual(seen, [{ touchesExisting: true }]);
+  });
+  test('the helper mounts the new volumes too, in the backup\'s order', async () => {
+    const p = provisioner();
+    await restore({ volumes: lacking(), provision: p.fn });
+    assert.deepEqual(calls.helpers[0].names, ['v-data', p.added[0].docker_name]);
+  });
+  test('provisioning happens after every check and after beforeWrite, never before', async () => {
+    const order = [];
+    const p = provisioner();
+    await restore({ volumes: lacking(), provision: async (x) => { order.push('provision'); return p.fn(x); }, beforeWrite: async () => { order.push('beforeWrite'); } });
+    assert.deepEqual(order, ['beforeWrite', 'provision']);
+    order.length = 0;
+    await assert.rejects(restore({ volumes: lacking(), provision: async () => { order.push('provision'); }, eng: engine({ diskSpace: async () => ({ totalBytes: 1000 * 1024 ** 2, freeBytes: 50 * 1024 ** 2 }) }) }), /Not enough free disk space/);
+    assert.deepEqual(order, [], 'a refused restore adds nothing');
+  });
+  test('the paths are held to the rules for a path typed in Settings, together with what the app has: nested ones are refused', async () => {
+    const nested = [{ container_path: '/data/inner', docker_name: 'v-x' }];
+    await assert.rejects(restore({ volumes: nested, provision: provisioner().fn }), /cannot be added to the app: \/data\/inner is inside \/data/);
+  });
+  test('more than ten paths in all are refused', async () => {
+    const many = Array.from({ length: 9 }, (_, i) => ({ container_path: `/p${i}`, docker_name: `v-p${i}` }));
+    await assert.rejects(restore({ volumes: many, provision: provisioner().fn }), /at most 10/);
+  });
+  test('a path in the file that is not a usable path (made by hand) is refused', async () => {
+    const tarDir = await mkdtemp(join(tmpdir(), 'rs-bad-'));
+    await writeFile(join(tarDir, 'volume-0.tar'), 'x');
+    await writeFile(join(tarDir, 'manifest.json'), JSON.stringify({ format: 1, kind: 'volumes', files: ['volume-0.tar', 'manifest.json'], volumes: [{ file: 'volume-0.tar', containerPath: '/proc/evil', bytes: 1 }] }));
+    const file = join(await mkdtemp(join(tmpdir(), 'rs-bad2-')), 'shipdok-volumes.tar');
+    execFileSync('tar', ['cf', file, '-C', tarDir, 'volume-0.tar', 'manifest.json']);
+    await assert.rejects(makeRestore({ file, mode: 'replace', volumes: [], app: APP, dir, eng: engine(), provision: provisioner().fn }), /storage path that cannot be used/);
+  });
+  test('a failure in provisioning stops everything before any file is written, and is partial (rows may be added)', async () => {
+    const p = provisioner({ fail: new Error('A path of the backup was taken in the meantime') });
+    await assert.rejects(restore({ volumes: lacking(), provision: p.fn }), (err) => err.partial === true && /taken in the meantime/.test(err.message));
+    assert.deepEqual(calls.put, []);
+  });
+  test('the three modes all work into a new volume (it is empty)', async () => {
+    for (const mode of ['replace', 'add', 'empty']) {
+      const p = provisioner();
+      const r = await restore({ mode, volumes: [], provision: p.fn });
+      assert.equal(r.volumeCount, 2, mode);
+    }
   });
 });
 

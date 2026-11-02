@@ -196,6 +196,7 @@ export const schemas = {
     sizeBytes: nint('The size of the file.'), encrypted: { type: 'boolean', nullable: true, description: 'The file is encrypted with the passphrase.' },
     verified: { type: 'boolean', nullable: true, description: 'The database dump was read back after it was made and had content.' },
     version: nstr('The Shipdok version that made it.'), warning: nstr('Something to know, for example that the platform secrets could not be included.'), error: nstr('Why it failed.'),
+    paths: { type: 'array', nullable: true, items: { type: 'string' }, description: 'For `volumes`: the container paths the file holds (`null` for a backup made before this was recorded).' },
     downloadable: bool('It has a file that can be downloaded.'),
     restorable: bool('A backup of an app\'s volumes that is finished, has its file and whose app still exists: it can be restored (`POST /api/backups/{id}/restore`).'),
   }),
@@ -210,11 +211,12 @@ export const schemas = {
     restores: { type: 'array', description: 'The latest restores (newest first, at most 20).', items: ref('VolumeRestore') },
     apps: { type: 'array', description: 'The apps that have mounted persistent volumes.', items: obj({
       id: uuid('The app.'), name: str('Its name.'), volumeCount: int('Mounted volumes.'), sizeBytes: nint('Their size together, from the last measurement; `null` when any was never measured.'),
-      lastBackupAt: ntime('When the latest good volume backup finished.'), enabled: bool('Included in the scheduled backups.'), stop: bool('Stopped while its volumes are copied.'), keep: int('How many of its newest volume backups to keep.'),
+      lastBackupAt: ntime('When the latest good volume backup finished.'), schedule: ref('VolumeBackupSchedule'), nextRunAt: ntime('When the next scheduled backup of this app is due; `null` when its schedule is off.'), stop: bool('Stopped while its volumes are copied.'), keep: int('How many of its newest volume backups to keep.'),
     }) },
     persistent: bool('The backups folder is a volume of its own, so the backups survive the container being replaced.'),
   }),
-  VolumeBackupSettings: obj({ enabled: bool('Include the app in the scheduled backups.'), stop: bool('Stop the app while its volumes are copied.'), keep: int('How many of its newest volume backups to keep (1 to 60).') }),
+  VolumeBackupSchedule: obj({ frequency: enumOf(['off', 'daily', 'weekly'], 'How often (`off`: not in the automatic backups).'), hour: int('The hour, UTC (0 to 23).'), weekday: int('For weekly: the day, 0 (Sunday) to 6 (Saturday), UTC.') }),
+  VolumeBackupSettings: obj({ frequency: enumOf(['off', 'daily', 'weekly'], 'How often its volumes are backed up by themselves (`off`: not at all).'), hour: int('The hour, UTC (0 to 23).'), weekday: int('For weekly: the day, 0 (Sunday) to 6 (Saturday), UTC.'), stop: bool('Stop the app while its volumes are copied.'), keep: int('How many of its newest volume backups to keep (1 to 60).') }),
   VolumeRestore: obj({
     id: uuid('The restore.'), backupId: { type: 'string', format: 'uuid', nullable: true, description: 'The backup it restores from (`null` once that backup is deleted).' },
     appId: { type: 'string', format: 'uuid', nullable: true, description: 'The app (`null` once it is deleted).' }, appName: str('The name the app had.'),
@@ -222,7 +224,13 @@ export const schemas = {
     safetyBackup: bool('A backup of the current data was asked to be made first.'), safetyBackupId: { type: 'string', format: 'uuid', nullable: true, description: 'That backup (it is in the list, with trigger `before_restore`).' },
     status: enumOf(['queued', 'running', 'ok', 'failed'], 'Waiting for the worker, being done, done, or failed (`error` says why).'),
     requestedAt: time('When it was asked for.'), startedAt: ntime('When the worker began.'), finishedAt: ntime('When it ended.'),
+    reclaim: bool('It was a reclaim: restored into an app that is not the backup\'s own, adding the paths that app lacked.'), backupAppName: nstr('The name of the app the backup was made from.'),
     volumeCount: nint('How many volumes were restored.'), warning: nstr('Something to know, for example that the app could not be started again.'), error: nstr('Why it failed.'),
+  }),
+  ReclaimVolumeRequest: obj({ appId: uuid('The app to attach the volume to.'), path: str('The container path to mount it at, e.g. `/data`.') }),
+  ReclaimBackupRequest: obj({
+    appId: uuid('The app that receives the data.'), password: str('The current password.'), mode: enumOf(['replace', 'add', 'empty'], 'What to do with what is in the volumes that exist already.'),
+    safetyBackup: bool('Make a backup of the current data first (only when a volume that exists now is written to).'), passphrase: { type: 'string', nullable: true, description: 'Only when the backup was made with a different passphrase than the current one.' },
   }),
   RestoreRequest: obj({
     password: str('The current password.'), mode: enumOf(['replace', 'add', 'empty'], 'What to do with what is in the volumes now.'),

@@ -3,7 +3,7 @@
 // Removing a path DETACHES its volume (the data stays); only an explicit delete, or "delete the volumes too" when deleting the app, removes data.
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
-import { normalizeVolumePaths } from '../volumepaths.js';
+import { normalizeVolumePath, normalizeVolumePaths } from '../volumepaths.js';
 export { mountedVolumes } from '../volumes.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -120,6 +120,49 @@ export function volumesRouter({ db, queue }) {
       if (rowCount === 0) return res.status(409).json({ error: 'The sizes are already being measured', code: 'already_measuring' });
       res.status(202).json({ queued: true });
     } catch (err) { next(err); }
+  });
+
+  // Reclaim a kept volume: attach it to an app at a path. Nothing is copied or created (the volume and its data are as they were); the app mounts it from its next deployment.
+  r.post('/:id/reclaim', async (req, res, next) => {
+    let client;
+    try {
+      if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Volume not found' });
+      const body = req.body ?? {};
+      if (!isUuid(body.appId)) return res.status(400).json({ error: 'Invalid request', details: ['appId: choose an app'] });
+      const one = normalizeVolumePath(body.path);
+      if (one.error) return res.status(400).json({ error: one.error, code: 'bad_path' });
+
+      client = await db.connect();
+      await client.query('BEGIN');
+      const { rows: apps } = await client.query('SELECT id, name, deleting_at FROM apps WHERE id = $1 FOR UPDATE', [body.appId]);
+      const app = apps[0];
+      if (!app) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'App not found' }); }
+      if (app.deleting_at) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'This app is being deleted', code: 'deleting' }); }
+      const { rows: vols } = await client.query('SELECT id, state FROM app_volumes WHERE id = $1 FOR UPDATE', [req.params.id]);
+      if (!vols[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Volume not found' }); }
+      if (vols[0].state === 'in_use') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'This volume is mounted by an app already', code: 'volume_in_use' }); }
+
+      const { rows: mounted } = await client.query(`SELECT container_path FROM app_volumes WHERE app_id = $1 AND state = 'in_use' AND id <> $2`, [app.id, vols[0].id]);
+      if (mounted.some((m) => m.container_path === one.path)) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: `${app.name} already keeps ${one.path}. Choose another path, or remove it from that app first`, code: 'path_in_use' });
+      }
+      const all = normalizeVolumePaths([...mounted.map((m) => m.container_path), one.path]);
+      if (all.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: all.error, code: 'bad_path' }); }
+
+      await client.query(
+        `UPDATE app_volumes SET app_id = $2, app_name = $3, container_path = $4, state = 'in_use', remove_error = NULL, state_changed_at = now() WHERE id = $1`,
+        [vols[0].id, app.id, app.name, one.path]);
+      const { rows } = await client.query('SELECT * FROM app_volumes WHERE id = $1', [vols[0].id]);
+      await client.query('COMMIT');
+      res.json({ volume: shape(rows[0]) });
+    } catch (err) {
+      await client?.query('ROLLBACK').catch(() => {});
+      if (err.code === '23505') return res.status(409).json({ error: 'That path is already used by this app', code: 'path_in_use' });
+      next(err);
+    } finally {
+      client?.release();
+    }
   });
 
   // Delete a volume and its data, for good. Only one that is not mounted; the worker does it (and refuses if a container still uses it).

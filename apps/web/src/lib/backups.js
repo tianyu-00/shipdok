@@ -27,6 +27,15 @@ export function scheduleText(schedule) {
 export const platformBackups = (backups) => (backups ?? []).filter((b) => b.kind !== 'volumes')
 export const volumeBackups = (backups) => (backups ?? []).filter((b) => b.kind === 'volumes')
 
+/**
+ * Volume backups that no app's Settings tab lists any more: their app is gone (no app id, which is never among `apps`) or it has no mounted storage now (it is not among `apps`).
+ * Only finished ones (done or failed): one that is still being made belongs to an app that is there.
+ */
+export function keptBackups(data) {
+  const present = new Set((data?.apps ?? []).map((a) => a.id))
+  return volumeBackups(data?.backups).filter((b) => (b.status === 'ok' || b.status === 'failed') && !present.has(b.appId))
+}
+
 /** Is a backup waiting or being made? */
 export const isBusy = (backups) => (backups ?? []).some((b) => b.status === 'queued' || b.status === 'running')
 

@@ -93,7 +93,7 @@ export default function BackupsCard() {
       <CardHeader>
         <CardTitle className="text-base">Backups of Shipdok</CardTitle>
         <CardDescription>
-          One file holds the database and the key that opens its encrypted data (your variables and GitHub credentials). Your apps' own data volumes are backed up separately, below.
+          One file holds the database and the key that opens its encrypted data (your variables and GitHub credentials). Your apps' own data volumes are backed up separately, in each app's Settings tab.
           Backups are made on this machine: copy backups somewhere else with Download, because a backup on the same disk does not protect you from losing the disk.
         </CardDescription>
       </CardHeader>

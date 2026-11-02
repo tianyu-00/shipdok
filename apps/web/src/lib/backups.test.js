@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, afterEach } from 'vitest'
-import { RESTORE_MODES, isAppRestoring, restoreModeLabel, downloadBackup, filenameFrom, isAppBusy, isBusy, keepChoices, latestBackups, localHourText, platformBackups, scheduleText, utcHourText, volumeBackups, volumesText, WEEKDAYS } from './backups'
+import { keptBackups, RESTORE_MODES, isAppRestoring, restoreModeLabel, downloadBackup, filenameFrom, isAppBusy, isBusy, keepChoices, latestBackups, localHourText, platformBackups, scheduleText, utcHourText, volumeBackups, volumesText, WEEKDAYS } from './backups'
 import { ApiError } from './api'
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
@@ -147,5 +147,21 @@ describe('restoring', () => {
     expect(RESTORE_MODES.map((m) => m.value)).toEqual(['replace', 'add', 'empty'])
     expect(restoreModeLabel('add')).toBe('Add over')
     expect(restoreModeLabel('other')).toBe('other')
+  })
+})
+
+describe('backups kept without an app', () => {
+  const vb = (over) => ({ kind: 'volumes', appId: 'a1', status: 'ok', ...over })
+  test('a backup whose app is gone, or has no storage, is kept; one whose app is listed is not', () => {
+    const data = { apps: [{ id: 'a1' }], backups: [vb({ id: '1' }), vb({ id: '2', appId: null }), vb({ id: '3', appId: 'a9' }), vb({ id: '4', appId: 'a9', status: 'failed' })] }
+    expect(keptBackups(data).map((b) => b.id)).toEqual(['2', '3', '4'])
+  })
+  test('not Shipdok\'s own, and not one that is waiting or running', () => {
+    const data = { apps: [], backups: [{ id: 'p', kind: 'platform', appId: null, status: 'ok' }, vb({ id: 'q', appId: 'a9', status: 'queued' }), vb({ id: 'r', appId: 'a9', status: 'running' })] }
+    expect(keptBackups(data)).toEqual([])
+  })
+  test('copes with nothing at all', () => {
+    expect(keptBackups(undefined)).toEqual([])
+    expect(keptBackups({})).toEqual([])
   })
 })

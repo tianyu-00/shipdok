@@ -2328,7 +2328,7 @@
           "Logs and storage"
         ],
         "summary": "Backups of Shipdok itself",
-        "description": "The backups that exist (newest first, at most 200) with how each went, their total size, the schedule and when the next scheduled backup is due (`nextRunAt`, `null` when the schedule is off), and whether they are encrypted (`encryption.enabled`: a passphrase is set). A backup of Shipdok is ONE file holding the database and the platform secrets (the key without which the database's encrypted data cannot be read); a backup of an app's volumes (`kind: volumes`, with `appName`) is one file with every mounted volume of that app. `apps` lists the apps that have mounted volumes with how their backups are set. `persistent: false` means the backups folder is not a volume of its own, so the backups would be lost when the container is replaced.",
+        "description": "The backups that exist (newest first, at most 200) with how each went, their total size, the schedule and when the next scheduled backup is due (`nextRunAt`, `null` when the schedule is off), and whether they are encrypted (`encryption.enabled`: a passphrase is set). A backup of Shipdok is ONE file holding the database and the platform secrets (the key without which the database's encrypted data cannot be read); a backup of an app's volumes (`kind: volumes`, with `appName`) is one file with every mounted volume of that app. `apps` lists the apps that have mounted volumes with how their backups are set (each has its own schedule). `persistent: false` means the backups folder is not a volume of its own, so the backups would be lost when the container is replaced.",
         "parameters": [],
         "responses": {
           "200": {
@@ -4805,6 +4805,130 @@
         ]
       }
     },
+    "/api/backups/{id}/reclaim": {
+      "post": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Reclaim a volume backup into another app",
+        "description": "Restores the files of a volume backup into ANY app (usually a new one), not only the app it was made from. Each volume of the backup goes to the app's volume at the same path; **a path the app does not keep yet is added to its persistent storage as a new volume** and the files go into it (the app mounts it from its next deployment: the restore's `warning` says so). `mode`, `safetyBackup` and `passphrase` are as for a restore; the safety backup and the stopping of the app only happen when a volume that exists now is written to. Needs the password and is recorded in the sign-ins list (`restore`). If the backup's paths cannot be added to the app (nested paths, more than 10 in all) it is refused at once. Answers 202; poll `GET /api/backups` (`restores`, with `reclaim: true`).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "A finished backup of an app's volumes.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Asked for.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body, not a volume backup (`not_volumes`) or its paths cannot be added (`bad_path`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong password (`wrong_password`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such backup or app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No file (`no_file`), the app is being deleted (`app_gone`), a backup of the app is being made (`backup_running`) or a restore is already waiting or running (`already_running`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The file is gone from the backups folder (`file_missing`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReclaimBackupRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/backups/{id}/restore": {
       "post": {
         "tags": [
@@ -5474,6 +5598,99 @@
         ]
       }
     },
+    "/api/volumes/{id}/reclaim": {
+      "post": {
+        "tags": [
+          "Persistent storage"
+        ],
+        "summary": "Reclaim a kept volume: attach it to an app",
+        "description": "Attaches a volume that is kept without an app (left behind by a deleted app, or detached when a path was removed) to an app at a container `path`. Nothing is copied: the volume and its files are as they were. The app mounts it from its **next deployment** (like any change to its persistent storage). The path is held to the same rules as in the app's Settings (absolute, no nesting with another path, at most 10 in all); a path the app already keeps is refused (`path_in_use`).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The id of a volume that is kept without being mounted (`GET /api/volumes`).",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Attached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "volume": {
+                      "$ref": "#/components/schemas/Volume"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body or path (`code: bad_path`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such volume or app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The volume is mounted already (`volume_in_use`), the app keeps that path (`path_in_use`) or is being deleted (`deleting`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReclaimVolumeRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/webhooks/github": {
       "post": {
         "tags": [
@@ -5833,7 +6050,7 @@
           "Logs and storage"
         ],
         "summary": "Set how the volumes of an app are backed up",
-        "description": "`enabled`: include the app in the scheduled backups (the schedule is the one of `PUT /api/backups/settings`; off by default; switching it on does not back up at once for a time that already passed today). `stop`: stop the app while its volumes are copied and start it again afterwards, so a database in a volume is copied consistently (default off: the copy is made while the app runs). `keep`: how many of this app's newest volume backups to keep (1 to 60, default 3). Answers with the new overview.",
+        "description": "`frequency` (`off`, `daily` or `weekly`), `hour` (**UTC**, 0 to 23) and `weekday` (for weekly, 0 = Sunday): the app's OWN schedule for backing up its volumes by itself (off by default; changing it does not back up at once for a time that already passed today). `stop`: stop the app while its volumes are copied and start it again afterwards, so a database in a volume is copied consistently (default off: the copy is made while the app runs). `keep`: how many of this app's newest volume backups to keep (1 to 60, default 2). Answers with the new overview.",
         "parameters": [
           {
             "name": "appId",
@@ -7439,6 +7656,14 @@
             "nullable": true,
             "description": "Why it failed."
           },
+          "paths": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "For `volumes`: the container paths the file holds (`null` for a backup made before this was recorded)."
+          },
           "downloadable": {
             "type": "boolean",
             "description": "It has a file that can be downloaded."
@@ -7465,6 +7690,7 @@
           "version",
           "warning",
           "error",
+          "paths",
           "downloadable",
           "restorable"
         ]
@@ -7573,9 +7799,14 @@
                   "nullable": true,
                   "description": "When the latest good volume backup finished."
                 },
-                "enabled": {
-                  "type": "boolean",
-                  "description": "Included in the scheduled backups."
+                "schedule": {
+                  "$ref": "#/components/schemas/VolumeBackupSchedule"
+                },
+                "nextRunAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "nullable": true,
+                  "description": "When the next scheduled backup of this app is due; `null` when its schedule is off."
                 },
                 "stop": {
                   "type": "boolean",
@@ -7592,7 +7823,8 @@
                 "volumeCount",
                 "sizeBytes",
                 "lastBackupAt",
-                "enabled",
+                "schedule",
+                "nextRunAt",
                 "stop",
                 "keep"
               ]
@@ -7614,12 +7846,52 @@
           "persistent"
         ]
       },
+      "VolumeBackupSchedule": {
+        "type": "object",
+        "properties": {
+          "frequency": {
+            "type": "string",
+            "enum": [
+              "off",
+              "daily",
+              "weekly"
+            ],
+            "description": "How often (`off`: not in the automatic backups)."
+          },
+          "hour": {
+            "type": "integer",
+            "description": "The hour, UTC (0 to 23)."
+          },
+          "weekday": {
+            "type": "integer",
+            "description": "For weekly: the day, 0 (Sunday) to 6 (Saturday), UTC."
+          }
+        },
+        "required": [
+          "frequency",
+          "hour",
+          "weekday"
+        ]
+      },
       "VolumeBackupSettings": {
         "type": "object",
         "properties": {
-          "enabled": {
-            "type": "boolean",
-            "description": "Include the app in the scheduled backups."
+          "frequency": {
+            "type": "string",
+            "enum": [
+              "off",
+              "daily",
+              "weekly"
+            ],
+            "description": "How often its volumes are backed up by themselves (`off`: not at all)."
+          },
+          "hour": {
+            "type": "integer",
+            "description": "The hour, UTC (0 to 23)."
+          },
+          "weekday": {
+            "type": "integer",
+            "description": "For weekly: the day, 0 (Sunday) to 6 (Saturday), UTC."
           },
           "stop": {
             "type": "boolean",
@@ -7631,7 +7903,9 @@
           }
         },
         "required": [
-          "enabled",
+          "frequency",
+          "hour",
+          "weekday",
           "stop",
           "keep"
         ]
@@ -7712,6 +7986,15 @@
             "nullable": true,
             "description": "When it ended."
           },
+          "reclaim": {
+            "type": "boolean",
+            "description": "It was a reclaim: restored into an app that is not the backup's own, adding the paths that app lacked."
+          },
+          "backupAppName": {
+            "type": "string",
+            "nullable": true,
+            "description": "The name of the app the backup was made from."
+          },
           "volumeCount": {
             "type": "integer",
             "nullable": true,
@@ -7741,9 +8024,68 @@
           "requestedAt",
           "startedAt",
           "finishedAt",
+          "reclaim",
+          "backupAppName",
           "volumeCount",
           "warning",
           "error"
+        ]
+      },
+      "ReclaimVolumeRequest": {
+        "type": "object",
+        "properties": {
+          "appId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The app to attach the volume to."
+          },
+          "path": {
+            "type": "string",
+            "description": "The container path to mount it at, e.g. `/data`."
+          }
+        },
+        "required": [
+          "appId",
+          "path"
+        ]
+      },
+      "ReclaimBackupRequest": {
+        "type": "object",
+        "properties": {
+          "appId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The app that receives the data."
+          },
+          "password": {
+            "type": "string",
+            "description": "The current password."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "replace",
+              "add",
+              "empty"
+            ],
+            "description": "What to do with what is in the volumes that exist already."
+          },
+          "safetyBackup": {
+            "type": "boolean",
+            "description": "Make a backup of the current data first (only when a volume that exists now is written to)."
+          },
+          "passphrase": {
+            "type": "string",
+            "nullable": true,
+            "description": "Only when the backup was made with a different passphrase than the current one."
+          }
+        },
+        "required": [
+          "appId",
+          "password",
+          "mode",
+          "safetyBackup",
+          "passphrase"
         ]
       },
       "RestoreRequest": {

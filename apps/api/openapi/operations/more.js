@@ -73,6 +73,12 @@ export default Object.fromEntries([
     responses: { 202: ok('Asked.', { type: 'object', properties: { queued: { type: 'boolean' } } }) },
     errors: { 409: 'One is already waiting or running (`code: already_measuring`).' },
   })),
+  route('POST', '/api/volumes/{id}/reclaim', op({
+    tag: VOL, summary: 'Reclaim a kept volume: attach it to an app', parameters: [idParam('id', 'The id of a volume that is kept without being mounted (`GET /api/volumes`).')], body: ref('ReclaimVolumeRequest'),
+    description: 'Attaches a volume that is kept without an app (left behind by a deleted app, or detached when a path was removed) to an app at a container `path`. Nothing is copied: the volume and its files are as they were. The app mounts it from its **next deployment** (like any change to its persistent storage). The path is held to the same rules as in the app\'s Settings (absolute, no nesting with another path, at most 10 in all); a path the app already keeps is refused (`path_in_use`).',
+    responses: { 200: ok('Attached.', { type: 'object', properties: { volume: ref('Volume') } }) },
+    errors: { 400: 'Invalid body or path (`code: bad_path`).', 404: 'No such volume or app.', 409: 'The volume is mounted already (`volume_in_use`), the app keeps that path (`path_in_use`) or is being deleted (`deleting`).' },
+  })),
   route('DELETE', '/api/volumes/{id}', op({
     tag: VOL, summary: 'Delete a volume and its data, for good', parameters: [idParam('id', 'The volume\'s id.')],
     description: '**Permanent.** Only a volume that is not mounted by an app. The API only queues it; the worker removes the Docker volume (and refuses one that is not Shipdok\'s or that a container still uses; the reason then shows as `removeError` on the volume).',
@@ -121,7 +127,7 @@ export default Object.fromEntries([
   // ---------------------------------------------------------------- backups of Shipdok itself
   route('GET', '/api/backups', op({
     tag: LOG, summary: 'Backups of Shipdok itself',
-    description: 'The backups that exist (newest first, at most 200) with how each went, their total size, the schedule and when the next scheduled backup is due (`nextRunAt`, `null` when the schedule is off), and whether they are encrypted (`encryption.enabled`: a passphrase is set). A backup of Shipdok is ONE file holding the database and the platform secrets (the key without which the database\'s encrypted data cannot be read); a backup of an app\'s volumes (`kind: volumes`, with `appName`) is one file with every mounted volume of that app. `apps` lists the apps that have mounted volumes with how their backups are set. `persistent: false` means the backups folder is not a volume of its own, so the backups would be lost when the container is replaced.',
+    description: 'The backups that exist (newest first, at most 200) with how each went, their total size, the schedule and when the next scheduled backup is due (`nextRunAt`, `null` when the schedule is off), and whether they are encrypted (`encryption.enabled`: a passphrase is set). A backup of Shipdok is ONE file holding the database and the platform secrets (the key without which the database\'s encrypted data cannot be read); a backup of an app\'s volumes (`kind: volumes`, with `appName`) is one file with every mounted volume of that app. `apps` lists the apps that have mounted volumes with how their backups are set (each has its own schedule). `persistent: false` means the backups folder is not a volume of its own, so the backups would be lost when the container is replaced.',
     responses: { 200: ok('The backups and the settings.', ref('BackupsOverview')) },
   })),
   route('POST', '/api/backups', op({
@@ -138,7 +144,7 @@ export default Object.fromEntries([
   })),
   route('PUT', '/api/backups/volumes/{appId}/settings', op({
     tag: LOG, summary: 'Set how the volumes of an app are backed up', parameters: [idParam('appId', 'The app.')], body: ref('VolumeBackupSettings'),
-    description: '`enabled`: include the app in the scheduled backups (the schedule is the one of `PUT /api/backups/settings`; off by default; switching it on does not back up at once for a time that already passed today). `stop`: stop the app while its volumes are copied and start it again afterwards, so a database in a volume is copied consistently (default off: the copy is made while the app runs). `keep`: how many of this app\'s newest volume backups to keep (1 to 60, default 3). Answers with the new overview.',
+    description: '`frequency` (`off`, `daily` or `weekly`), `hour` (**UTC**, 0 to 23) and `weekday` (for weekly, 0 = Sunday): the app\'s OWN schedule for backing up its volumes by itself (off by default; changing it does not back up at once for a time that already passed today). `stop`: stop the app while its volumes are copied and start it again afterwards, so a database in a volume is copied consistently (default off: the copy is made while the app runs). `keep`: how many of this app\'s newest volume backups to keep (1 to 60, default 2). Answers with the new overview.',
     responses: { 200: ok('Saved.', ref('BackupsOverview')) },
     errors: { 404: 'No such app.' },
   })),
@@ -165,6 +171,12 @@ export default Object.fromEntries([
     description: 'Puts the files of the backup back into the app\'s persistent volumes. **It overwrites live data**, so it needs the current password and is recorded in the sign-ins list (`restore`). Each volume of the backup goes to the app\'s mounted volume at the same path; if one has no volume any more nothing is changed and the restore fails saying which. `mode`: `replace` (the volume ends up exactly as the backup was), `add` (written over the current files) or `empty` (refused when the volume holds anything). `safetyBackup`: a normal volume backup of the current data is made first (listed with trigger `before_restore`); if it fails nothing is restored. The worker stops the app (an app that is already stopped stays stopped), restores, reads the volumes back to check them, and starts the app again; if a deployment or another job is working on the app it fails instead of stopping it. Volumes the backup does not have are left alone. A restore of Shipdok itself (the database) is not available here: see the Operations guide. Answers 202; poll `GET /api/backups` (`restores`).',
     responses: { 202: ok('Asked for.', { type: 'object', properties: { id: { type: 'string', format: 'uuid' } } }) },
     errors: { 400: 'Invalid body, not a backup of volumes (`code: not_volumes`), or the app has no persistent storage (`code: no_volumes`).', 403: 'Wrong password (`code: wrong_password`).', 404: 'No such backup.', 409: 'No file (`no_file`), the app is gone (`app_gone`), a backup of the app is being made (`backup_running`) or a restore is already waiting or running (`already_running`).', 410: 'The file is gone from the backups folder (`code: file_missing`).', 429: 'Too many tries.' },
+  })),
+  route('POST', '/api/backups/{id}/reclaim', op({
+    tag: LOG, summary: 'Reclaim a volume backup into another app', parameters: [idParam('id', 'A finished backup of an app\'s volumes.')], body: ref('ReclaimBackupRequest'),
+    description: 'Restores the files of a volume backup into ANY app (usually a new one), not only the app it was made from. Each volume of the backup goes to the app\'s volume at the same path; **a path the app does not keep yet is added to its persistent storage as a new volume** and the files go into it (the app mounts it from its next deployment: the restore\'s `warning` says so). `mode`, `safetyBackup` and `passphrase` are as for a restore; the safety backup and the stopping of the app only happen when a volume that exists now is written to. Needs the password and is recorded in the sign-ins list (`restore`). If the backup\'s paths cannot be added to the app (nested paths, more than 10 in all) it is refused at once. Answers 202; poll `GET /api/backups` (`restores`, with `reclaim: true`).',
+    responses: { 202: ok('Asked for.', { type: 'object', properties: { id: { type: 'string', format: 'uuid' } } }) },
+    errors: { 400: 'Invalid body, not a volume backup (`not_volumes`) or its paths cannot be added (`bad_path`).', 403: 'Wrong password (`wrong_password`).', 404: 'No such backup or app.', 409: 'No file (`no_file`), the app is being deleted (`app_gone`), a backup of the app is being made (`backup_running`) or a restore is already waiting or running (`already_running`).', 410: 'The file is gone from the backups folder (`file_missing`).', 429: 'Too many tries.' },
   })),
   route('DELETE', '/api/backups/{id}', op({
     tag: LOG, summary: 'Delete a backup', parameters: [idParam('id', 'The backup.')],
