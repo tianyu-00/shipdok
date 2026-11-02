@@ -244,16 +244,19 @@ describe("the settings", () => {
     expect((await put({ password: PASSWORD })).status).toBe(400);
   });
 
-  test("every change is recorded in the sign-ins list", async () => {
+  test("every change is recorded in the activity log, with what it was before and after", async () => {
     await put({ password: PASSWORD, mode: "full" });
-    const list = (await get("/api/auth/logins", {}, cookie)).body.logins;
-    expect(list[0]).toMatchObject({ kind: "settings", username: "admin", success: true });
+    const list = (await get("/api/audit", {}, cookie)).body.entries;
+    expect(list[0]).toMatchObject({ category: "security", action: "public_access", actor: "admin", summary: "Public access changed: Local only → Full" });
+    expect(list[0].details).toEqual([{ label: "Who may reach Shipdok", from: "Local only", to: "Full" }]);
+    await put({ password: PASSWORD, mode: "full" });
+    expect((await get("/api/audit", {}, cookie)).body.entries[0].summary).toBe("Public access saved, nothing changed");
   });
 
   test("a wrong password is not recorded as a change", async () => {
     await put({ password: "nope-nope-nope-1", mode: "full" });
-    const list = (await get("/api/auth/logins", {}, cookie)).body.logins;
-    expect(list.some((l) => l.kind === "settings")).toBe(false);
+    const list = (await get("/api/audit", {}, cookie)).body.entries;
+    expect(list.some((l) => l.category === "security")).toBe(false);
   });
 
   test("a wrong password is limited like the other password checks", async () => {

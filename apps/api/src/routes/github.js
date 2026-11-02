@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { verify } from '@node-rs/argon2';
 import { GithubError, createGithubClient, parsePrivateKeyPem, saveGithubApp, deleteGithubApp, githubAppSummary, listRepoBranches, inspectRepo, REPO_FULL_NAME_RE } from '@shipdok/shared';
 import { limiter } from '../authutil.js';
-import { addressOf, recordAttempt } from '../lockout.js';
+import { addressOf } from '../lockout.js';
+import { fact, recordAudit } from '../audit.js';
 import { createRefusals } from '../webhookrefusals.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -110,7 +111,13 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings, refusa
       });
       provider.invalidate();
       refusals.clear(id.trim()); // entered (again): whatever was refused before is for the old secret
-      await recordAttempt(db, { kind: 'github', username: user.username, address: addressOf(req), success: true });
+      const label = info.name ?? info.slug ?? id.trim();
+      await recordAudit(db, {
+        category: 'github', action: saved.created ? 'github_connected' : 'github_replaced', actor: user.username, address: addressOf(req),
+        summary: saved.created ? `GitHub app connected: ${label}` : `GitHub app credentials replaced: ${label}`,
+        details: [fact('App', label), fact('GitHub app number', id.trim()), fact('Owner', info.ownerLogin ?? ''), fact('How', 'entered by hand'),
+          ...(saved.created ? [] : [fact('Effect', 'its projects stay with it; the old private key and webhook secret no longer work')])],
+      });
       res.status(saved.created ? 201 : 200).json({ app: await githubAppSummary(db, saved.id), created: saved.created });
     } catch (err) {
       next(err);
@@ -131,7 +138,13 @@ export function githubRouter({ db, provider, secretsKey, fetch, settings, refusa
       provider.invalidate();
       if (projects === null) return res.status(404).json(NOT_FOUND);
       if (gone) refusals.clear(gone.appId);
-      await recordAttempt(db, { kind: 'github', username: user.username, address: addressOf(req), success: true });
+      const label = gone?.name ?? gone?.slug ?? 'unknown';
+      await recordAudit(db, {
+        category: 'github', action: 'github_disconnected', actor: user.username, address: addressOf(req),
+        summary: `GitHub app disconnected: ${label}${projects.length ? ` (${projects.length} project${projects.length === 1 ? '' : 's'} left without one)` : ''}`,
+        details: [fact('App', label), fact('GitHub app number', gone?.appId ?? ''),
+          ...(projects.length ? [fact('Projects left without a GitHub app', projects.map((a) => a.name).join(', '))] : [fact('Projects affected', 'none')])],
+      });
       res.status(204).end();
     } catch (err) {
       next(err);

@@ -278,7 +278,15 @@ export const schemas = {
   AuthStatus: obj({ needsSetup: bool('No administrator exists yet.'), authenticated: bool('This browser has a valid session.'), setupTokenRequired: bool('The setup screen must ask for the setup token (the token is printed in the API log).') }),
   Username: obj({ username: str('The signed-in name.') }),
   SetupResult: obj({ username: str('The administrator.'), recoveryCodes: arr(str('A code, `XXXX-XXXX-XXXX-XXXX`.')) }, undefined, 'The only time the recovery codes are ever returned.'),
-  LoginAttempt: obj({ at: time('When.'), kind: enumOf(['login', 'setup', 'recovery', 'reset', 'settings', 'github', 'backup', 'download', 'restore', 'logsettings'], 'What was attempted or changed (`backup`: the backup passphrase was set or removed; `download`: a backup was downloaded; `restore`: a restore or reclaim was asked for; `logsettings`: how long this log is kept was changed).'), username: str('The name typed (any name, real or not).'), address: str('The client address (`host` for a reset on the machine).'), success: bool('Whether it worked.') }),
+  LoginAttempt: obj({ at: time('When.'), kind: enumOf(['login', 'setup', 'recovery', 'reset'], 'What was attempted: a login, the first-run setup, a recovery code, or a password reset on the machine.'), username: str('The name typed (any name, real or not).'), address: str('The client address (`host` for a reset on the machine).'), success: bool('Whether it worked.') }),
+  AuditDetail: obj({ label: str('What the fact is about.'), from: str('The value before (a change).'), to: str('The value after (a change).'), value: str('The fact (when nothing changed from one value to another).') }, ['label'], 'One fact about an entry: a change has `from` and `to`, other facts have `value`. Never a secret.'),
+  AuditEntry: obj({
+    id: str('The entry number.'), at: time('When.'),
+    category: enumOf(['security', 'github', 'backups', 'apps', 'deployments', 'variables', 'storage'], 'What kind of thing it concerns.'),
+    action: str('A short code for what was done, such as `public_access` or `restore`.'), summary: str('One line.'), details: arr(ref('AuditDetail')),
+    actor: str('Who (the administrator\'s name).'), address: str('Where from.'), source: enumOf(['user', 'webhook', 'schedule', 'system'], 'Who started it: the administrator, or something automatic.'),
+    appId: nstr('The app it concerns, when there is one.'), appName: nstr('Its name when it happened.'),
+  }),
   RecoveryStatus: obj({ remaining: int('Unused codes left (of 10).'), createdAt: ntime('When the current set was made.') }),
   Locked: obj({ error: str('A sentence.'), code: enumOf(['locked'], 'Always `locked`.'), retryAfterSeconds: int('Seconds to wait.') }),
 

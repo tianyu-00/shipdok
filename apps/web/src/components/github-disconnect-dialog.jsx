@@ -18,7 +18,7 @@ export function GithubDisconnectDialog({ app, onClose }) {
       toast.success(`${app.name ?? 'The GitHub app'} disconnected`)
       client.invalidateQueries({ queryKey: ['github'] })
       client.invalidateQueries({ queryKey: ['github-webhook'] })
-      client.invalidateQueries({ queryKey: ['logins'] })
+      client.invalidateQueries({ queryKey: ['audit'] })
       client.invalidateQueries({ queryKey: ['repos'] })
       client.invalidateQueries({ queryKey: ['apps'] }) // the projects that used it have no GitHub app now
       client.invalidateQueries({ queryKey: ['app'] })

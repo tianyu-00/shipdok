@@ -14,7 +14,8 @@ import { config } from '../config.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { limiter } from '../authutil.js';
 import { sameOrigin } from '../origin.js';
-import { addressOf, recordAttempt } from '../lockout.js';
+import { addressOf } from '../lockout.js';
+import { fact, recordAudit } from '../audit.js';
 
 const STATE_TTL_MS = 10 * 60 * 1000;
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,33}$/;
@@ -93,7 +94,11 @@ export function githubConnectRouter({ db, provider, secretsKey, settings, fetch 
       const saved = await saveGithubApp(db, secretsKey, { ...created, source: 'manifest' });
       provider.invalidate();
       const { rows } = await db.query('SELECT username FROM users WHERE id = $1', [s.userId]);
-      await recordAttempt(db, { kind: 'github', username: rows[0]?.username ?? 'admin', address: addressOf(req), success: true });
+      const label = created.name ?? created.slug ?? created.appId;
+      await recordAudit(db, {
+        category: 'github', action: 'github_created', actor: rows[0]?.username ?? 'admin', address: addressOf(req), summary: `GitHub app created through GitHub: ${label}`,
+        details: [fact('App', label), fact('GitHub app number', created.appId), fact('Owner', created.ownerLogin ?? ''), fact('How', 'created through GitHub (private)')],
+      });
       return back(`connected=${saved.id}`);
     } catch (err) {
       return next(err);

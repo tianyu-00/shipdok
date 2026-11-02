@@ -4,7 +4,8 @@ import { GithubError } from "@shipdok/shared";
 import { limiter } from "../authutil.js";
 import { PUBLIC_MODES, normalizePublicUrl } from "../publicurl.js";
 import { accessFor } from "../middleware/publicAccess.js";
-import { addressOf, recordAttempt } from "../lockout.js";
+import { addressOf } from "../lockout.js";
+import { change, recordAudit } from "../audit.js";
 
 export function settingsRouter({ db, settings, provider }) {
   const r = Router();
@@ -49,7 +50,21 @@ export function settingsRouter({ db, settings, provider }) {
       }
       await settings.setPublic({ mode: now.modeLocked ? undefined : mode, publicUrl: now.urlLocked ? undefined : url });
       const after = await settings.public();
-      await recordAttempt(db, { kind: "settings", username: rows[0].username, address: addressOf(req), success: true });
+      const MODE_NAMES = { local: "Local only", webhook: "Webhook only", full: "Full" };
+      const details = [];
+      const parts = [];
+      if (after.mode !== now.mode) {
+        details.push(change("Who may reach Shipdok", MODE_NAMES[now.mode], MODE_NAMES[after.mode]));
+        parts.push(`${MODE_NAMES[now.mode]} → ${MODE_NAMES[after.mode]}`);
+      }
+      if (after.publicUrl !== now.publicUrl) {
+        details.push(change("Public address", now.publicUrl || "none", after.publicUrl || "none"));
+        parts.push(after.publicUrl ? `address ${after.publicUrl}` : "address removed");
+      }
+      await recordAudit(db, {
+        category: "security", action: "public_access", actor: rows[0].username, address: addressOf(req), details,
+        summary: parts.length ? `Public access changed: ${parts.join(", ")}` : "Public access saved, nothing changed",
+      });
       // A new public address means GitHub must be told where to send webhooks, for every connected GitHub App. Best effort: the setting is
       // saved either way, and the GitHub page can retry each app.
       let githubWebhook;

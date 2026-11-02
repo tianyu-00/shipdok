@@ -3,9 +3,10 @@
 import auth from './operations/auth.js';
 import apps from './operations/apps.js';
 import more from './operations/more.js';
+import audit from './operations/audit.js';
 import { schemas } from './schemas.js';
 
-export const operations = { ...auth, ...apps, ...more };
+export const operations = { ...auth, ...apps, ...more, ...audit };
 
 const TAGS = [
   ['Account', 'Signing in, the administrator\'s password, recovery codes and the sign-in history.'],

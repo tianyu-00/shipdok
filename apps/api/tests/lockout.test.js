@@ -176,38 +176,27 @@ describe("recent logins", () => {
   });
 });
 
-describe("sign-ins apart from activity, and how long they are kept", () => {
+describe("how long sign-ins and activity are kept", () => {
   const list = async (cookie, query = "") => request(app).get(`/api/auth/logins${query}`).set("Cookie", cookie);
+  const audit = async (cookie, query = "") => request(app).get(`/api/audit${query}`).set("Cookie", cookie);
   const put = (cookie, body) => request(app).put("/api/auth/logins/settings").set("Cookie", cookie).send(body);
-  const SIGNIN = ["login", "setup", "recovery", "reset"];
-  const OTHER = ["settings", "github", "backup", "download", "restore", "logsettings"];
-  const row = (kind, username = "admin", success = true) => testPool.query("INSERT INTO login_attempts (kind, username, address, success) VALUES ($1, $2, '1.2.3.4', $3)", [kind, username, success]);
   let cookie;
   beforeEach(async () => {
     await testPool.query("DELETE FROM settings WHERE key = 'activity_keep_days'");
     cookie = (await attempt(PASSWORD)).headers["set-cookie"];
     await testPool.query("DELETE FROM login_attempts");
+    await testPool.query("DELETE FROM audit_log");
   });
 
-  test("scope signins lists only the sign-in kinds (failed ones included), activity only the others, none lists both", async () => {
-    for (const k of [...SIGNIN, ...OTHER]) await row(k);
-    await row("login", "stranger", false);
-    const kinds = async (q) => (await list(cookie, q)).body.logins.map((l) => l.kind).sort();
-    expect(await kinds("?scope=signins")).toEqual([...SIGNIN, "login"].sort());
-    expect(await kinds("?scope=activity")).toEqual([...OTHER].sort());
-    expect(await kinds("")).toHaveLength(SIGNIN.length + OTHER.length + 1);
-    expect((await list(cookie, "?scope=signins")).body.logins.some((l) => l.success === false)).toBe(true);
+  test("the sign-in list holds only sign-ins, failed ones included, and says how long they are kept", async () => {
+    await testPool.query("INSERT INTO login_attempts (kind, username, address, success) VALUES ('login', 'stranger', '1.2.3.4', false), ('recovery', 'admin', '1.2.3.4', true)");
+    const res = await list(cookie);
+    expect(res.body.logins.map((l) => [l.kind, l.success]).sort()).toEqual([["login", false], ["recovery", true]]);
+    expect(res.body.keepDays).toBe(30);
   });
 
-  test("a scope that is not known is a 400", async () => {
-    expect((await list(cookie, "?scope=everything")).status).toBe(400);
-  });
-
-  test("the limit applies inside a scope", async () => {
-    for (let i = 0; i < 12; i++) await row("login");
-    for (let i = 0; i < 12; i++) await row("github");
-    expect((await list(cookie, "?scope=signins&limit=5")).body.logins).toHaveLength(5);
-    expect((await list(cookie, "?scope=activity&limit=500")).body.logins).toHaveLength(12);
+  test("an activity kind can no longer be stored as a sign-in", async () => {
+    await expect(testPool.query("INSERT INTO login_attempts (kind, username, address, success) VALUES ('github', 'x', '1.2.3.4', true)")).rejects.toThrow();
   });
 
   test("it is kept for 30 days unless a choice was saved; a damaged value falls back to 30 and never stops a sign-in", async () => {
@@ -247,17 +236,23 @@ describe("sign-ins apart from activity, and how long they are kept", () => {
   });
 
   test("a shorter time removes older rows at once, a longer one keeps them, and the change is recorded as activity", async () => {
-    const old = (days, kind = "login") => testPool.query(`INSERT INTO login_attempts (at, kind, username, address, success) VALUES (now() - make_interval(days => $1), $2, 'old${days}', '1.1.1.1', true)`, [days, kind]);
-    await old(8); await old(40); await old(100, "github");
+    const old = (days) => testPool.query(`INSERT INTO login_attempts (at, kind, username, address, success) VALUES (now() - make_interval(days => $1), 'login', 'old${days}', '1.1.1.1', true)`, [days]);
+    const oldAudit = (days) => testPool.query(`INSERT INTO audit_log (at, category, action, summary, actor, address) VALUES (now() - make_interval(days => $1), 'github', 'github_changed', 'old${days}', 'admin', '1.1.1.1')`, [days]);
+    await old(8); await old(40); await oldAudit(8); await oldAudit(100);
     expect((await put(cookie, { password: PASSWORD, keepDays: 90 })).status).toBe(200);
     let names = (await testPool.query("SELECT username FROM login_attempts WHERE username LIKE 'old%'")).rows.map((r) => r.username).sort();
-    expect(names).toEqual(["old40", "old8"]); // 100 days is older than 90
+    expect(names).toEqual(["old40", "old8"]);
+    expect((await testPool.query("SELECT summary FROM audit_log WHERE summary LIKE 'old%'")).rows.map((r) => r.summary)).toEqual(["old8"]); // 100 days is older than 90
     expect((await put(cookie, { password: PASSWORD, keepDays: 7 })).status).toBe(200);
     names = (await testPool.query("SELECT username FROM login_attempts WHERE username LIKE 'old%'")).rows.map((r) => r.username);
     expect(names).toEqual([]);
-    const activity = (await list(cookie, "?scope=activity")).body.logins;
-    expect(activity.map((l) => l.kind)).toEqual(["logsettings", "logsettings"]);
-    expect(activity[0].username).toBe("admin");
+    expect((await testPool.query("SELECT count(*)::int AS n FROM audit_log WHERE summary LIKE 'old%'")).rows[0].n).toBe(0);
+    const entries = (await audit(cookie)).body.entries;
+    expect(entries.map((e) => e.action)).toEqual(["log_keeping", "log_keeping"]);
+    expect(entries[0]).toMatchObject({ category: "security", actor: "admin", summary: "Log kept for 7 days (was 90)" });
+    expect(entries[0].details[0]).toEqual({ label: "Kept for", from: "90 days", to: "7 days" });
+    expect(entries[0].details[1].value).toBe("2 sign-ins, 1 activity entries");
+    expect(entries[1].details).toEqual([{ label: "Kept for", from: "30 days", to: "90 days" }, { label: "Removed now", value: "0 sign-ins, 1 activity entries" }]);
   });
 
   test("a row just inside the chosen time stays, and recording a new attempt trims by the chosen time", async () => {

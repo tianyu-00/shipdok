@@ -32,7 +32,10 @@ const insert = async ({ status = 'ok', filename = FILE, size = CONTENT.length, t
   return rows[0].id;
 };
 const overview = async () => (await agent.get('/api/backups')).body;
-const attempts = async (kind) => (await testPool.query('SELECT username, success FROM login_attempts WHERE kind = $1', [kind])).rows;
+// What the activity log holds for one of the old kinds (backup = the passphrase, download, restore = a restore or a reclaim).
+const ACTIONS = { backup: ['backup_passphrase'], download: ['backup_download'], restore: ['restore', 'reclaim'] };
+const lastAudit = async () => (await testPool.query('SELECT * FROM audit_log ORDER BY id DESC LIMIT 1')).rows[0];
+const attempts = async (kind) => (await testPool.query('SELECT actor AS username, true AS success FROM audit_log WHERE action = ANY($1) ORDER BY id', [ACTIONS[kind]])).rows;
 
 describe('who may use it', () => {
   test.each([['get', '/api/backups'], ['post', '/api/backups'], ['put', '/api/backups/settings'], ['put', '/api/backups/passphrase'], ['post', '/api/backups/11111111-1111-4111-8111-111111111111/download'], ['delete', '/api/backups/11111111-1111-4111-8111-111111111111'], ['post', '/api/backups/11111111-1111-4111-8111-111111111111/restore']])('%s %s needs a session', async (method, path) => {
@@ -188,10 +191,17 @@ describe('the passphrase', () => {
     expect((await put({ passphrase: PASS })).status).toBe(400);
     expect((await put({ password: PASSWORD, passphrase: PASS, extra: 1 })).status).toBe(400);
   });
-  test('setting and removing it are recorded in the sign-ins list', async () => {
+  test('setting, changing and removing it are recorded in the activity log, saying which and never the passphrase', async () => {
     await put({ password: PASSWORD, passphrase: PASS });
+    expect((await lastAudit()).summary).toBe('Backup passphrase set');
+    await put({ password: PASSWORD, passphrase: PASS + ' again' });
+    expect((await lastAudit()).summary).toBe('Backup passphrase changed');
     await put({ password: PASSWORD, passphrase: null });
-    expect(await attempts('backup')).toEqual([{ username: 'admin', success: true }, { username: 'admin', success: true }]);
+    const last = await lastAudit();
+    expect(last).toMatchObject({ category: 'backups', action: 'backup_passphrase', actor: 'admin', source: 'user', summary: 'Backup passphrase removed' });
+    expect(last.details.map((d) => d.label)).toEqual(['What', 'Effect']);
+    expect(JSON.stringify(await testPool.query('SELECT * FROM audit_log'))).not.toContain(PASS);
+    expect(await attempts('backup')).toHaveLength(3);
   });
   test('a new one replaces the old', async () => {
     await put({ password: PASSWORD, passphrase: PASS });
@@ -216,6 +226,10 @@ describe('downloading', () => {
     expect(res.headers['content-length']).toBe(String(CONTENT.length));
     expect(res.headers['cache-control']).toBe('no-store');
     expect(await attempts('download')).toEqual([{ username: 'admin', success: true }]);
+    const entry = await lastAudit();
+    expect(entry).toMatchObject({ category: 'backups', action: 'backup_download', summary: 'Backup of Shipdok downloaded' });
+    expect(entry.details).toContainEqual({ label: 'Size', value: `${CONTENT.length} bytes` });
+    expect(entry.details).toContainEqual({ label: 'Encrypted', value: 'no' });
   });
   test('needs the current password: none is a 400, a wrong one a 403, and the file is not sent or recorded', async () => {
     writeFileSync(join(dir, FILE), CONTENT);
@@ -530,6 +544,11 @@ describe('restoring from a volume backup', () => {
     expect(row).toMatchObject({ id: res.body.id, backup_id: id, app_id: appId, app_name: 'Blog', mode: 'add', safety_backup: false, status: 'queued', passphrase_enc: null });
     expect(new Date(row.backup_made_at).toISOString()).toBe('2026-10-22T03:00:00.000Z');
     expect(await attempts('restore')).toHaveLength(1);
+    const entry = await lastAudit();
+    expect(entry).toMatchObject({ category: 'backups', action: 'restore', summary: 'Restore started for Blog', app_id: appId, app_name: 'Blog' });
+    expect(entry.details).toContainEqual({ label: 'From the backup made', value: '2026-10-22T03:00:00.000Z' });
+    expect(entry.details).toContainEqual({ label: 'Mode', value: expect.stringMatching(/^Add over/) });
+    expect(entry.details).toContainEqual({ label: 'Backup of the current data first', value: 'no' });
   });
   test('a wrong password is a 403 and nothing is recorded, not even in the sign-ins list', async () => {
     const id = await volumeBackup();
@@ -812,7 +831,7 @@ describe('reclaiming a volume backup into another app', () => {
     target = await makeApp2('New blog', 8400);
   });
 
-  test('is recorded as a reclaim into the chosen app (which needs no storage yet), naming whose backup it was, and the use is recorded in the sign-ins list', async () => {
+  test('is recorded as a reclaim into the chosen app (which needs no storage yet), naming whose backup it was, and the use is recorded in the activity log', async () => {
     const id = await kept();
     const res = await reclaim(id, { mode: 'add', safetyBackup: false });
     expect(res.status).toBe(202);
@@ -820,6 +839,10 @@ describe('reclaiming a volume backup into another app', () => {
     expect(row).toMatchObject({ id: res.body.id, backup_id: id, app_id: target, app_name: 'New blog', backup_app_name: 'Old blog', reclaim: true, mode: 'add', safety_backup: false, status: 'queued', passphrase_enc: null });
     expect(new Date(row.backup_made_at).toISOString()).toBe('2026-10-22T03:00:00.000Z');
     expect(await attempts('restore')).toHaveLength(1);
+    const entry = await lastAudit();
+    expect(entry).toMatchObject({ category: 'backups', action: 'reclaim', summary: 'Backup of Old blog reclaimed into New blog', app_id: target, app_name: 'New blog' });
+    expect(entry.details).toContainEqual({ label: 'Paths added to the app', value: '/data, /uploads' });
+    expect(entry.details).toContainEqual({ label: 'Backup of the current data first', value: 'no' });
   });
   test('a wrong password is a 403 and nothing is recorded', async () => {
     const res = await reclaim(await kept(), { password: 'wrong-password-here' });

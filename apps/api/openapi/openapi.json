@@ -2146,13 +2146,13 @@
         ]
       }
     },
-    "/api/auth/logins": {
+    "/api/audit": {
       "get": {
         "tags": [
           "Account"
         ],
-        "summary": "Sign-ins and activity",
-        "description": "The sign-in attempts and the things done with the password, good and bad (names typed by strangers included), newest first. Kinds: `login`, `setup`, `recovery`, `reset` (a password reset on the machine) are sign-ins; `settings` (public access changed), `github` (GitHub connected or changed), `backup` (backup passphrase), `download` (a backup downloaded), `restore` (a restore or reclaim asked for), `logsettings` (how long this log is kept) are activity.",
+        "summary": "The activity log",
+        "description": "What the administrator did with the password and, as more is recorded, other things (apps, deployments, variables, storage), newest first, each with what changed. `details` lists the facts: a change has `from` and `to`. A secret is never recorded. Entries are kept for `keepDays` days. By default only what the administrator did is listed; `automatic=1` adds what Shipdok did by itself (a push that deployed, a scheduled backup).",
         "parameters": [
           {
             "name": "limit",
@@ -2167,16 +2167,118 @@
             }
           },
           {
-            "name": "scope",
+            "name": "category",
             "in": "query",
             "required": false,
-            "description": "`signins` for the sign-in kinds only, `activity` for the others only; left out, both.",
+            "description": "Only this category.",
             "schema": {
               "type": "string",
               "enum": [
-                "signins",
-                "activity"
+                "security",
+                "github",
+                "backups",
+                "apps",
+                "deployments",
+                "variables",
+                "storage"
               ]
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "Only entries whose summary contains this text (any case), at most 100 characters.",
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            }
+          },
+          {
+            "name": "automatic",
+            "in": "query",
+            "required": false,
+            "description": "`1` to include what Shipdok did by itself.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The entries, and for how many days they are kept.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "entries",
+                    "keepDays"
+                  ],
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AuditEntry"
+                      }
+                    },
+                    "keepDays": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`category` is not a known category, or `q` is too long.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/auth/logins": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Recent sign-ins",
+        "description": "The sign-in attempts, good and bad (names typed by strangers included), newest first: logins, recovery codes, the first setup and password resets on the machine. What was done after signing in is the activity log (`GET /api/audit`).",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many, 1 to 500 (default 20).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 20
             }
           }
         ],
@@ -2203,16 +2305,6 @@
                       "description": "7, 30 (the default), 90 or 365."
                     }
                   }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "`scope` is not `signins` or `activity`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -6070,7 +6162,7 @@
           "Account"
         ],
         "summary": "How long sign-ins and activity are kept",
-        "description": "Needs a session AND the password: a shorter time deletes older rows at once. Rows older than the chosen number of days are removed now and whenever something new is recorded. The change is recorded as `logsettings`. A wrong password is a **403** (`wrong_password`). Limited to 10 tries per 15 minutes.",
+        "description": "Needs a session AND the password: a shorter time deletes older sign-ins and activity at once. Rows older than the chosen number of days are removed now and whenever something new is recorded. The change is recorded in the activity log, with how many entries went. A wrong password is a **403** (`wrong_password`). Limited to 10 tries per 15 minutes.",
         "parameters": [],
         "responses": {
           "200": {
@@ -8922,15 +9014,9 @@
               "login",
               "setup",
               "recovery",
-              "reset",
-              "settings",
-              "github",
-              "backup",
-              "download",
-              "restore",
-              "logsettings"
+              "reset"
             ],
-            "description": "What was attempted or changed (`backup`: the backup passphrase was set or removed; `download`: a backup was downloaded; `restore`: a restore or reclaim was asked for; `logsettings`: how long this log is kept was changed)."
+            "description": "What was attempted: a login, the first-run setup, a recovery code, or a password reset on the machine."
           },
           "username": {
             "type": "string",
@@ -8951,6 +9037,113 @@
           "username",
           "address",
           "success"
+        ]
+      },
+      "AuditDetail": {
+        "type": "object",
+        "description": "One fact about an entry: a change has `from` and `to`, other facts have `value`. Never a secret.",
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What the fact is about."
+          },
+          "from": {
+            "type": "string",
+            "description": "The value before (a change)."
+          },
+          "to": {
+            "type": "string",
+            "description": "The value after (a change)."
+          },
+          "value": {
+            "type": "string",
+            "description": "The fact (when nothing changed from one value to another)."
+          }
+        },
+        "required": [
+          "label"
+        ]
+      },
+      "AuditEntry": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry number."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When."
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "security",
+              "github",
+              "backups",
+              "apps",
+              "deployments",
+              "variables",
+              "storage"
+            ],
+            "description": "What kind of thing it concerns."
+          },
+          "action": {
+            "type": "string",
+            "description": "A short code for what was done, such as `public_access` or `restore`."
+          },
+          "summary": {
+            "type": "string",
+            "description": "One line."
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditDetail"
+            }
+          },
+          "actor": {
+            "type": "string",
+            "description": "Who (the administrator's name)."
+          },
+          "address": {
+            "type": "string",
+            "description": "Where from."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "user",
+              "webhook",
+              "schedule",
+              "system"
+            ],
+            "description": "Who started it: the administrator, or something automatic."
+          },
+          "appId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The app it concerns, when there is one."
+          },
+          "appName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Its name when it happened."
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "category",
+          "action",
+          "summary",
+          "details",
+          "actor",
+          "address",
+          "source",
+          "appId",
+          "appName"
         ]
       },
       "RecoveryStatus": {

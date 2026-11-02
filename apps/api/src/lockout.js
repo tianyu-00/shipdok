@@ -24,8 +24,12 @@ export async function keepDays(client) {
   return rows[0].days;
 }
 
-/** Deletes the rows older than the kept days. */
-export const trimAttempts = (client) => client.query(`DELETE FROM login_attempts WHERE at < now() - make_interval(days => ${KEEP_DAYS_SQL})`);
+/** Deletes the sign-in rows and the activity rows older than the kept days; says how many of each. */
+export async function trimLog(client) {
+  const attempts = await client.query(`DELETE FROM login_attempts WHERE at < now() - make_interval(days => ${KEEP_DAYS_SQL})`);
+  const audit = await client.query(`DELETE FROM audit_log WHERE at < now() - make_interval(days => ${KEEP_DAYS_SQL})`);
+  return { attempts: attempts.rowCount, audit: audit.rowCount };
+}
 
 /** How long to wait after `failures` failures in a row. */
 export function waitSeconds(failures, cap) {
@@ -58,7 +62,7 @@ export async function lockedFor(client, { username, address }) {
 
 export async function recordAttempt(client, { kind, username, address, success }) {
   await client.query('INSERT INTO login_attempts (kind, username, address, success) VALUES ($1, $2, $3, $4)', [kind, username, address, success]);
-  await trimAttempts(client);
+  await trimLog(client);
 }
 
 export function lockMessage(seconds) {

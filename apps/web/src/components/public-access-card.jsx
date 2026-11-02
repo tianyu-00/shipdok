@@ -31,7 +31,7 @@ function ConfirmDialog({ body, onClose, onSaved }) {
       else if (data?.githubWebhook) toast.warning(data.githubWebhook.error)
       client.invalidateQueries({ queryKey: ['github-webhook'] })
       client.invalidateQueries({ queryKey: ['public-access'] })
-      client.invalidateQueries({ queryKey: ['logins'] })
+      client.invalidateQueries({ queryKey: ['audit'] })
       onSaved()
     },
   })

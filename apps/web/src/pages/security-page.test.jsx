@@ -2,7 +2,7 @@ import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import SecurityPage from './security-page'
-import { mockApi, answer, renderWithProviders } from '@/test/utils'
+import { mockApi as baseMockApi, answer, renderWithProviders } from '@/test/utils'
 
 const toasts = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
 vi.mock('sonner', () => ({ toast: toasts, Toaster: () => null }))
@@ -19,17 +19,13 @@ const LOGINS = {
     { at: at(90000), kind: 'reset', username: 'admin', address: 'host', success: true },
   ],
 }
-// The API answers for the scope asked: sign-ins, or the activity (everything else).
-const SIGNIN_KINDS = ['login', 'setup', 'recovery', 'reset']
-const scoped = (body) => (call) => {
-  const scope = new URL(call.path, 'http://x').searchParams.get('scope')
-  return { keepDays: 30, ...body, logins: body.logins.filter((l) => (scope === 'activity') !== SIGNIN_KINDS.includes(l.kind)) }
-}
+// The activity log is its own request; most of these tests are about something else and see it empty.
+const mockApi = (routes) => baseMockApi({ 'GET /api/audit': { entries: [], keepDays: 30 }, ...routes })
 const page = () => renderWithProviders(<SecurityPage />, { route: '/security' })
 
 describe('the security page', () => {
   test('lists recent sign-ins with when, who, from where and how it went', async () => {
-    mockApi({ 'GET /api/auth/logins': scoped(LOGINS) })
+    mockApi({ 'GET /api/auth/logins': LOGINS })
     page()
     const rows = await screen.findAllByRole('row')
     const body = rows.slice(1) // header row first
@@ -47,14 +43,14 @@ describe('the security page', () => {
   })
 
   test('names typed by strangers are shown as plain text', async () => {
-    mockApi({ 'GET /api/auth/logins': scoped({ logins: [{ at: at(5), kind: 'login', username: '<img src=x onerror=alert(1)>', address: '1.2.3.4', success: false }] }) })
+    mockApi({ 'GET /api/auth/logins': { logins: [{ at: at(5), kind: 'login', username: '<img src=x onerror=alert(1)>', address: '1.2.3.4', success: false }] } })
     const { container } = page()
     expect(await screen.findByText('<img src=x onerror=alert(1)>')).toBeInTheDocument()
     expect(container.querySelector('img')).toBeNull()
   })
 
   test('says so when there is nothing yet', async () => {
-    mockApi({ 'GET /api/auth/logins': scoped({ logins: [] }) })
+    mockApi({ 'GET /api/auth/logins': { logins: [] } })
     page()
     expect(await screen.findByText(/no activity recorded/i)).toBeInTheDocument()
   })
@@ -66,7 +62,7 @@ describe('the security page', () => {
   })
 
   test('is honest that there is no second login step', async () => {
-    mockApi({ 'GET /api/auth/logins': scoped(LOGINS) })
+    mockApi({ 'GET /api/auth/logins': LOGINS })
     page()
     expect(await screen.findByText(/no second login step|no two-factor/i)).toBeInTheDocument()
   })
@@ -74,7 +70,7 @@ describe('the security page', () => {
 
 describe('sign out everywhere', () => {
   test('asks first, and cancelling sends nothing', async () => {
-    const api = mockApi({ 'GET /api/auth/logins': scoped(LOGINS), 'POST /api/auth/logout-all': null })
+    const api = mockApi({ 'GET /api/auth/logins': LOGINS, 'POST /api/auth/logout-all': null })
     page()
     await userEvent.click(await screen.findByRole('button', { name: /sign out everywhere/i }))
     const dialog = await screen.findByRole('alertdialog')
@@ -84,7 +80,7 @@ describe('sign out everywhere', () => {
   })
 
   test('confirming ends the sessions and the dashboard returns to the login screen', async () => {
-    const api = mockApi({ 'GET /api/auth/logins': scoped(LOGINS), 'POST /api/auth/logout-all': null })
+    const api = mockApi({ 'GET /api/auth/logins': LOGINS, 'POST /api/auth/logout-all': null })
     const { client } = page()
     client.setQueryData(['auth'], { authenticated: true, username: 'admin' })
     await userEvent.click(await screen.findByRole('button', { name: /sign out everywhere/i }))
@@ -94,7 +90,7 @@ describe('sign out everywhere', () => {
   })
 
   test('a failure is reported and the session stays', async () => {
-    mockApi({ 'GET /api/auth/logins': scoped(LOGINS), 'POST /api/auth/logout-all': () => { throw { status: 500, body: { error: 'nope' } } } })
+    mockApi({ 'GET /api/auth/logins': LOGINS, 'POST /api/auth/logout-all': () => { throw { status: 500, body: { error: 'nope' } } } })
     const { client } = page()
     client.setQueryData(['auth'], { authenticated: true, username: 'admin' })
     await userEvent.click(await screen.findByRole('button', { name: /sign out everywhere/i }))
@@ -106,7 +102,7 @@ describe('sign out everywhere', () => {
 
 describe('change password from here', () => {
   test('opens the same dialog as the header key', async () => {
-    mockApi({ 'GET /api/auth/logins': scoped(LOGINS) })
+    mockApi({ 'GET /api/auth/logins': LOGINS })
     page()
     await userEvent.click(await screen.findByRole('button', { name: /change password/i }))
     expect(await screen.findByRole('dialog')).toHaveTextContent(/other browser or device/i)
@@ -116,7 +112,7 @@ describe('change password from here', () => {
 describe('recovery codes', () => {
   const NEWCODES = Array.from({ length: 10 }, (_, i) => `NNNN-EEEE-WWWW-CCC${i}`)
   const routes = (over = {}) => ({
-    'GET /api/auth/logins': scoped(LOGINS),
+    'GET /api/auth/logins': LOGINS,
     'GET /api/auth/recovery': { remaining: 10, createdAt: '2026-10-19T12:00:00Z' },
     ...over,
   })
@@ -220,7 +216,7 @@ describe('recovery codes', () => {
 describe('public access', () => {
   const ACCESS = { mode: 'local', publicUrl: '', modeLocked: false, urlLocked: false, visitor: 'local' }
   const routes = (access = {}, over = {}) => ({
-    'GET /api/auth/logins': scoped(LOGINS),
+    'GET /api/auth/logins': LOGINS,
     'GET /api/auth/recovery': { remaining: 10, createdAt: '2026-10-19T12:00:00Z' },
     'GET /api/settings/public': { ...ACCESS, ...access },
     ...over,
@@ -432,24 +428,18 @@ describe('public access', () => {
   })
 })
 
-describe('the sign-ins list', () => {
-  test('a GitHub change is named', async () => {
+describe('the two lists on the page', () => {
+  test('the sign-ins and the activity log are separate cards, each with its own rows', async () => {
     mockApi({
-      'GET /api/auth/logins': scoped({ logins: [{ at: new Date().toISOString(), kind: 'github', username: 'admin', address: '192.168.1.20', success: true }] }),
+      'GET /api/auth/logins': { logins: [{ at: at(60), kind: 'login', username: 'admin', address: '192.168.1.20', success: true }], keepDays: 30 },
+      'GET /api/audit': { keepDays: 30, entries: [{ id: '1', at: at(120), category: 'github', action: 'github_connected', summary: 'GitHub app connected: Shipdok-ab12', details: [], actor: 'admin', address: '192.168.1.20', source: 'user', appId: null, appName: null }] },
       'GET /api/auth/recovery': { remaining: 10, createdAt: null },
       'GET /api/settings/public': { mode: 'local', publicUrl: '', modeLocked: false, urlLocked: false, visitor: 'local' },
     })
     page()
-    expect(await screen.findByText('GitHub changed')).toBeInTheDocument()
-  })
-
-  test('a public access change is named', async () => {
-    mockApi({
-      'GET /api/auth/logins': scoped({ logins: [{ at: new Date().toISOString(), kind: 'settings', username: 'admin', address: '192.168.1.20', success: true }] }),
-      'GET /api/auth/recovery': { remaining: 10, createdAt: null },
-      'GET /api/settings/public': { mode: 'local', publicUrl: '', modeLocked: false, urlLocked: false, visitor: 'local' },
-    })
-    page()
-    expect(await screen.findByText('Public access changed')).toBeInTheDocument()
+    expect(await within(await screen.findByLabelText('Sign-ins')).findByText('Signed in')).toBeInTheDocument()
+    const log = await screen.findByLabelText('Activity log')
+    expect(await within(log).findByText('GitHub app connected: Shipdok-ab12')).toBeInTheDocument()
+    expect(within(screen.getByLabelText('Sign-ins')).queryByText(/GitHub app connected/)).toBeNull()
   })
 })

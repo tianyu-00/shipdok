@@ -20,7 +20,7 @@ export function GithubManualForm({ onDone, initialAppId = '' }) {
       setF({ appId: '', privateKey: '', webhookSecret: '', password: '' }) // the secrets are not kept in the page
       toast.success(res.created ? 'GitHub app added' : 'GitHub app updated')
       client.invalidateQueries({ queryKey: ['github'] })
-      client.invalidateQueries({ queryKey: ['logins'] })
+      client.invalidateQueries({ queryKey: ['audit'] })
       client.invalidateQueries({ queryKey: ['repos'] })
       onDone?.()
     },

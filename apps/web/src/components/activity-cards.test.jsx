@@ -2,145 +2,215 @@ import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { SignInsCard, ActivityCard } from '@/components/activity-cards'
-import { mockApi, answer, renderWithProviders, pick, listedValues } from '@/test/utils'
+import { mockApi, renderWithProviders, pick, listedValues } from '@/test/utils'
 
 const toasts = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
 vi.mock('sonner', () => ({ toast: toasts, Toaster: () => null }))
 beforeEach(() => vi.clearAllMocks())
 
 const NOW = Date.now()
-const row = (kind, n, extra = {}) => ({ at: new Date(NOW - n * 60_000).toISOString(), kind, username: `user${n}`, address: '192.168.1.20', success: true, ...extra })
-const many = (kind, count) => Array.from({ length: count }, (_, i) => row(kind, i + 1))
+const ago = (n) => new Date(NOW - n * 60_000).toISOString()
+const login = (kind, n, extra = {}) => ({ at: ago(n), kind, username: `user${n}`, address: '192.168.1.20', success: true, ...extra })
+const entry = (n, extra = {}) => ({ id: String(n), at: ago(n), category: 'github', action: 'github_changed', summary: `Summary ${n}`, details: [], actor: 'admin', address: '192.168.1.20', source: 'user', appId: null, appName: null, ...extra })
+const logins = (count, kind = 'login') => Array.from({ length: count }, (_, i) => login(kind, i + 1))
+const entries = (count, extra = {}) => Array.from({ length: count }, (_, i) => entry(i + 1, extra))
+
+// The API as the cards see it: the sign-ins, and the activity log narrowed by the category and the search text of the request.
+function fakeApi({ signins = [], log = [], keepDays = 30, ...more } = {}) {
+  return mockApi({
+    'GET /api/auth/logins': () => ({ logins: signins, keepDays }),
+    'GET /api/audit': (call) => {
+      const u = new URL(call.path, 'http://x')
+      const category = u.searchParams.get('category')
+      const q = (u.searchParams.get('q') ?? '').toLowerCase()
+      return { keepDays, entries: log.filter((e) => (!category || e.category === category) && e.summary.toLowerCase().includes(q)) }
+    },
+    ...more,
+  })
+}
 const cards = () => renderWithProviders(<><SignInsCard /><ActivityCard /></>)
-const route = (rows, keepDays = 30) => (call) => ({ keepDays, logins: rows.filter((l) => (new URL(call.path, 'http://x').searchParams.get('scope') === 'activity') !== ['login', 'setup', 'recovery', 'reset'].includes(l.kind)) })
-const names = (c) => within(c).getAllByRole('row').slice(1).map((r) => within(r).getAllByRole('cell')[1].textContent)
+const rowsOf = (c) => within(c).getAllByRole('row').slice(1)
+// The entries of the activity log (a list of blocks, not a table); the details lists inside an entry are not entries.
+const entriesOf = (c) => { const list = within(c).getByRole('list', { name: 'Entries' }); return within(list).getAllByRole('listitem').filter((li) => li.parentElement === list) }
+const cellText = (c, col) => rowsOf(c).map((r) => within(r).getAllByRole('cell')[col].textContent)
 
-describe('two lists', () => {
-  test('sign-ins and the activity log are asked for apart, up to 500 each', async () => {
-    const api = mockApi({ 'GET /api/auth/logins': route([row('login', 1)]) })
+describe('the sign-ins card', () => {
+  test('is asked for up to 500 sign-ins, and names each kind (a failed one is Failed)', async () => {
+    const mock = fakeApi({ signins: [login('login', 1), login('recovery', 2), login('setup', 3), login('reset', 4), login('login', 5, { success: false })] })
     cards()
-    await screen.findByText('user1')
-    const paths = api.calls.map((c) => c.path)
-    expect(paths).toContain('/api/auth/logins?limit=500&scope=signins')
-    expect(paths).toContain('/api/auth/logins?limit=500&scope=activity')
+    const card = await screen.findByLabelText('Sign-ins')
+    await within(card).findByText('Recovery code used')
+    for (const t of ['Signed in', 'Account created', 'Password reset on the host', 'Failed']) expect(within(card).getByText(t)).toBeInTheDocument()
+    expect(mock.calls.map((c) => c.path)).toContain('/api/auth/logins?limit=500')
+    expect(within(card).getByText('(5)')).toBeInTheDocument()
   })
 
-  test('each kind shows in its own card with its own name (a restore is not "Signed in")', async () => {
-    mockApi({ 'GET /api/auth/logins': route([
-      row('login', 1), row('recovery', 2), row('settings', 3), row('github', 4), row('backup', 5), row('download', 6), row('restore', 7), row('logsettings', 8),
-    ]) })
+  test('says so when empty; names typed by strangers are plain text', async () => {
+    fakeApi({})
     cards()
-    await screen.findByText('Restore started')
-    const signins = screen.getByLabelText('Sign-ins')
-    const activity = screen.getByLabelText('Activity log')
-    expect(within(signins).getByText('Signed in')).toBeInTheDocument()
-    expect(within(signins).getByText('Recovery code used')).toBeInTheDocument()
-    expect(within(signins).queryByText('Restore started')).toBeNull()
-    for (const t of ['Public access changed', 'GitHub changed', 'Backup passphrase changed', 'Backup downloaded', 'Restore started', 'Log keeping time changed']) {
-      expect(within(activity).getByText(t)).toBeInTheDocument()
-      expect(within(signins).queryByText(t)).toBeNull()
-    }
-    expect(within(activity).queryByText('Signed in')).toBeNull()
+    expect(await screen.findByText('No sign-ins recorded yet')).toBeInTheDocument()
   })
 
-  test('a failed attempt is shown in the sign-ins as Failed', async () => {
-    mockApi({ 'GET /api/auth/logins': route([row('login', 1, { success: false, username: 'root' })]) })
-    cards()
-    expect(await within(await screen.findByLabelText('Sign-ins')).findByText('Failed')).toBeInTheDocument()
-  })
-
-  test('each says so when it is empty, and shows how many it holds', async () => {
-    mockApi({ 'GET /api/auth/logins': route([...many('login', 3)]) })
-    cards()
-    expect(await screen.findByText('No activity recorded yet')).toBeInTheDocument()
-    expect(within(screen.getByLabelText('Sign-ins')).getByText('(3)')).toBeInTheDocument()
-    expect(within(screen.getByLabelText('Activity log')).queryByText(/\(\d+\)/)).toBeNull()
-  })
-
-  test('names typed by strangers are plain text', async () => {
-    mockApi({ 'GET /api/auth/logins': route([row('login', 1, { username: '<b>x</b>', success: false })]) })
+  test('a stranger\'s name is plain text', async () => {
+    fakeApi({ signins: [login('login', 1, { username: '<b>x</b>', success: false })] })
     const { container } = cards()
     expect(await screen.findByText('<b>x</b>')).toBeInTheDocument()
     expect(container.querySelector('b')).toBeNull()
   })
-})
 
-describe('paging', () => {
-  test('10 a page by default, newest first, with Newer / Older and the page count; the last page holds the rest', async () => {
-    mockApi({ 'GET /api/auth/logins': route(many('login', 25)) })
+  test('shows 10 at a time, newest first, with Newer / Older, and remembers its own page size', async () => {
+    fakeApi({ signins: logins(25), log: entries(25) })
     cards()
-    const signins = await screen.findByLabelText('Sign-ins')
-    await within(signins).findByText('user1')
-    expect(names(signins)).toEqual(Array.from({ length: 10 }, (_, i) => `user${i + 1}`))
-    expect(within(signins).getByText('Page 1 of 3')).toBeInTheDocument()
-    expect(within(signins).getByRole('button', { name: 'Newer' })).toBeDisabled()
-    await userEvent.click(within(signins).getByRole('button', { name: 'Older' }))
-    expect(names(signins)[0]).toBe('user11')
-    await userEvent.click(within(signins).getByRole('button', { name: 'Older' }))
-    expect(names(signins)).toEqual(['user21', 'user22', 'user23', 'user24', 'user25'])
-    expect(within(signins).getByRole('button', { name: 'Older' })).toBeDisabled()
-    await userEvent.click(within(signins).getByRole('button', { name: 'Newer' }))
-    expect(within(signins).getByText('Page 2 of 3')).toBeInTheDocument()
-  })
-
-  test('the page size can be 5, 10, 25 or 50; choosing one goes back to page 1 and is remembered for that list only', async () => {
-    mockApi({ 'GET /api/auth/logins': route([...many('login', 30), ...many('github', 30)]) })
-    cards()
-    const signins = await screen.findByLabelText('Sign-ins')
-    await within(signins).findByText('user1')
-    expect(await listedValues(within(signins).getByLabelText('Per page'))).toEqual(['5', '10', '25', '50'])
-    await userEvent.click(within(signins).getByRole('button', { name: 'Older' }))
-    await pick(within(signins).getByLabelText('Per page'), '25')
-    expect(names(signins)).toHaveLength(25)
-    expect(names(signins)[0]).toBe('user1')
-    expect(within(signins).getByText('Page 1 of 2')).toBeInTheDocument()
+    const card = await screen.findByLabelText('Sign-ins')
+    await within(card).findByText('user1')
+    expect(cellText(card, 1)).toEqual(Array.from({ length: 10 }, (_, i) => `user${i + 1}`))
+    expect(within(card).getByText('Page 1 of 3')).toBeInTheDocument()
+    await userEvent.click(within(card).getByRole('button', { name: 'Older' }))
+    expect(cellText(card, 1)[0]).toBe('user11')
+    await pick(within(card).getByLabelText('Per page'), '25')
+    expect(rowsOf(card)).toHaveLength(25)
     expect(localStorage.getItem('shipdok.signinsPageSize')).toBe('25')
     expect(localStorage.getItem('shipdok.activityPageSize')).toBeNull()
-    expect(names(screen.getByLabelText('Activity log'))).toHaveLength(10) // the other list keeps its own size
+    expect(entriesOf(screen.getByLabelText('Activity log'))).toHaveLength(10)
+  })
+})
+
+describe('the activity log card', () => {
+  test('is asked for up to 500 entries, and shows when, who and from where, the category and the summary', async () => {
+    const mock = fakeApi({ log: [entry(1, { category: 'security', summary: 'Public access changed: Local only → Full', actor: 'tian', address: '::ffff:10.0.0.5' }), entry(2, { category: 'backups', summary: 'Restore started for Blog' })] })
+    cards()
+    const card = await screen.findByLabelText('Activity log')
+    await within(card).findByText('Restore started for Blog')
+    expect(mock.calls.map((c) => c.path)).toContain('/api/audit?limit=500')
+    const first = entriesOf(card)[0]
+    expect(within(first).getByText('Public access changed: Local only → Full')).toBeInTheDocument()
+    expect(within(first).getByText('Security')).toBeInTheDocument()
+    expect(within(first).getByText('tian')).toBeInTheDocument()
+    expect(within(first).getByText('10.0.0.5')).toBeInTheDocument()
+    expect(within(first).getByText('1 min ago')).toBeInTheDocument()
+    expect(within(entriesOf(card)[1]).getByText('Backups and restores')).toBeInTheDocument()
+    expect(within(card).getByText('(2)')).toBeInTheDocument()
   })
 
-  test('a remembered size is used, and a stored value that is not a choice is ignored', async () => {
-    localStorage.setItem('shipdok.signinsPageSize', '5')
-    localStorage.setItem('shipdok.activityPageSize', '7')
-    mockApi({ 'GET /api/auth/logins': route([...many('login', 12), ...many('github', 12)]) })
+  test('the details are hidden until the arrow is pressed: a change reads from → to, an empty side is "none", another fact reads label: value', async () => {
+    fakeApi({ log: [entry(1, { summary: 'Public access changed', details: [{ label: 'Public address', from: '', to: 'https://a.example.com' }, { label: 'Who may reach Shipdok', from: 'Local only', to: 'Full' }, { label: 'Effect', value: 'the next backups' }] })] })
     cards()
-    await screen.findAllByText('user1')
-    expect(names(screen.getByLabelText('Sign-ins'))).toHaveLength(5)
-    expect(names(screen.getByLabelText('Activity log'))).toHaveLength(10)
+    const card = await screen.findByLabelText('Activity log')
+    const toggle = await within(card).findByRole('button', { name: 'Show the details of: Public access changed' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(within(card).queryByText(/Public address:/)).toBeNull()
+    await userEvent.click(toggle)
+    const list = within(card).getByRole('list', { name: 'Details of: Public access changed' })
+    expect(within(list).getAllByRole('listitem').map((l) => l.textContent)).toEqual([
+      'Public address: none → https://a.example.com', 'Who may reach Shipdok: Local only → Full', 'Effect: the next backups',
+    ])
+    expect(within(card).getByRole('button', { name: 'Hide the details of: Public access changed' })).toHaveAttribute('aria-expanded', 'true')
+    await userEvent.click(within(card).getByRole('button', { name: /Hide the details/ }))
+    expect(within(card).queryByRole('list', { name: /Details of/ })).toBeNull()
+  })
+
+  test('an entry without details has no arrow; each entry opens on its own', async () => {
+    fakeApi({ log: [entry(1, { summary: 'No details here' }), entry(2, { summary: 'Has one', details: [{ label: 'A', value: '1' }] }), entry(3, { summary: 'Has two', details: [{ label: 'B', value: '2' }] })] })
+    cards()
+    const card = await screen.findByLabelText('Activity log')
+    await within(card).findByText('No details here')
+    expect(within(card).queryByRole('button', { name: /details of: No details here/ })).toBeNull()
+    await userEvent.click(within(card).getByRole('button', { name: 'Show the details of: Has one' }))
+    expect(within(card).getByText('A: 1')).toBeInTheDocument()
+    expect(within(card).queryByText('B: 2')).toBeNull()
+  })
+
+  test('details are plain text', async () => {
+    fakeApi({ log: [entry(1, { summary: 's', details: [{ label: 'App', value: '<img src=x onerror=alert(1)>' }] })] })
+    const { container } = cards()
+    await userEvent.click(await screen.findByRole('button', { name: /Show the details/ }))
+    expect(await screen.findByText('App: <img src=x onerror=alert(1)>')).toBeInTheDocument()
+    expect(container.querySelector('img')).toBeNull()
+  })
+
+  test('says so when empty', async () => {
+    fakeApi({})
+    cards()
+    expect(await screen.findByText('No activity recorded yet')).toBeInTheDocument()
+  })
+
+  test('a category button asks for that category only, is shown as pressed, and All goes back', async () => {
+    const mock = fakeApi({ log: [entry(1, { category: 'security', summary: 'A sec' }), entry(2, { category: 'github', summary: 'A hub' }), entry(3, { category: 'backups', summary: 'A bak' })] })
+    cards()
+    const card = await screen.findByLabelText('Activity log')
+    await within(card).findByText('A sec')
+    const group = within(card).getByRole('group', { name: 'Category' })
+    expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['All', 'Security', 'GitHub', 'Backups and restores'])
+    expect(within(group).getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
+    await userEvent.click(within(group).getByRole('button', { name: 'GitHub' }))
+    await waitFor(() => expect(within(card).queryByText('A sec')).toBeNull())
+    expect(within(card).getByText('A hub')).toBeInTheDocument()
+    expect(within(group).getByRole('button', { name: 'GitHub' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(group).getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'false')
+    expect(mock.calls.map((c) => c.path)).toContain('/api/audit?limit=500&category=github')
+    await userEvent.click(within(group).getByRole('button', { name: 'Backups and restores' }))
+    expect(await within(card).findByText('A bak')).toBeInTheDocument()
+    await userEvent.click(within(group).getByRole('button', { name: 'All' }))
+    expect(await within(card).findByText('A sec')).toBeInTheDocument()
+    expect(within(card).getByText('A hub')).toBeInTheDocument()
+  })
+
+  test('the search is sent after a pause in typing, with the category, and "Nothing matches" is said when there is nothing', async () => {
+    const mock = fakeApi({ log: [entry(1, { category: 'security', summary: 'Public access changed' }), entry(2, { category: 'github', summary: 'GitHub app connected' })] })
+    cards()
+    const card = await screen.findByLabelText('Activity log')
+    await within(card).findByText('Public access changed')
+    await userEvent.type(within(card).getByLabelText('Search the activity log'), 'connected')
+    expect(await within(card).findByText('GitHub app connected')).toBeInTheDocument()
+    await waitFor(() => expect(within(card).queryByText('Public access changed')).toBeNull())
+    const searches = mock.calls.map((c) => c.path).filter((p) => p.includes('q='))
+    expect(searches).toEqual(['/api/audit?limit=500&q=connected']) // one request, not one per key
+    await userEvent.click(within(card).getByRole('button', { name: 'Security' }))
+    expect(await within(card).findByText('Nothing matches')).toBeInTheDocument()
+    expect(mock.calls.map((c) => c.path)).toContain('/api/audit?limit=500&category=security&q=connected')
+  })
+
+  test('shows 10 at a time with the paging controls; a filter or a search goes back to page 1', async () => {
+    fakeApi({ log: [...entries(25, { category: 'github' }), ...Array.from({ length: 15 }, (_, i) => entry(100 + i, { category: 'security', summary: `Sec ${i}` }))] })
+    cards()
+    const card = await screen.findByLabelText('Activity log')
+    await within(card).findByText('Summary 1')
+    expect(entriesOf(card)).toHaveLength(10)
+    expect(within(card).getByText('Page 1 of 4')).toBeInTheDocument()
+    await userEvent.click(within(card).getByRole('button', { name: 'Older' }))
+    expect(within(card).getByText('Page 2 of 4')).toBeInTheDocument()
+    await userEvent.click(within(card).getByRole('button', { name: 'Security' }))
+    expect(await within(card).findByText('Page 1 of 2')).toBeInTheDocument()
+    await userEvent.click(within(card).getByRole('button', { name: 'Older' }))
+    await userEvent.type(within(card).getByLabelText('Search the activity log'), 'Sec')
+    expect(await within(card).findByText('Page 1 of 2')).toBeInTheDocument()
+  })
+
+  test('a remembered page size is used, and the size choice is remembered for this list only', async () => {
+    localStorage.setItem('shipdok.activityPageSize', '5')
+    fakeApi({ log: entries(12), signins: logins(12) })
+    cards()
+    const card = await screen.findByLabelText('Activity log')
+    await within(card).findByText('Summary 1')
+    expect(entriesOf(card)).toHaveLength(5)
+    expect(rowsOf(screen.getByLabelText('Sign-ins'))).toHaveLength(10)
+    await pick(within(card).getByLabelText('Per page'), '25')
+    expect(entriesOf(card)).toHaveLength(12)
+    expect(localStorage.getItem('shipdok.activityPageSize')).toBe('25')
+    expect(localStorage.getItem('shipdok.signinsPageSize')).toBeNull()
   })
 
   test('the controls are left out when everything fits the smallest page', async () => {
-    mockApi({ 'GET /api/auth/logins': route(many('login', 5)) })
+    fakeApi({ log: entries(5) })
     cards()
-    await screen.findByText('user1')
-    expect(screen.queryByLabelText('Per page')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Older' })).toBeNull()
-  })
-
-  test('with a few more than the smallest page, the size choice is there even at 10 a page', async () => {
-    mockApi({ 'GET /api/auth/logins': route(many('login', 7)) })
-    cards()
-    const signins = await screen.findByLabelText('Sign-ins')
-    await within(signins).findByText('user1')
-    expect(within(signins).getByLabelText('Per page')).toBeInTheDocument()
-    expect(within(signins).getByText('Page 1 of 1')).toBeInTheDocument()
-  })
-
-  test('blocked storage only means the default', async () => {
-    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked') })
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked') })
-    mockApi({ 'GET /api/auth/logins': route(many('login', 12)) })
-    cards()
-    const signins = await screen.findByLabelText('Sign-ins')
-    await within(signins).findByText('user1')
-    await pick(within(signins).getByLabelText('Per page'), '5')
-    expect(names(signins)).toHaveLength(5)
-    vi.restoreAllMocks()
+    const card = await screen.findByLabelText('Activity log')
+    await within(card).findByText('Summary 1')
+    expect(within(card).queryByLabelText('Per page')).toBeNull()
   })
 })
 
 describe('how long they are kept', () => {
-  const setup = (keepDays = 30) => mockApi({ 'GET /api/auth/logins': route([row('github', 1)], keepDays), 'PUT /api/auth/logins/settings': { keepDays: 90 } })
+  const setup = (keepDays = 30) => fakeApi({ log: [entry(1)], keepDays, 'PUT /api/auth/logins/settings': { keepDays: 90 } })
   const select = async () => screen.findByLabelText('Keep the sign-ins and this log for')
 
   test('shows the current time, with the four choices', async () => {
@@ -165,19 +235,19 @@ describe('how long they are kept', () => {
     expect(within(dialog).getByText(/Keep the sign-ins and the activity for 90 days\?/)).toBeInTheDocument()
     expect(api.called('PUT', '/api/auth/logins/settings')).toHaveLength(0)
     expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled()
-    const before = api.called('GET', '/api/auth/logins').length
+    const before = api.called('GET', '/api/audit').length
     await userEvent.type(within(dialog).getByLabelText('Your password'), 'my-password')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(api.called('PUT', '/api/auth/logins/settings')).toHaveLength(1))
     expect(api.called('PUT', '/api/auth/logins/settings')[0].body).toEqual({ password: 'my-password', keepDays: 90 })
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
     expect(toasts.success).toHaveBeenCalled()
-    await waitFor(() => expect(api.called('GET', '/api/auth/logins').length).toBeGreaterThan(before))
+    await waitFor(() => expect(api.called('GET', '/api/audit').length).toBeGreaterThan(before))
   })
 
   test('a wrong password keeps the dialog open with the reason; Cancel sends nothing; choosing the current time does nothing', async () => {
-    const api = mockApi({
-      'GET /api/auth/logins': route([row('github', 1)]),
+    const api = fakeApi({
+      log: [entry(1)],
       'PUT /api/auth/logins/settings': () => { throw { status: 403, body: { error: 'The current password is not correct', code: 'wrong_password' } } },
     })
     cards()

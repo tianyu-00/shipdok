@@ -231,16 +231,27 @@ describe("entering an app by hand", () => {
     expect((await loadGithubApp(testPool, KEY, first.id)).webhookSecret).toBe("second-secret-0123456789");
   });
 
-  test("is recorded in the sign-ins list", async () => {
+  test("is recorded in the activity log, with the app and no secret", async () => {
     await manual(good());
-    const list = (await request(app).get("/api/auth/logins").set("Cookie", cookie)).body.logins;
-    expect(list[0]).toMatchObject({ kind: "github", username: "admin", success: true });
+    const list = (await request(app).get("/api/audit").set("Cookie", cookie)).body.entries;
+    expect(list[0]).toMatchObject({ category: "github", action: "github_connected", actor: "admin" });
+    expect(list[0].details.map((d) => d.label)).toEqual(["App", "GitHub app number", "Owner", "How"]);
+    expect(JSON.stringify(list[0])).not.toMatch(/PRIVATE KEY|whsec|secret/i);
+  });
+
+  test("entering the same app again is recorded as a replacement, with its effect", async () => {
+    await manual(good());
+    await manual(good());
+    const list = (await request(app).get("/api/audit").set("Cookie", cookie)).body.entries;
+    expect(list.map((e) => e.action)).toEqual(["github_replaced", "github_connected"]);
+    expect(list[0].summary).toMatch(/^GitHub app credentials replaced: /);
+    expect(list[0].details.map((d) => d.label)).toContain("Effect");
   });
 
   test("a failed attempt is not recorded as a change", async () => {
     await manual(good({ password: "not-the-password-xx" }));
-    const list = (await request(app).get("/api/auth/logins").set("Cookie", cookie)).body.logins;
-    expect(list.some((l) => l.kind === "github")).toBe(false);
+    const list = (await request(app).get("/api/audit").set("Cookie", cookie)).body.entries;
+    expect(list.some((l) => l.category === "github")).toBe(false);
   });
 
   test("a wrong password is limited like the other password checks", async () => {
@@ -456,10 +467,11 @@ describe("disconnecting one app", () => {
     expect((await testPool.query("SELECT count(*)::int AS n FROM apps")).rows[0].n).toBe(1);
   });
 
-  test("is recorded in the sign-ins list", async () => {
+  test("is recorded in the activity log, with the projects left without an app", async () => {
     await disconnect(a.id, { password: PASSWORD });
-    const list = (await request(app).get("/api/auth/logins").set("Cookie", cookie)).body.logins;
-    expect(list[0]).toMatchObject({ kind: "github", success: true });
+    const list = (await request(app).get("/api/audit").set("Cookie", cookie)).body.entries;
+    expect(list[0]).toMatchObject({ category: "github", action: "github_disconnected" });
+    expect(list[0].details.find((d) => d.label === "Projects affected")).toMatchObject({ value: "none" });
   });
 });
 

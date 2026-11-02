@@ -172,10 +172,13 @@ describe("coming back from GitHub", () => {
     expect((await request(app).get("/api/github").set("Cookie", cookie)).body.apps[0]).toMatchObject({ appId: "424242", source: "manifest" });
   });
 
-  test("is recorded in the sign-ins list", async () => {
+  test("is recorded in the activity log, with the app", async () => {
     await callback({ code: CODE, state: await go() });
-    const list = (await request(app).get("/api/auth/logins").set("Cookie", cookie)).body.logins;
-    expect(list[0]).toMatchObject({ kind: "github", username: "admin", success: true });
+    const list = (await request(app).get("/api/audit").set("Cookie", cookie)).body.entries;
+    expect(list[0]).toMatchObject({ category: "github", action: "github_created", actor: "admin", source: "user" });
+    expect(list[0].summary).toMatch(/^GitHub app created through GitHub: /);
+    expect(list[0].details.map((d) => d.label)).toEqual(["App", "GitHub app number", "Owner", "How"]);
+    expect(JSON.stringify(list[0])).not.toMatch(/PRIVATE KEY|webhook_secret/i);
   });
 
   test("the state works once: a second visit with the same state is refused and GitHub is not asked", async () => {

@@ -27,6 +27,7 @@ import { buildCacheRouter } from './routes/buildcache.js';
 import { imagesRouter } from './routes/images.js';
 import { versionRouter } from './routes/version.js';
 import { backupsRouter } from './routes/backups.js';
+import { auditRouter } from './routes/audit.js';
 import { createVersionCheck } from './version.js';
 
 // What the API asks about GitHub: a client per GitHub App, the webhook secrets, a status. Normally read from the database (the apps are
@@ -108,6 +109,7 @@ export function createApp({
   app.use('/api/build-cache', requireAuth, buildCacheRouter({ db, queue }));
   app.use('/api/images', requireAuth, imagesRouter({ db, queue }));
   app.use('/api/version', requireAuth, versionRouter({ check: versionCheck }));
+  app.use('/api/audit', requireAuth, auditRouter({ db }));
   app.use('/api/backups', requireAuth, backupsRouter({ db, backupDir, secretsKey }));
   app.use('/api/apps', requireAuth, appsRouter({ db, queue, github: (id) => provider.client(id), logDir, diskUsage, portRange }));
   app.use('/api/apps', requireAuth, appLogsRouter({ db, logDir }));

@@ -11,7 +11,8 @@ import { randomUUID } from 'node:crypto';
 import { normalizeVolumePaths } from '../volumepaths.js';
 import { BACKUP_PASSPHRASE_CONTEXT, backupFilePath, backupPassphraseProblem, encryptSecret, nextSlot, normalizeSchedule, restorePassphraseContext } from '@shipdok/shared';
 import { limiter } from '../authutil.js';
-import { addressOf, recordAttempt } from '../lockout.js';
+import { addressOf } from '../lockout.js';
+import { fact, recordAudit } from '../audit.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const SCHEDULE_KEY = 'backup_schedule';
@@ -24,6 +25,7 @@ export const scheduleSchema = z.object({
   weekday: z.number().int().min(0).max(6),
   keep: z.number().int().min(1).max(60),
 }).strict();
+const MODE_TEXT = { replace: 'Replace (the volumes are emptied first)', add: 'Add over (the files are added, existing ones kept unless the backup has the same file)', empty: 'Only into empty volumes' };
 export const passphraseSchema = z.object({ password: z.string().min(1), passphrase: z.string().nullable() }).strict();
 export const volumeSettingsSchema = z.object({
   frequency: z.enum(['off', 'daily', 'weekly']),
@@ -223,13 +225,18 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
       }
       const user = await checkPassword(req, res, password);
       if (!user) return;
+      const { rows: had } = await db.query('SELECT 1 FROM settings WHERE key = $1', [PASSPHRASE_KEY]);
       if (passphrase === null) await db.query('DELETE FROM settings WHERE key = $1', [PASSPHRASE_KEY]);
       else {
         await db.query(
           `INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, now()) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now()`,
           [PASSPHRASE_KEY, JSON.stringify(encryptSecret(passphrase, secretsKey, PASSPHRASE_CONTEXT))]);
       }
-      await recordAttempt(db, { kind: 'backup', username: user.username, address: addressOf(req), success: true });
+      const did = passphrase === null ? 'removed' : had[0] ? 'changed' : 'set';
+      await recordAudit(db, {
+        category: 'backups', action: 'backup_passphrase', actor: user.username, address: addressOf(req), summary: `Backup passphrase ${did}`,
+        details: [fact('What', `the passphrase was ${did} (it is never recorded)`), fact('Effect', 'the next backups; backups already made keep the passphrase they were made with')],
+      });
       res.json(await overview());
     } catch (err) { next(err); }
   });
@@ -242,14 +249,20 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
       if (!parsed.success) return res.status(400).json(invalid(parsed));
       const user = await checkPassword(req, res, parsed.data.password);
       if (!user) return;
-      const { rows } = await db.query(`SELECT filename, status FROM backups WHERE id = $1`, [req.params.id]);
+      const { rows } = await db.query(`SELECT filename, status, kind, app_name, finished_at FROM backups WHERE id = $1`, [req.params.id]);
       const row = rows[0];
       if (!row) return res.status(404).json({ error: 'Backup not found' });
       const path = row.status === 'ok' ? backupFilePath(backupDir, row.filename) : null;
       if (!path) return res.status(409).json({ error: 'That backup has no file to download', code: 'no_file' });
       let size;
       try { size = (await stat(path)).size; } catch { return res.status(410).json({ error: 'The file of that backup is gone from the backups folder', code: 'file_missing' }); }
-      await recordAttempt(db, { kind: 'download', username: user.username, address: addressOf(req), success: true });
+      await recordAudit(db, {
+        category: 'backups', action: 'backup_download', actor: user.username, address: addressOf(req),
+        summary: row.kind === 'volumes' ? `Backup of ${row.app_name ?? 'an app'}'s data downloaded` : 'Backup of Shipdok downloaded',
+        details: [fact('Backup', row.kind === 'volumes' ? `the data of ${row.app_name ?? 'an app'}` : 'Shipdok itself (database and secrets)'),
+          fact('Made', row.finished_at ? new Date(row.finished_at).toISOString() : ''), fact('Size', `${size} bytes`), fact('Encrypted', row.filename.endsWith('.enc') ? 'yes' : 'no')],
+        appId: null, appName: row.kind === 'volumes' ? row.app_name : null,
+      });
       res.set({ 'Content-Type': 'application/octet-stream', 'Content-Length': String(size), 'Content-Disposition': `attachment; filename="${row.filename}"`, 'Cache-Control': 'no-store' });
       createReadStream(path).on('error', (err) => { console.error('Backup download failed:', err.message); res.destroy(); }).pipe(res);
     } catch (err) { next(err); }
@@ -285,7 +298,11 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING RETURNING id`,
         [id, b.id, b.app_id, b.app_name, b.finished_at, mode, safetyBackup, stored]);
       if (!made[0]) return res.status(409).json({ error: 'A restore of this app is already waiting or running', code: 'already_running' });
-      await recordAttempt(db, { kind: 'restore', username: user.username, address: addressOf(req), success: true });
+      await recordAudit(db, {
+        category: 'backups', action: 'restore', actor: user.username, address: addressOf(req), appId: b.app_id, appName: b.app_name, summary: `Restore started for ${b.app_name}`,
+        details: [fact('App', b.app_name), fact('From the backup made', b.finished_at ? new Date(b.finished_at).toISOString() : 'unknown'), fact('Mode', MODE_TEXT[mode] ?? mode),
+          fact('Backup of the current data first', safetyBackup ? 'yes' : 'no'), fact('Effect', 'the app is stopped during the restore and started again')],
+      });
       res.status(202).json({ id });
     } catch (err) { next(err); }
   });
@@ -324,7 +341,13 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true) ON CONFLICT DO NOTHING RETURNING id`,
         [id, b.id, appId, apps[0].name, b.app_name, b.finished_at, mode, safetyBackup, stored]);
       if (!made[0]) return res.status(409).json({ error: 'A restore of this app is already waiting or running', code: 'already_running' });
-      await recordAttempt(db, { kind: 'restore', username: user.username, address: addressOf(req), success: true });
+      await recordAudit(db, {
+        category: 'backups', action: 'reclaim', actor: user.username, address: addressOf(req), appId, appName: apps[0].name,
+        summary: `Backup of ${b.app_name ?? 'a deleted app'} reclaimed into ${apps[0].name}`,
+        details: [fact('Into the app', apps[0].name), fact('From the backup of', b.app_name ?? 'a deleted app'), fact('Made', b.finished_at ? new Date(b.finished_at).toISOString() : 'unknown'),
+          fact('Mode', MODE_TEXT[mode] ?? mode), fact('Backup of the current data first', safetyBackup ? 'yes' : 'no'),
+          fact('Paths added to the app', Array.isArray(b.volume_paths) && b.volume_paths.length ? b.volume_paths.join(', ') : 'as in the backup')],
+      });
       res.status(202).json({ id });
     } catch (err) { next(err); }
   });
