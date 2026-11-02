@@ -31,6 +31,8 @@ export const volumeSettingsSchema = z.object({
   weekday: z.number().int().min(0).max(6),
   stop: z.boolean(),
   keep: z.number().int().min(1).max(60),
+  // How many finished restores stay in the app's history: any whole number from 1, or null for all of them. Left out = unchanged.
+  restoreKeep: z.number().int().min(1).max(1_000_000).nullable().optional(),
 }).strict();
 export const RESTORE_MODES = ['replace', 'add', 'empty'];
 export const restoreSchema = z.object({
@@ -55,8 +57,17 @@ const shape = (r) => ({
 const restoreShape = (r) => ({
   id: r.id, backupId: r.backup_id, appId: r.app_id, appName: r.app_name, backupMadeAt: r.backup_made_at, mode: r.mode, safetyBackup: r.safety_backup, safetyBackupId: r.safety_backup_id,
   status: r.status, requestedAt: r.requested_at, startedAt: r.started_at, finishedAt: r.finished_at, volumeCount: r.volume_count, warning: r.warning, error: r.error,
-  reclaim: r.reclaim, backupAppName: r.backup_app_name,
+  reclaim: r.reclaim, backupAppName: r.backup_app_name, dismissed: r.dismissed_at != null,
 });
+
+// The restores of an app beyond the newest `restore_history_keep` finished ones (NULL = all are kept) are removed; one that is waiting or running never is.
+// A deleted app's restores (no app row any more) are counted by its name, with the default number.
+export const TRIM_RESTORES_SQL = `DELETE FROM volume_restores WHERE id IN (
+  SELECT t.id FROM (
+    SELECT r.id, row_number() OVER (PARTITION BY coalesce(r.app_id::text, r.app_name) ORDER BY coalesce(r.finished_at, r.requested_at) DESC, r.id) AS rank,
+           (a.id IS NOT NULL) AS has_app, a.restore_history_keep AS keep_n
+      FROM volume_restores r LEFT JOIN apps a ON a.id = r.app_id WHERE r.status IN ('ok', 'failed')
+  ) t WHERE CASE WHEN t.has_app THEN t.keep_n IS NOT NULL AND t.rank > t.keep_n ELSE t.rank > 10 END)`;
 
 /**
  * Is the backups folder a volume of its own (so that the backups survive the container being replaced)? Outside a container it always is.
@@ -85,7 +96,7 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
   // The apps that have mounted volumes, with what is set for their backups. Sizes are the last measurement (null = never measured).
   async function appsWithVolumes() {
     const { rows } = await db.query(
-      `SELECT a.id, a.name, a.volume_backup_frequency, a.volume_backup_hour, a.volume_backup_weekday, a.volume_backup_stop, a.volume_backup_keep,
+      `SELECT a.id, a.name, a.volume_backup_frequency, a.volume_backup_hour, a.volume_backup_weekday, a.volume_backup_stop, a.volume_backup_keep, a.restore_history_keep,
               count(v.id)::int AS volume_count, sum(v.size_bytes)::bigint AS size_bytes, count(v.size_bytes)::int AS measured,
               (SELECT max(b.finished_at) FROM backups b WHERE b.kind = 'volumes' AND b.app_id = a.id AND b.status = 'ok') AS last_ok_at
          FROM apps a JOIN app_volumes v ON v.app_id = a.id AND v.state = 'in_use'
@@ -95,7 +106,7 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
       return {
         id: a.id, name: a.name, volumeCount: a.volume_count, sizeBytes: a.measured === a.volume_count ? Number(a.size_bytes) : null, lastBackupAt: a.last_ok_at,
         schedule: { frequency: a.volume_backup_frequency, hour: a.volume_backup_hour, weekday: a.volume_backup_weekday }, nextRunAt: next ? next.toISOString() : null,
-        stop: a.volume_backup_stop, keep: a.volume_backup_keep,
+        stop: a.volume_backup_stop, keep: a.volume_backup_keep, restoreKeep: a.restore_history_keep,
       };
     });
   }
@@ -112,7 +123,7 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
       schedule,
       nextRunAt: next ? next.toISOString() : null,
       apps: await appsWithVolumes(),
-      restores: (await db.query('SELECT * FROM volume_restores ORDER BY requested_at DESC, id LIMIT 20')).rows.map(restoreShape),
+      restores: (await db.query('SELECT * FROM volume_restores ORDER BY requested_at DESC, id LIMIT 500')).rows.map(restoreShape),
       encryption: { enabled: byKey[PASSPHRASE_KEY] != null },
       persistent: await inOwnVolume(backupDir),
     };
@@ -157,13 +168,34 @@ export function backupsRouter({ db, backupDir, secretsKey }) {
       if (!UUID_RE.test(req.params.appId)) return res.status(404).json({ error: 'App not found' });
       const parsed = volumeSettingsSchema.safeParse(req.body ?? {});
       if (!parsed.success) return res.status(400).json(invalid(parsed));
-      const { frequency, hour, weekday, stop, keep } = parsed.data;
+      const { frequency, hour, weekday, stop, keep, restoreKeep } = parsed.data;
       const { rowCount } = await db.query(
         `UPDATE apps SET volume_backup_frequency = $2, volume_backup_hour = $3, volume_backup_weekday = $4, volume_backup_stop = $5, volume_backup_keep = $6, updated_at = now(),
+                restore_history_keep = CASE WHEN $7::boolean THEN $8::int ELSE restore_history_keep END,
                 volume_backup_changed_at = CASE WHEN (volume_backup_frequency, volume_backup_hour, volume_backup_weekday) IS DISTINCT FROM ($2, $3, $4) THEN now() ELSE volume_backup_changed_at END
-          WHERE id = $1 AND deleting_at IS NULL`, [req.params.appId, frequency, hour, weekday, stop, keep]);
+          WHERE id = $1 AND deleting_at IS NULL`, [req.params.appId, frequency, hour, weekday, stop, keep, restoreKeep !== undefined, restoreKeep ?? null]);
       if (rowCount === 0) return res.status(404).json({ error: 'App not found' });
+      if (restoreKeep !== undefined) await db.query(TRIM_RESTORES_SQL); // a lower number takes effect now
       res.json(await overview());
+    } catch (err) { next(err); }
+  });
+
+  // Close the red notice about a failed restore (the restore stays in the list). A newer failed restore has its own notice.
+  r.post('/restores/:id/dismiss', limiter(30), async (req, res, next) => {
+    try {
+      if (!UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'Restore not found' });
+      const { rowCount } = await db.query(`UPDATE volume_restores SET dismissed_at = coalesce(dismissed_at, now()) WHERE id = $1 AND status = 'failed'`, [req.params.id]);
+      if (rowCount === 0) return res.status(404).json({ error: 'No failed restore with that id' });
+      res.json(await overview());
+    } catch (err) { next(err); }
+  });
+
+  // Empty the history of an app's restores. Only finished ones (done or failed): one that is waiting or running stays. Backups and their files are untouched.
+  r.delete('/volumes/:appId/restores', limiter(30), async (req, res, next) => {
+    try {
+      if (!UUID_RE.test(req.params.appId)) return res.status(404).json({ error: 'App not found' });
+      const { rowCount } = await db.query(`DELETE FROM volume_restores WHERE app_id = $1 AND status IN ('ok', 'failed')`, [req.params.appId]);
+      res.json({ ...(await overview()), cleared: rowCount });
     } catch (err) { next(err); }
   });
 

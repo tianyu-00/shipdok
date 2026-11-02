@@ -144,9 +144,21 @@ export default Object.fromEntries([
   })),
   route('PUT', '/api/backups/volumes/{appId}/settings', op({
     tag: LOG, summary: 'Set how the volumes of an app are backed up', parameters: [idParam('appId', 'The app.')], body: ref('VolumeBackupSettings'),
-    description: '`frequency` (`off`, `daily` or `weekly`), `hour` (**UTC**, 0 to 23) and `weekday` (for weekly, 0 = Sunday): the app\'s OWN schedule for backing up its volumes by itself (off by default; changing it does not back up at once for a time that already passed today). `stop`: stop the app while its volumes are copied and start it again afterwards, so a database in a volume is copied consistently (default off: the copy is made while the app runs). `keep`: how many of this app\'s newest volume backups to keep (1 to 60, default 2). Answers with the new overview.',
+    description: '`frequency` (`off`, `daily` or `weekly`), `hour` (**UTC**, 0 to 23) and `weekday` (for weekly, 0 = Sunday): the app\'s OWN schedule for backing up its volumes by itself (off by default; changing it does not back up at once for a time that already passed today). `stop`: stop the app while its volumes are copied and start it again afterwards, so a database in a volume is copied consistently (default off: the copy is made while the app runs). `keep`: how many of this app\'s newest volume backups to keep (1 to 60, default 2). `restoreKeep` (optional): how many finished restores stay in the app\'s history (a whole number from 1, or `null` for all; default 10; left out = unchanged); older ones are removed at once. Answers with the new overview.',
     responses: { 200: ok('Saved.', ref('BackupsOverview')) },
     errors: { 404: 'No such app.' },
+  })),
+  route('POST', '/api/backups/restores/{id}/dismiss', op({
+    tag: LOG, summary: 'Close the notice about a failed restore', parameters: [idParam('id', 'A failed restore.')],
+    description: 'Sets `dismissed` on the restore, so the dashboard stops showing its red notice (on every browser). The restore stays in the list. A later failed restore has its own notice. Answers with the new overview.',
+    responses: { 200: ok('Dismissed.', ref('BackupsOverview')) },
+    errors: { 404: 'No failed restore with that id.', 429: 'Too many requests.' },
+  })),
+  route('DELETE', '/api/backups/volumes/{appId}/restores', op({
+    tag: LOG, summary: 'Clear the restore history of an app', parameters: [idParam('appId', 'The app.')],
+    description: 'Removes the finished restores (done or failed) of the app from its history. A restore that is waiting or running stays. Backups and their files are not touched. Answers with the new overview plus `cleared`, how many were removed.',
+    responses: { 200: ok('Cleared.', ref('BackupsOverview')) },
+    errors: { 404: 'No such app.', 429: 'Too many requests.' },
   })),
   route('PUT', '/api/backups/settings', op({
     tag: LOG, summary: 'Set the backup schedule', body: ref('BackupSchedule'),

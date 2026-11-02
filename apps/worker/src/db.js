@@ -539,6 +539,18 @@ export const markRestoreOk = (id, { volumeCount, warning = null }) =>
 export const markRestoreFailed = (id, error) =>
   pool.query(`UPDATE volume_restores SET status = 'failed', finished_at = now(), error = $2, passphrase_enc = NULL WHERE id = $1 AND status IN ${RESTORE_ACTIVE}`, [id, String(error).slice(0, 1000)]);
 
+/**
+ * Removes the finished restores beyond the number each app keeps in its history (`apps.restore_history_keep`, NULL = all of them). A restore that is waiting or
+ * running is never removed. A deleted app's restores (no app row any more) are counted by its name, keeping 10. Returns how many rows went.
+ */
+export const pruneRestores = () =>
+  pool.query(`DELETE FROM volume_restores WHERE id IN (
+    SELECT t.id FROM (
+      SELECT r.id, row_number() OVER (PARTITION BY coalesce(r.app_id::text, r.app_name) ORDER BY coalesce(r.finished_at, r.requested_at) DESC, r.id) AS rank,
+             (a.id IS NOT NULL) AS has_app, a.restore_history_keep AS keep_n
+        FROM volume_restores r LEFT JOIN apps a ON a.id = r.app_id WHERE r.status IN ('ok', 'failed')
+    ) t WHERE CASE WHEN t.has_app THEN t.keep_n IS NOT NULL AND t.rank > t.keep_n ELSE t.rank > 10 END)`).then((r) => r.rowCount);
+
 /** A restore that was running when the worker stopped can never finish: say so (the data may be half restored). Returns the apps it concerned. */
 export const interruptRunningRestores = () =>
   pool.query(

@@ -439,3 +439,73 @@ describe('after the worker was stopped', () => {
     assert.deepEqual(orderOf(eng), []);
   });
 });
+
+describe('the restore history', () => {
+  // n finished restores of an app (1 = the newest minute ago); ids oldest to newest
+  const history = async (id, n, { status = 'ok', name = appName } = {}) => (await pool.query(
+    `INSERT INTO volume_restores (app_id, app_name, mode, safety_backup, status, requested_at, finished_at)
+     SELECT $1, $4, 'add', true, $3, now() - make_interval(mins => g), now() - make_interval(mins => g) FROM generate_series($2::int, 1, -1) g RETURNING id`, [id, n, status, name])).rows.map((r) => r.id);
+  const idsOf = async (id) => (await pool.query('SELECT id FROM volume_restores WHERE app_id = $1 ORDER BY requested_at DESC', [id])).rows.map((r) => r.id);
+
+  test('an app keeps its newest finished restores, as many as it chose (10 unless said)', async () => {
+    const ids = await history(appId, 13);
+    assert.equal(await db.pruneRestores(), 3);
+    assert.deepEqual(await idsOf(appId), ids.slice(3).reverse());
+    await setApp(appId, { restore_history_keep: 2 });
+    assert.equal(await db.pruneRestores(), 8);
+    assert.deepEqual(await idsOf(appId), [ids[12], ids[11]]);
+  });
+  test('NULL keeps them all', async () => {
+    await setApp(appId, { restore_history_keep: null });
+    await history(appId, 30);
+    assert.equal(await db.pruneRestores(), 0);
+    assert.equal((await idsOf(appId)).length, 30);
+  });
+  test('failed ones count like done ones; waiting and running ones are never removed and do not count', async () => {
+    await setApp(appId, { restore_history_keep: 1 });
+    await history(appId, 2, { status: 'failed' });
+    await history(appId, 1, { status: 'ok' });
+    await pool.query(`INSERT INTO volume_restores (app_id, app_name, mode, safety_backup, status, requested_at) VALUES ($1, 'x', 'add', true, 'queued', now() - interval '3 days')`, [appId]);
+    await db.pruneRestores();
+    const left = (await pool.query('SELECT status FROM volume_restores WHERE app_id = $1 ORDER BY status', [appId])).rows.map((r) => r.status);
+    assert.deepEqual(left, ['ok', 'queued']);
+  });
+  test('each app is counted on its own', async () => {
+    const other = await makeApp();
+    await setApp(appId, { restore_history_keep: 1 });
+    await setApp(other, { restore_history_keep: 3 });
+    await history(appId, 4);
+    await history(other, 4, { name: 'other' });
+    await db.pruneRestores();
+    assert.equal((await idsOf(appId)).length, 1);
+    assert.equal((await idsOf(other)).length, 3);
+  });
+  test('the restores of an app that was deleted are counted by its name, keeping 10', async () => {
+    await pool.query(`INSERT INTO volume_restores (app_id, app_name, mode, safety_backup, status, requested_at, finished_at) SELECT NULL, 'Gone', 'add', true, 'ok', now() - make_interval(mins => g), now() - make_interval(mins => g) FROM generate_series(1, 14) g`);
+    await pool.query(`INSERT INTO volume_restores (app_id, app_name, mode, safety_backup, status, requested_at, finished_at) SELECT NULL, 'Other gone', 'add', true, 'ok', now() - make_interval(mins => g), now() - make_interval(mins => g) FROM generate_series(1, 3) g`);
+    assert.equal(await db.pruneRestores(), 4);
+    const left = (await pool.query(`SELECT app_name, count(*)::int AS n FROM volume_restores GROUP BY app_name ORDER BY app_name`)).rows;
+    assert.deepEqual(left, [{ app_name: 'Gone', n: 10 }, { app_name: 'Other gone', n: 3 }]);
+  });
+  test('the runner trims the history right after it answers a restore', async () => {
+    await putSetting('backup_schedule', { frequency: 'off', hour: 3, weekday: 1, keep: 7 });
+    await setApp(appId, { restore_history_keep: 2 });
+    const old = await history(appId, 4);
+    const backup = await aBackup();
+    const id = (await pool.query(`INSERT INTO volume_restores (backup_id, app_id, app_name, mode, safety_backup) VALUES ($1, $2, 'x', 'replace', false) RETURNING id`, [backup, appId])).rows[0].id;
+    const runner = createBackupRunner({ db, eng: engine(), secretsKey: KEY, dir, secretsDir: dir, version: '0.1.23', log });
+    assert.equal(await runner.tick(), true);
+    assert.equal((await restoreRow(id)).status, 'ok');
+    assert.deepEqual(await idsOf(appId), [id, old[3]]);
+  });
+  test('a history that cannot be trimmed is logged and does not stop the runner', async () => {
+    await putSetting('backup_schedule', { frequency: 'off', hour: 3, weekday: 1, keep: 7 });
+    const backup = await aBackup();
+    const id = (await pool.query(`INSERT INTO volume_restores (backup_id, app_id, app_name, mode, safety_backup) VALUES ($1, $2, 'x', 'replace', false) RETURNING id`, [backup, appId])).rows[0].id;
+    const broken = Object.assign(Object.create(db), { pruneRestores: async () => { throw new Error('no way'); } });
+    const runner = createBackupRunner({ db: new Proxy(db, { get: (t, k) => (k === 'pruneRestores' ? broken.pruneRestores : t[k]) }), eng: engine(), secretsKey: KEY, dir, secretsDir: dir, version: '0.1.23', log });
+    assert.equal(await runner.tick(), true);
+    assert.equal((await restoreRow(id)).status, 'ok');
+    assert.ok(logs.some((l) => /restore history: no way/.test(l)), logs.join('\n'));
+  });
+});

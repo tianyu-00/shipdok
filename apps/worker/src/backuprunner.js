@@ -233,6 +233,7 @@ export function createBackupRunner({ db = store, eng = realEngine, secretsKey, d
     const restore = await db.claimQueuedRestore();
     if (!restore) return false;
     await answerRestore(restore, { db, eng, secretsKey, dir, version, log, activity });
+    await db.pruneRestores?.().catch((err) => log(`restore history: ${err.message}`)); // the history keeps the number each app chose
     return true;
   };
   return {

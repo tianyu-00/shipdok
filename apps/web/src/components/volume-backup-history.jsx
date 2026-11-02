@@ -1,8 +1,17 @@
 import { useState } from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { toast } from 'sonner'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { api } from '@/lib/api'
 import { timeAgo } from '@/lib/format'
-import { isAppBusy, isAppRestoring, restoreModeLabel, volumeBackups, volumesText } from '@/lib/backups'
+import { RESTORE_PAGE_SIZES, isAppBusy, isAppRestoring, pageOf, restoreModeLabel, savedRestorePageSize, saveRestorePageSize, volumeBackups, volumesText } from '@/lib/backups'
+import { NativeSelect } from '@/components/native-select'
 import { DownloadDialog, RestoreDialog } from '@/components/backup-dialogs'
 import { BackupTable, DeleteBackupDialog } from '@/components/backup-table'
 
@@ -13,12 +22,50 @@ const RESTORE_STATUS = {
   failed: { label: 'Failed', className: 'border-destructive/40 bg-destructive/10 text-destructive' },
 }
 
-function Restores({ restores }) {
+/** Empties the finished restores of the app's history (a restore that is waiting or running stays; the backups are not touched). */
+function ClearRestores({ appId, finished }) {
+  const client = useQueryClient()
+  const [asking, setAsking] = useState(false)
+  const clear = useMutation({
+    mutationFn: () => api(`/backups/volumes/${appId}/restores`, { method: 'DELETE' }),
+    onSuccess: (data) => { client.setQueryData(['backups'], data); toast.success(`${data.cleared} restore${data.cleared === 1 ? '' : 's'} cleared from the history`) },
+    onError: (err) => toast.error(err.message),
+    onSettled: () => setAsking(false),
+  })
+  return (
+    <>
+      <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setAsking(true)}>Clear</Button>
+      <AlertDialog open={asking} onOpenChange={setAsking}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear the restore history of this app?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The {finished} finished restore{finished === 1 ? '' : 's'} listed here will be removed from the list. Only the history goes: the app's files and its backups are not touched.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={(e) => { e.preventDefault(); clear.mutate() }}>Clear the history</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  )
+}
+
+function Restores({ restores, appId }) {
+  const [size, setSize] = useState(savedRestorePageSize)
+  const [at, setAt] = useState(0)
+  const { items, page, pages } = pageOf(restores, at, size)
+  const finished = restores.filter((r) => r.status === 'ok' || r.status === 'failed').length
   return (
     <div className="space-y-2">
-      <p className="text-sm font-medium">Restores</p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-medium">Restores <span className="font-normal text-muted-foreground">({restores.length})</span></p>
+        {finished > 0 && <ClearRestores appId={appId} finished={finished} />}
+      </div>
       <ul className="space-y-2">
-        {restores.map((r) => {
+        {items.map((r) => {
           const s = RESTORE_STATUS[r.status] ?? RESTORE_STATUS.failed
           return (
             <li key={r.id} className="rounded-md border p-3 text-sm" aria-label={`Restore of ${r.appName}`}>
@@ -37,6 +84,21 @@ function Restores({ restores }) {
           )
         })}
       </ul>
+      {(pages > 1 || restores.length > RESTORE_PAGE_SIZES[0]) && (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+          <div className="flex items-center gap-2">
+            <label htmlFor={`restore-page-size-${appId}`} className="text-xs text-muted-foreground">Per page</label>
+            <div className="w-24"><NativeSelect id={`restore-page-size-${appId}`} value={String(size)} onChange={(v) => { setSize(Number(v)); saveRestorePageSize(Number(v)); setAt(0) }}>
+              {RESTORE_PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+            </NativeSelect></div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="icon-sm" aria-label="Newer" title="Newer" disabled={page === 0} onClick={() => setAt(page - 1)}><ChevronLeft className="size-4" /></Button>
+            <span className="text-xs text-muted-foreground" aria-live="polite">Page {page + 1} of {pages}</span>
+            <Button variant="outline" size="icon-sm" aria-label="Older" title="Older" disabled={page >= pages - 1} onClick={() => setAt(page + 1)}><ChevronRight className="size-4" /></Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -53,11 +115,20 @@ export default function VolumeBackupHistory({ data, appId }) {
   const restores = (data?.restores ?? []).filter(mine)
   const newest = backups[0]
   const newestRestore = restores[0]
+  const client = useQueryClient()
+  const dismiss = useMutation({
+    mutationFn: (id) => api(`/backups/restores/${id}/dismiss`, { method: 'POST' }),
+    onSuccess: (data) => client.setQueryData(['backups'], data),
+    onError: (err) => toast.error(err.message),
+  })
   return (
     <>
-      {newestRestore?.status === 'failed' && (
+      {newestRestore?.status === 'failed' && !newestRestore.dismissed && (
         <Alert variant="destructive" role="status" aria-label="Last restore failed">
-          <AlertTitle>The last restore of this app's data failed</AlertTitle>
+          <AlertTitle className="flex items-start justify-between gap-2">
+            <span>The last restore of this app's data failed</span>
+            <Button variant="ghost" size="sm" className="-my-1 h-7 shrink-0" disabled={dismiss.isPending} onClick={() => dismiss.mutate(newestRestore.id)}>Dismiss</Button>
+          </AlertTitle>
           <AlertDescription>{newestRestore.error ?? 'No reason was recorded.'}</AlertDescription>
         </Alert>
       )}
@@ -73,7 +144,7 @@ export default function VolumeBackupHistory({ data, appId }) {
           restoreBlocked={(b) => isAppBusy(data.backups, b.appId) || isAppRestoring(data.restores, b.appId)}
         />
       )}
-      {restores.length > 0 && <Restores restores={restores} />}
+      {restores.length > 0 && <Restores restores={restores} appId={appId} />}
       {downloading && <DownloadDialog backup={downloading} onClose={() => setDownloading(null)} />}
       {restoring && <RestoreDialog backup={restoring} onClose={() => setRestoring(null)} />}
       <DeleteBackupDialog backup={deleting} onClose={() => setDeleting(null)} />

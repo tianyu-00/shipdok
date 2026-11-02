@@ -345,7 +345,7 @@ describe('backups of an app\'s volumes', () => {
       const bare = await addApp('No data');
       await addVolume(bare, '/old', 'detached');
       const o = await overview();
-      expect(o.apps).toEqual([{ id: appId, name: 'Blog', volumeCount: 1, sizeBytes: 1000, lastBackupAt: null, schedule: { frequency: 'off', hour: 3, weekday: 1 }, nextRunAt: null, stop: false, keep: 2 }]);
+      expect(o.apps).toEqual([{ id: appId, name: 'Blog', volumeCount: 1, sizeBytes: 1000, lastBackupAt: null, schedule: { frequency: 'off', hour: 3, weekday: 1 }, nextRunAt: null, stop: false, keep: 2, restoreKeep: 10 }]);
     });
     test('adds the volumes of an app up, and says nothing about the size while any was never measured', async () => {
       await addVolume(appId, '/uploads', 'in_use', 234);
@@ -653,9 +653,9 @@ describe('restoring from a volume backup', () => {
       expect(o.restores[1]).toMatchObject({ status: 'failed', error: 'Not enough free disk space' });
       expect(JSON.stringify(o)).not.toMatch(/passphrase_enc|secret passphrase/);
     });
-    test('shows at most 20 restores', async () => {
-      await testPool.query(`INSERT INTO volume_restores (app_name, mode, safety_backup, status, requested_at) SELECT 'x', 'add', true, 'ok', now() - make_interval(mins => g) FROM generate_series(1, 25) g`);
-      expect((await overview()).restores).toHaveLength(20);
+    test('shows at most 500 restores (what each app keeps decides how many there are)', async () => {
+      await testPool.query(`INSERT INTO volume_restores (app_name, mode, safety_backup, status, requested_at) SELECT 'x', 'add', true, 'ok', now() - make_interval(mins => g) FROM generate_series(1, 505) g`);
+      expect((await overview()).restores).toHaveLength(500);
     });
     test('a backup stays restorable-looking data after its restore row refers to it, and deleting the backup keeps the restore row', async () => {
       const id = await volumeBackup();
@@ -663,6 +663,130 @@ describe('restoring from a volume backup', () => {
       await testPool.query(`UPDATE volume_restores SET status = 'ok'`);
       expect((await agent.delete(`/api/backups/${id}`)).status).toBe(204);
       expect((await overview()).restores[0]).toMatchObject({ backupId: null, status: 'ok' });
+    });
+  });
+  // ---- The history of an app's restores: how many stay, closing the red notice, clearing it
+  describe('the restore history', () => {
+    const settingsOf = (id, over = {}) => agent.put(`/api/backups/volumes/${id}/settings`).send({ frequency: 'off', hour: 3, weekday: 1, stop: false, keep: 2, ...over });
+    // n finished restores of an app, the newest first in time (index 1 = newest); returns their ids oldest to newest
+    const history = async (id, n, { status = 'ok', name = 'Blog' } = {}) => (await testPool.query(
+      `INSERT INTO volume_restores (app_id, app_name, mode, safety_backup, status, requested_at, finished_at)
+       SELECT $1, $4, 'add', true, $3, now() - make_interval(mins => g), now() - make_interval(mins => g) FROM generate_series($2::int, 1, -1) g RETURNING id`, [id, n, status, name])).rows.map((r) => r.id);
+    const idsOf = async (id) => (await testPool.query('SELECT id FROM volume_restores WHERE app_id = $1 ORDER BY requested_at DESC', [id])).rows.map((r) => r.id);
+    const keepOf = async (id) => (await testPool.query('SELECT restore_history_keep AS k FROM apps WHERE id = $1', [id])).rows[0].k;
+
+    test('an app keeps 10 until it says otherwise, and the overview says so', async () => {
+      expect(await keepOf(appId)).toBe(10);
+      expect((await overview()).apps[0].restoreKeep).toBe(10);
+    });
+    test('the number is saved: a whole number from 1 up, or null for all of them; leaving it out changes nothing', async () => {
+      expect((await settingsOf(appId, { restoreKeep: 3 })).body.apps[0].restoreKeep).toBe(3);
+      expect((await settingsOf(appId)).body.apps[0].restoreKeep).toBe(3);
+      expect((await settingsOf(appId, { restoreKeep: 250000 })).body.apps[0].restoreKeep).toBe(250000);
+      expect((await settingsOf(appId, { restoreKeep: null })).body.apps[0].restoreKeep).toBeNull();
+      expect(await keepOf(appId)).toBeNull();
+      expect((await settingsOf(appId)).body.apps[0].restoreKeep).toBeNull();
+    });
+    test.each([[0], [-1], [1.5], ['5'], [1_000_001]])('%p is refused', async (bad) => {
+      const res = await settingsOf(appId, { restoreKeep: bad });
+      expect(res.status).toBe(400);
+      expect(await keepOf(appId)).toBe(10);
+    });
+    test('a lower number removes the older finished restores at once and keeps the newest ones', async () => {
+      const ids = await history(appId, 6); // oldest .. newest
+      await settingsOf(appId, { restoreKeep: 2 });
+      expect(await idsOf(appId)).toEqual([ids[5], ids[4]]);
+    });
+    test('the same number removes nothing, and null removes nothing however many there are', async () => {
+      const ids = await history(appId, 4);
+      await settingsOf(appId, { restoreKeep: 4 });
+      expect(await idsOf(appId)).toHaveLength(4);
+      await settingsOf(appId, { restoreKeep: null });
+      expect(await idsOf(appId)).toEqual([...ids].reverse());
+    });
+    test('failed ones count with the done ones, and a restore that is waiting or running is never removed', async () => {
+      await history(appId, 3, { status: 'failed' });
+      await testPool.query(`INSERT INTO volume_restores (app_id, app_name, mode, safety_backup, status, requested_at) VALUES ($1, 'Blog', 'add', true, 'queued', now() - interval '1 day')`, [appId]);
+      await settingsOf(appId, { restoreKeep: 1 });
+      const rows = (await testPool.query('SELECT status FROM volume_restores WHERE app_id = $1 ORDER BY status', [appId])).rows.map((r) => r.status);
+      expect(rows).toEqual(['failed', 'queued']);
+    });
+    test('another app\'s history is counted on its own', async () => {
+      const other = (await agent.post('/api/apps').send({ name: 'Wiki', repo: 'o/wiki', container_port: 3000, host_port: 8301 })).body.id;
+      await history(appId, 3);
+      await history(other, 3, { name: 'Wiki' });
+      await settingsOf(appId, { restoreKeep: 1 });
+      expect((await idsOf(appId))).toHaveLength(1);
+      expect((await idsOf(other))).toHaveLength(3);
+    });
+
+    test('the restores of a deleted app are counted by its name with the default 10, apart from a live app of the same name', async () => {
+      const gone = (n, name) => testPool.query(
+        `INSERT INTO volume_restores (app_id, app_name, mode, safety_backup, status, requested_at, finished_at) SELECT NULL, $2, 'add', true, 'ok', now() - make_interval(mins => g), now() - make_interval(mins => g) FROM generate_series(1, $1::int) g`, [n, name]);
+      await gone(13, 'Blog');
+      await gone(4, 'Wiki');
+      await history(appId, 3); // the live app, also called Blog
+      await settingsOf(appId, { restoreKeep: 1 });
+      const left = (await testPool.query(`SELECT app_name, app_id IS NULL AS deleted, count(*)::int AS n FROM volume_restores GROUP BY 1, 2 ORDER BY 1, 2`)).rows;
+      expect(left).toEqual([{ app_name: 'Blog', deleted: false, n: 1 }, { app_name: 'Blog', deleted: true, n: 10 }, { app_name: 'Wiki', deleted: true, n: 4 }]);
+    });
+
+    describe('closing the notice of a failed restore', () => {
+      test('marks it dismissed for everyone, keeps it in the list, and a newer failure is not dismissed', async () => {
+        const [old] = await history(appId, 1, { status: 'failed' });
+        let o = (await agent.post(`/api/backups/restores/${old}/dismiss`)).body;
+        expect(o.restores.find((r) => r.id === old).dismissed).toBe(true);
+        const [fresh] = (await testPool.query(`INSERT INTO volume_restores (app_id, app_name, mode, safety_backup, status, requested_at, finished_at) VALUES ($1, 'Blog', 'add', true, 'failed', now() + interval '1 minute', now() + interval '1 minute') RETURNING id`, [appId])).rows.map((r) => r.id);
+        o = await overview();
+        expect(o.restores.map((r) => [r.id, r.dismissed])).toEqual([[fresh, false], [old, true]]);
+      });
+      test('dismissing twice is fine and keeps the first time', async () => {
+        const [id] = await history(appId, 1, { status: 'failed' });
+        await agent.post(`/api/backups/restores/${id}/dismiss`);
+        const first = (await testPool.query('SELECT dismissed_at FROM volume_restores WHERE id = $1', [id])).rows[0].dismissed_at;
+        expect((await agent.post(`/api/backups/restores/${id}/dismiss`)).status).toBe(200);
+        expect((await testPool.query('SELECT dismissed_at FROM volume_restores WHERE id = $1', [id])).rows[0].dismissed_at).toEqual(first);
+      });
+      test('only a failed restore can be dismissed: a done one, a missing one and a bad id are 404', async () => {
+        const [done] = await history(appId, 1, { status: 'ok' });
+        expect((await agent.post(`/api/backups/restores/${done}/dismiss`)).status).toBe(404);
+        expect((await agent.post('/api/backups/restores/11111111-1111-4111-8111-111111111111/dismiss')).status).toBe(404);
+        expect((await agent.post('/api/backups/restores/nope/dismiss')).status).toBe(404);
+        expect((await testPool.query('SELECT dismissed_at FROM volume_restores WHERE id = $1', [done])).rows[0].dismissed_at).toBeNull();
+      });
+      test('needs a session', async () => {
+        const [id] = await history(appId, 1, { status: 'failed' });
+        expect((await request(app).post(`/api/backups/restores/${id}/dismiss`)).status).toBe(401);
+      });
+    });
+
+    describe('clearing the history', () => {
+      test('removes the finished restores of that app only, and says how many', async () => {
+        const other = (await agent.post('/api/apps').send({ name: 'Wiki', repo: 'o/wiki', container_port: 3000, host_port: 8301 })).body.id;
+        await history(appId, 3);
+        await history(appId, 2, { status: 'failed' });
+        await history(other, 2, { name: 'Wiki' });
+        const res = await agent.delete(`/api/backups/volumes/${appId}/restores`);
+        expect(res.status).toBe(200);
+        expect(res.body.cleared).toBe(5);
+        expect(await idsOf(appId)).toEqual([]);
+        expect(await idsOf(other)).toHaveLength(2);
+        expect(res.body.restores).toHaveLength(2);
+      });
+      test('leaves a restore that is waiting or running, and the backups and their files', async () => {
+        const backup = await volumeBackup();
+        await restore(backup); // queued
+        await history(appId, 2);
+        await agent.delete(`/api/backups/volumes/${appId}/restores`);
+        expect((await testPool.query('SELECT status FROM volume_restores WHERE app_id = $1', [appId])).rows.map((r) => r.status)).toEqual(['queued']);
+        expect((await testPool.query('SELECT 1 FROM backups WHERE id = $1', [backup])).rowCount).toBe(1);
+        expect(existsSync(join(dir, VNAME))).toBe(true);
+      });
+      test('an app with no history is fine (nothing cleared); a bad id is 404; it needs a session', async () => {
+        expect((await agent.delete(`/api/backups/volumes/${appId}/restores`)).body.cleared).toBe(0);
+        expect((await agent.delete('/api/backups/volumes/nope/restores')).status).toBe(404);
+        expect((await request(app).delete(`/api/backups/volumes/${appId}/restores`)).status).toBe(401);
+      });
     });
   });
 });

@@ -771,6 +771,74 @@
         ]
       }
     },
+    "/api/backups/volumes/{appId}/restores": {
+      "delete": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Clear the restore history of an app",
+        "description": "Removes the finished restores (done or failed) of the app from its history. A restore that is waiting or running stays. Backups and their files are not touched. Answers with the new overview plus `cleared`, how many were removed.",
+        "parameters": [
+          {
+            "name": "appId",
+            "in": "path",
+            "required": true,
+            "description": "The app.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cleared.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupsOverview"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/backups/{id}": {
       "delete": {
         "tags": [
@@ -4592,6 +4660,74 @@
         "security": []
       }
     },
+    "/api/backups/restores/{id}/dismiss": {
+      "post": {
+        "tags": [
+          "Logs and storage"
+        ],
+        "summary": "Close the notice about a failed restore",
+        "description": "Sets `dismissed` on the restore, so the dashboard stops showing its red notice (on every browser). The restore stays in the list. A later failed restore has its own notice. Answers with the new overview.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "A failed restore.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dismissed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupsOverview"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session ended (30 minutes without activity, or 12 hours in all).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No failed restore with that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/backups/volumes/{appId}": {
       "post": {
         "tags": [
@@ -6050,7 +6186,7 @@
           "Logs and storage"
         ],
         "summary": "Set how the volumes of an app are backed up",
-        "description": "`frequency` (`off`, `daily` or `weekly`), `hour` (**UTC**, 0 to 23) and `weekday` (for weekly, 0 = Sunday): the app's OWN schedule for backing up its volumes by itself (off by default; changing it does not back up at once for a time that already passed today). `stop`: stop the app while its volumes are copied and start it again afterwards, so a database in a volume is copied consistently (default off: the copy is made while the app runs). `keep`: how many of this app's newest volume backups to keep (1 to 60, default 2). Answers with the new overview.",
+        "description": "`frequency` (`off`, `daily` or `weekly`), `hour` (**UTC**, 0 to 23) and `weekday` (for weekly, 0 = Sunday): the app's OWN schedule for backing up its volumes by itself (off by default; changing it does not back up at once for a time that already passed today). `stop`: stop the app while its volumes are copied and start it again afterwards, so a database in a volume is copied consistently (default off: the copy is made while the app runs). `keep`: how many of this app's newest volume backups to keep (1 to 60, default 2). `restoreKeep` (optional): how many finished restores stay in the app's history (a whole number from 1, or `null` for all; default 10; left out = unchanged); older ones are removed at once. Answers with the new overview.",
         "parameters": [
           {
             "name": "appId",
@@ -7764,7 +7900,7 @@
           },
           "restores": {
             "type": "array",
-            "description": "The latest restores (newest first, at most 20).",
+            "description": "The restores (newest first, at most 500): each app keeps the number of finished ones it chose (`restoreKeep`), plus any that are waiting or running.",
             "items": {
               "$ref": "#/components/schemas/VolumeRestore"
             }
@@ -7815,6 +7951,11 @@
                 "keep": {
                   "type": "integer",
                   "description": "How many of its newest volume backups to keep."
+                },
+                "restoreKeep": {
+                  "type": "integer",
+                  "nullable": true,
+                  "description": "How many finished restores stay in its history; `null` = all of them."
                 }
               },
               "required": [
@@ -7826,7 +7967,8 @@
                 "schedule",
                 "nextRunAt",
                 "stop",
-                "keep"
+                "keep",
+                "restoreKeep"
               ]
             }
           },
@@ -7900,6 +8042,13 @@
           "keep": {
             "type": "integer",
             "description": "How many of its newest volume backups to keep (1 to 60)."
+          },
+          "restoreKeep": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 1,
+            "maximum": 1000000,
+            "description": "How many finished restores stay in the app's history: a whole number from 1, or `null` for all of them. Left out = unchanged. Older ones are removed at once and after each restore; one that is waiting or running never is."
           }
         },
         "required": [
@@ -7907,7 +8056,8 @@
           "hour",
           "weekday",
           "stop",
-          "keep"
+          "keep",
+          "restoreKeep"
         ]
       },
       "VolumeRestore": {
@@ -7986,6 +8136,10 @@
             "nullable": true,
             "description": "When it ended."
           },
+          "dismissed": {
+            "type": "boolean",
+            "description": "The notice about this failed restore was closed (`POST /api/backups/restores/{id}/dismiss`); the restore stays in the list."
+          },
           "reclaim": {
             "type": "boolean",
             "description": "It was a reclaim: restored into an app that is not the backup's own, adding the paths that app lacked."
@@ -8024,6 +8178,7 @@
           "requestedAt",
           "startedAt",
           "finishedAt",
+          "dismissed",
           "reclaim",
           "backupAppName",
           "volumeCount",

@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, afterEach } from 'vitest'
-import { keptBackups, RESTORE_MODES, isAppRestoring, restoreModeLabel, downloadBackup, filenameFrom, isAppBusy, isBusy, keepChoices, latestBackups, localHourText, platformBackups, scheduleText, utcHourText, volumeBackups, volumesText, WEEKDAYS } from './backups'
+import { keptBackups, pageOf, parseRestoreKeep, savedRestorePageSize, saveRestorePageSize, RESTORE_MODES, isAppRestoring, restoreModeLabel, downloadBackup, filenameFrom, isAppBusy, isBusy, keepChoices, latestBackups, localHourText, platformBackups, scheduleText, utcHourText, volumeBackups, volumesText, WEEKDAYS } from './backups'
 import { ApiError } from './api'
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
@@ -163,5 +163,40 @@ describe('backups kept without an app', () => {
   test('copes with nothing at all', () => {
     expect(keptBackups(undefined)).toEqual([])
     expect(keptBackups({})).toEqual([])
+  })
+})
+
+describe('the history of restores', () => {
+  test('pageOf cuts a list into pages, never past either end, and says which page it really is', () => {
+    const list = Array.from({ length: 12 }, (_, i) => i)
+    expect(pageOf(list, 0, 5)).toEqual({ items: [0, 1, 2, 3, 4], page: 0, pages: 3 })
+    expect(pageOf(list, 2, 5)).toEqual({ items: [10, 11], page: 2, pages: 3 })
+    expect(pageOf(list, 9, 5).page).toBe(2)
+    expect(pageOf(list, -4, 5).page).toBe(0)
+    expect(pageOf([], 3, 5)).toEqual({ items: [], page: 0, pages: 1 })
+    expect(pageOf(list, 0, 12).pages).toBe(1)
+    expect(pageOf(list, 0, 11).pages).toBe(2)
+  })
+  test('parseRestoreKeep: empty is all, a whole number from 1 to a million is itself, anything else is not a number', () => {
+    expect(parseRestoreKeep('')).toBeNull()
+    expect(parseRestoreKeep('  ')).toBeNull()
+    expect(parseRestoreKeep('1')).toBe(1)
+    expect(parseRestoreKeep(' 42 ')).toBe(42)
+    expect(parseRestoreKeep('1000000')).toBe(1_000_000)
+    for (const bad of ['0', '00', '-1', '1.5', '1e3', 'ten', '1000001', '5 6']) expect(parseRestoreKeep(bad)).toBeUndefined()
+  })
+  test('the page size is 5 unless this browser saved one of the choices; storage that fails is only a convenience', () => {
+    localStorage.clear()
+    expect(savedRestorePageSize()).toBe(5)
+    saveRestorePageSize(25)
+    expect(savedRestorePageSize()).toBe(25)
+    localStorage.setItem('shipdok.restorePageSize', '3')
+    expect(savedRestorePageSize()).toBe(5)
+    const broken = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked') })
+    expect(savedRestorePageSize()).toBe(5)
+    broken.mockRestore()
+    const noSave = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked') })
+    expect(() => saveRestorePageSize(10)).not.toThrow()
+    noSave.mockRestore()
   })
 })
