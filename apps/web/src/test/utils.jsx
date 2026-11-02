@@ -1,4 +1,5 @@
-import { render } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { ThemeProvider } from 'next-themes'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -57,4 +58,29 @@ export function renderWithProviders(ui, { route = '/' } = {}) {
   )
   const view = render(wrap(ui))
   return { ...view, client, wrap }
+}
+
+/** Chooses an option of a Select (the popover list that replaced the browser's <select>): opens it from its button, then presses the row with that value. */
+export async function pick(trigger, value) {
+  await userEvent.click(trigger)
+  const rows = await screen.findAllByRole('option')
+  const row = rows.find((r) => r.getAttribute('data-value') === String(value))
+  if (!row) throw new Error(`No option with the value "${value}"; the list has: ${rows.map((r) => r.getAttribute('data-value')).join(', ')}`)
+  await userEvent.click(row)
+}
+
+/** The texts of the options a Select offers, in order (it opens the list and closes it again). */
+export async function listed(trigger) {
+  await userEvent.click(trigger)
+  const texts = (await screen.findAllByRole('option')).map((r) => r.textContent)
+  await userEvent.keyboard('{Escape}')
+  return texts
+}
+
+/** The values of the options a Select offers, in order. */
+export async function listedValues(trigger) {
+  await userEvent.click(trigger)
+  const values = (await screen.findAllByRole('option')).map((r) => r.getAttribute('data-value'))
+  await userEvent.keyboard('{Escape}')
+  return values
 }

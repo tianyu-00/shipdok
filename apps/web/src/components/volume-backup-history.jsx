@@ -11,7 +11,7 @@ import {
 import { api } from '@/lib/api'
 import { timeAgo } from '@/lib/format'
 import { RESTORE_PAGE_SIZES, isAppBusy, isAppRestoring, pageOf, restoreModeLabel, savedRestorePageSize, saveRestorePageSize, volumeBackups, volumesText } from '@/lib/backups'
-import { NativeSelect } from '@/components/native-select'
+import { Select } from '@/components/select'
 import { DownloadDialog, RestoreDialog } from '@/components/backup-dialogs'
 import { BackupTable, DeleteBackupDialog } from '@/components/backup-table'
 
@@ -88,9 +88,9 @@ function Restores({ restores, appId }) {
         <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
           <div className="flex items-center gap-2">
             <label htmlFor={`restore-page-size-${appId}`} className="text-xs text-muted-foreground">Per page</label>
-            <div className="w-24"><NativeSelect id={`restore-page-size-${appId}`} value={String(size)} onChange={(v) => { setSize(Number(v)); saveRestorePageSize(Number(v)); setAt(0) }}>
+            <div className="w-24"><Select id={`restore-page-size-${appId}`} value={String(size)} onChange={(v) => { setSize(Number(v)); saveRestorePageSize(Number(v)); setAt(0) }}>
               {RESTORE_PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
-            </NativeSelect></div>
+            </Select></div>
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="icon-sm" aria-label="Newer" title="Newer" disabled={page === 0} onClick={() => setAt(page - 1)}><ChevronLeft className="size-4" /></Button>

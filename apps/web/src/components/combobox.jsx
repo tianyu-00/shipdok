@@ -31,8 +31,10 @@ export function ListedOption({ name, selected, badge }) {
  *   optionsFor(query) -> { options: [{ key, name, custom, selected, node }], more }
  * (`custom` marks the "Use “text”" option, `more` is how many matches were left out). Arrow keys move the highlight (wrapping), Enter chooses,
  * Escape closes; typing puts the highlight on the first match.
+ * `searchable={false}` leaves out the search box (for short lists): the list itself takes the keys. `mono={false}` draws the choice in the page's own font.
+ * An option may carry a `value`, put on its row as `data-value`.
  */
-export function Combobox({ id, hasValue, display, placeholder = 'Choose', optionsFor, onChoose, value, searchLabel, listLabel, searchPlaceholder, emptyText, footer, invalid }) {
+export function Combobox({ id, hasValue, display, placeholder = 'Choose', optionsFor, onChoose, value, searchLabel, listLabel, searchPlaceholder, emptyText, footer, invalid, searchable = true, mono = true, disabled, triggerProps, width }) {
   const listId = useId()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -50,11 +52,12 @@ export function Combobox({ id, hasValue, display, placeholder = 'Choose', option
   const onKeyDown = (e) => {
     if (e.key === 'ArrowDown') { e.preventDefault(); setActive((a) => stepActive(a, 1, options.length)) }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((a) => stepActive(a, -1, options.length)) }
-    else if (e.key === 'Enter') { e.preventDefault(); choose(options[active] ?? options[0]) }
+    else if (e.key === 'Enter' || (e.key === ' ' && !searchable)) { e.preventDefault(); choose(options[active] ?? options[0]) }
   }
   const typed = (text) => { setQuery(text); setActive(optionsFor(text).options.length ? 0 : -1) }
 
   // Stepping with the arrows scrolls the highlighted option into view.
+  useEffect(() => { if (open && !searchable) list.current?.focus() }, [open, searchable])
   useEffect(() => { list.current?.querySelector('[data-active="true"]')?.scrollIntoView?.({ block: 'nearest' }) }, [active, open])
 
   return (
@@ -62,26 +65,30 @@ export function Combobox({ id, hasValue, display, placeholder = 'Choose', option
       <PopoverTrigger asChild>
         <Button
           id={id} type="button" variant="outline" role="combobox" aria-expanded={open} aria-haspopup="listbox" aria-controls={open ? listId : undefined} aria-invalid={invalid}
-          className="w-full justify-between font-mono font-normal"
+          disabled={disabled} {...triggerProps}
+          className={cn('w-full justify-between font-normal', mono && 'font-mono')}
         >
           {hasValue ? <span className="flex min-w-0 items-center gap-2">{display}</span> : <span className="truncate font-sans text-muted-foreground">{placeholder}</span>}
           <ChevronsUpDown className="size-4 shrink-0 opacity-50" aria-hidden="true" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] min-w-64">
-        <div className="flex items-center gap-2 border-b px-3">
+      <PopoverContent align="start" className={cn('w-[var(--radix-popover-trigger-width)]', width ?? 'min-w-64')}>
+        {searchable && <div className="flex items-center gap-2 border-b px-3">
           <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           <input
             autoFocus type="text" value={query} onChange={(e) => typed(e.target.value)} onKeyDown={onKeyDown} placeholder={searchPlaceholder}
             aria-label={searchLabel} aria-controls={listId} aria-activedescendant={active >= 0 ? `${listId}-${active}` : undefined} autoComplete="off" spellCheck={false}
             className="h-10 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
           />
-        </div>
-        <ul ref={list} id={listId} role="listbox" aria-label={listLabel} className="max-h-60 overflow-auto p-1">
+        </div>}
+        <ul
+          ref={list} id={listId} role="listbox" aria-label={listLabel} className="max-h-60 overflow-auto p-1 outline-none"
+          {...(searchable ? {} : { tabIndex: 0, onKeyDown, 'aria-activedescendant': active >= 0 ? `${listId}-${active}` : undefined })}
+        >
           {options.length === 0 && <li className="px-2 py-3 text-center text-sm text-muted-foreground">{emptyText}</li>}
           {options.map((o, i) => (
             <li
-              key={o.key} id={`${listId}-${i}`} role="option" aria-selected={Boolean(o.selected)} data-active={i === active}
+              key={o.key} id={`${listId}-${i}`} role="option" aria-selected={Boolean(o.selected)} data-active={i === active} data-value={o.value}
               onMouseDown={(e) => e.preventDefault()} onMouseMove={() => setActive(i)} onClick={() => choose(o)}
               className={cn('flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm', i === active && 'bg-accent text-accent-foreground')}
             >

@@ -1,4 +1,4 @@
-import { NativeSelect } from '@/components/native-select'
+import { Select } from '@/components/select'
 import { Field } from '@/components/field'
 import { useApps } from '@/lib/queries'
 
@@ -11,10 +11,10 @@ export function AppChoice({ id, label = 'Which app', value, onChange, error }) {
   const list = receivingApps(apps.data)
   return (
     <Field id={id} label={label} error={error} hint={apps.isSuccess && list.length === 0 ? 'There is no app yet. Create one first.' : undefined}>
-      <NativeSelect id={id} value={value} onChange={onChange} disabled={list.length === 0}>
+      <Select id={id} value={value} onChange={onChange} disabled={list.length === 0}>
         <option value="">Choose an app…</option>
         {list.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-      </NativeSelect>
+      </Select>
     </Field>
   )
 }

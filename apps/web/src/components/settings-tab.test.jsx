@@ -2,7 +2,7 @@ import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import SettingsTab from './settings-tab'
-import { mockApi, answer, renderWithProviders } from '@/test/utils'
+import { mockApi, answer, renderWithProviders, pick, listed } from '@/test/utils'
 import { makeApp, APP_ID } from '@/test/fixtures'
 
 const toasts = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
@@ -49,21 +49,21 @@ describe('the build method', () => {
 
   test('a Dockerfile app shows its method and no commands', () => {
     tab(makeApp({ build_method: 'dockerfile' }))
-    expect(box('Build method')).toHaveValue('dockerfile')
+    expect(box('Build method')).toHaveChosen('dockerfile')
     expect(screen.queryByLabelText('Start command')).toBeNull()
     expect(screen.getByText('Where the Dockerfile is, inside the repository.')).toBeInTheDocument()
   })
 
   test('a Railpack app shows its commands with their values, empty where Railpack decides', () => {
     tab(makeApp({ build_method: 'railpack', install_command: 'npm ci', build_command: null, start_command: 'node s.js' }))
-    expect(box('Build method')).toHaveValue('railpack')
+    expect(box('Build method')).toHaveChosen('railpack')
     expect([box('Install command'), box('Build command'), box('Start command')].map((e) => e.value)).toEqual(['npm ci', '', 'node s.js'])
   })
 
   test('switching the method sends only the method, and it waits for the next deployment', async () => {
     const api = mockApi({ [PUT]: makeApp({ build_method: 'railpack', settings_pending: ['build_method'] }) })
     tab(makeApp({ install_command: 'npm ci' })) // (a command kept from earlier, hidden while the Dockerfile is used)
-    await userEvent.selectOptions(box('Build method'), 'railpack')
+    await pick(box('Build method'), 'railpack')
     await userEvent.click(save())
     await waitFor(() => expect(api.called('PUT', put())).toHaveLength(1))
     expect(api.called('PUT', put())[0].body).toEqual({ build_method: 'railpack' })
@@ -93,10 +93,10 @@ describe('the build method', () => {
 
   test('discard puts the method and commands back', async () => {
     tab(makeApp({ build_method: 'dockerfile' }))
-    await userEvent.selectOptions(box('Build method'), 'railpack')
+    await pick(box('Build method'), 'railpack')
     await userEvent.type(box('Start command'), 'x')
     await userEvent.click(screen.getByRole('button', { name: 'Discard changes' }))
-    expect(box('Build method')).toHaveValue('dockerfile')
+    expect(box('Build method')).toHaveChosen('dockerfile')
     expect(screen.queryByLabelText('Start command')).toBeNull()
   })
 
@@ -112,12 +112,12 @@ describe('a static site', () => {
 
   test('shows its settings with their values, and no Railpack start command', () => {
     tab(stat({ static_server: 'caddy', spa_fallback: false }))
-    expect(box('Build method')).toHaveValue('static')
+    expect(box('Build method')).toHaveChosen('static')
     expect(box('Install command')).toHaveValue('npm ci')
     expect(box('Build command')).toHaveValue('npm run build')
     expect(box('Output folder')).toHaveValue('dist')
     expect(box('Node version')).toHaveValue('22')
-    expect(box('Web server')).toHaveValue('caddy')
+    expect(box('Web server')).toHaveChosen('caddy')
     expect(screen.getByRole('switch', { name: 'Single-page app' })).not.toBeChecked()
     expect(screen.queryByLabelText('Start command')).toBeNull()
     expect(screen.getByText('The folder of the site inside the repository.')).toBeInTheDocument()
@@ -136,7 +136,7 @@ describe('a static site', () => {
     tab(stat())
     await type('Output folder', 'build')
     await type('Node version', '20.11')
-    await userEvent.selectOptions(box('Web server'), 'caddy')
+    await pick(box('Web server'), 'caddy')
     await userEvent.click(screen.getByRole('switch', { name: 'Single-page app' }))
     await userEvent.click(save())
     await waitFor(() => expect(api.called('PUT', put())).toHaveLength(1))
@@ -167,7 +167,7 @@ describe('a static site', () => {
   test('switching an app to a static site sends the method', async () => {
     const api = mockApi({ [PUT]: stat() })
     tab(makeApp({ build_method: 'dockerfile' }))
-    await userEvent.selectOptions(box('Build method'), 'static')
+    await pick(box('Build method'), 'static')
     expect(box('Output folder')).toBeInTheDocument()
     await userEvent.click(save())
     await waitFor(() => expect(api.called('PUT', put())).toHaveLength(1))
@@ -414,18 +414,18 @@ describe('the GitHub app of the project', () => {
   test('shows the saved one, and nothing can be saved until it is changed', async () => {
     mockApi({ 'GET /api/github': LIST })
     tab(makeApp({ github_app_id: TWO }))
-    expect(await select()).toHaveValue(TWO)
+    expect(await select()).toHaveChosen(TWO)
     expect(saveApp()).toBeDisabled()
-    await userEvent.selectOptions(screen.getByLabelText('GitHub app'), ONE)
+    await pick(screen.getByLabelText('GitHub app'), ONE)
     expect(saveApp()).toBeEnabled()
-    await userEvent.selectOptions(screen.getByLabelText('GitHub app'), TWO)
+    await pick(screen.getByLabelText('GitHub app'), TWO)
     expect(saveApp()).toBeDisabled() // back to what it was
   })
 
   test('lists the connected apps with their owners, and None', async () => {
     mockApi({ 'GET /api/github': LIST })
     tab()
-    const names = within(await select()).getAllByRole('option').map((o) => o.textContent)
+    const names = await listed(await select())
     expect(names).toEqual(['Shipdok-ab12 (tianyu-00)', 'Shipdok-cd34 (my-org)', 'None (a public repository, deployed by hand)'])
     expect(screen.getByLabelText('GitHub app')).toHaveValue('') // a project with none
   })
@@ -433,7 +433,7 @@ describe('the GitHub app of the project', () => {
   test('saving sends only the GitHub app, says it applies at once, and reads the lists again', async () => {
     const api = mockApi({ 'GET /api/github': LIST, [PUT]: makeApp({ github_app_id: ONE }) })
     tab(makeApp({ github_app_id: TWO }))
-    await userEvent.selectOptions(await select(), ONE)
+    await pick(await select(), ONE)
     await userEvent.click(saveApp())
     await waitFor(() => expect(api.called('PUT', `/api/apps/${APP_ID}`)).toHaveLength(1))
     expect(api.called('PUT', `/api/apps/${APP_ID}`)[0].body).toEqual({ github_app_id: ONE })
@@ -455,7 +455,7 @@ describe('the GitHub app of the project', () => {
   test('saving shows only the plain confirmation: the explanation lives on the card, not in a pop-up', async () => {
     mockApi({ 'GET /api/github': LIST, [PUT]: makeApp({ github_app_id: ONE }) })
     tab(makeApp({ github_app_id: TWO }))
-    await userEvent.selectOptions(await select(), ONE)
+    await pick(await select(), ONE)
     await userEvent.click(saveApp())
     await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('GitHub app saved'))
     expect(toasts.success).toHaveBeenCalledTimes(1)
@@ -464,7 +464,7 @@ describe('the GitHub app of the project', () => {
   test('None sends null', async () => {
     const api = mockApi({ 'GET /api/github': LIST, [PUT]: makeApp({ github_app_id: null }) })
     tab(makeApp({ github_app_id: ONE }))
-    await userEvent.selectOptions(await select(), '')
+    await pick(await select(), '')
     await userEvent.click(saveApp())
     await waitFor(() => expect(api.called('PUT', `/api/apps/${APP_ID}`)).toHaveLength(1))
     expect(api.called('PUT', `/api/apps/${APP_ID}`)[0].body).toEqual({ github_app_id: null })
@@ -473,7 +473,7 @@ describe('the GitHub app of the project', () => {
   test('a warning about the installation is shown', async () => {
     mockApi({ 'GET /api/github': LIST, [PUT]: makeApp({ github_app_id: ONE, warning: 'The chosen GitHub app is not installed on this repository.' }) })
     tab(makeApp({ github_app_id: TWO }))
-    await userEvent.selectOptions(await select(), ONE)
+    await pick(await select(), ONE)
     await userEvent.click(saveApp())
     await waitFor(() => expect(toasts.warning).toHaveBeenCalledWith(expect.stringMatching(/not installed/), expect.anything()))
   })
@@ -481,18 +481,18 @@ describe('the GitHub app of the project', () => {
   test('a refusal is shown and the choice stays', async () => {
     mockApi({ 'GET /api/github': LIST, [PUT]: answer(400, { error: 'No such GitHub app. Connect it on the GitHub page first.' }) })
     tab(makeApp({ github_app_id: TWO }))
-    await userEvent.selectOptions(await select(), ONE)
+    await pick(await select(), ONE)
     await userEvent.click(saveApp())
     await waitFor(() => expect(toasts.error).toHaveBeenCalledWith(expect.stringMatching(/No such GitHub app/)))
-    expect(screen.getByLabelText('GitHub app')).toHaveValue(ONE)
+    expect(screen.getByLabelText('GitHub app')).toHaveChosen(ONE)
   })
 
   test('Discard puts the saved choice back', async () => {
     mockApi({ 'GET /api/github': LIST })
     tab(makeApp({ github_app_id: TWO }))
-    await userEvent.selectOptions(await select(), ONE)
+    await pick(await select(), ONE)
     await userEvent.click(within(screen.getByLabelText('GitHub app').closest('form')).getByRole('button', { name: 'Discard' }))
-    expect(screen.getByLabelText('GitHub app')).toHaveValue(TWO)
+    expect(screen.getByLabelText('GitHub app')).toHaveChosen(TWO)
   })
 
   test('with no GitHub app connected it says so and points to the GitHub page', async () => {
@@ -526,7 +526,7 @@ describe('the GitHub app of the project', () => {
     })
     tab(makeApp({ github_app_id: TWO }))
     await waitFor(() => expect(api.called('GET', '/api/github/branches')).toHaveLength(1))
-    await userEvent.selectOptions(await select(), ONE)
+    await pick(await select(), ONE)
     await userEvent.click(saveApp())
     await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('GitHub app saved'))
     // (the form is rebuilt from the saved copy; here the saved copy is the one the server answered with)

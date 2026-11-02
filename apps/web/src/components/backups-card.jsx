@@ -11,7 +11,7 @@ import { useBackups } from '@/lib/queries'
 import { formatBytes, timeAgo } from '@/lib/format'
 import { FREQUENCIES, WEEKDAYS, isBusy, latestBackups, localHourText, platformBackups, scheduleText, utcHourText } from '@/lib/backups'
 import { Field } from '@/components/field'
-import { NativeSelect } from '@/components/native-select'
+import { Select } from '@/components/select'
 import { LoadError } from '@/components/states'
 import { DownloadDialog, PassphraseDialog } from '@/components/backup-dialogs'
 import { BackupTable, DeleteBackupDialog } from '@/components/backup-table'
@@ -39,22 +39,22 @@ function Schedule({ schedule, nextRunAt }) {
       <p className="text-sm font-medium">Automatic backups</p>
       <div className="grid gap-3 sm:grid-cols-4">
         <Field id="backup-frequency" label="How often">
-          <NativeSelect id="backup-frequency" value={f.frequency} onChange={(v) => setF({ ...f, frequency: v })}>
+          <Select id="backup-frequency" value={f.frequency} onChange={(v) => setF({ ...f, frequency: v })}>
             {Object.entries(FREQUENCIES).map(([v, name]) => <option key={v} value={v}>{name}</option>)}
-          </NativeSelect>
+          </Select>
         </Field>
         {f.frequency === 'weekly' && (
           <Field id="backup-weekday" label="On">
-            <NativeSelect id="backup-weekday" value={String(f.weekday)} onChange={(v) => setF({ ...f, weekday: Number(v) })}>
+            <Select id="backup-weekday" value={String(f.weekday)} onChange={(v) => setF({ ...f, weekday: Number(v) })}>
               {WEEKDAYS.map((name, i) => <option key={name} value={i}>{name}</option>)}
-            </NativeSelect>
+            </Select>
           </Field>
         )}
         {f.frequency !== 'off' && (
           <Field id="backup-hour" label="At (UTC)" hint={`${localHourText(f.hour)} on your clock today`}>
-            <NativeSelect id="backup-hour" value={String(f.hour)} onChange={(v) => setF({ ...f, hour: Number(v) })}>
+            <Select id="backup-hour" value={String(f.hour)} onChange={(v) => setF({ ...f, hour: Number(v) })}>
               {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{utcHourText(h)}</option>)}
-            </NativeSelect>
+            </Select>
           </Field>
         )}
         <Field id="backup-keep" label="Keep the newest" error={problem} hint="Older backups are deleted.">

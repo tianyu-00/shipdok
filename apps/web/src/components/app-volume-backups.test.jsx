@@ -4,7 +4,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import AppVolumeBackups from './app-volume-backups'
 import BackupsCard from './backups-card'
-import { mockApi, answer, renderWithProviders } from '@/test/utils'
+import { mockApi, answer, renderWithProviders, pick, listedValues } from '@/test/utils'
 
 const toasts = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
 vi.mock('sonner', () => ({ toast: toasts, Toaster: () => null }))
@@ -38,9 +38,9 @@ describe('what it shows', () => {
     section()
     expect(await screen.findByText('Backups of this app\'s data')).toBeInTheDocument()
     expect(screen.getByText('2 volumes · 5.0 MB · last backup 1 h ago')).toBeInTheDocument()
-    expect(screen.getByLabelText('Automatic backups')).toHaveValue('off')
+    expect(screen.getByLabelText('Automatic backups')).toHaveChosen('off')
     expect(screen.getByRole('switch', { name: 'Stop the app while copying' })).not.toBeChecked()
-    expect(screen.getByLabelText('Keep the newest')).toHaveValue('2')
+    expect(screen.getByLabelText('Keep the newest')).toHaveChosen('2')
     expect(screen.queryByLabelText('At (UTC)')).toBeNull()
     expect(screen.queryByLabelText('On')).toBeNull()
     expect(screen.queryByText(/Next automatic backup/)).toBeNull()
@@ -53,13 +53,13 @@ describe('what it shows', () => {
   })
   test('a daily schedule shows the hour (in UTC, with the local time) and the next run; weekly adds the day', async () => {
     section(overview({ apps: [blog({ schedule: { frequency: 'daily', hour: 14, weekday: 1 }, nextRunAt: new Date(Date.now() + 3600_000).toISOString() })] }))
-    expect(await screen.findByLabelText('At (UTC)')).toHaveValue('14')
+    expect(await screen.findByLabelText('At (UTC)')).toHaveChosen('14')
     expect(screen.getByText(/^\d{2}:\d{2} on your clock today$/)).toBeInTheDocument()
     expect(screen.getByText(/Next automatic backup:/)).toBeInTheDocument()
     expect(screen.queryByLabelText('On')).toBeNull()
     document.body.innerHTML = ''
     section(overview({ apps: [blog({ schedule: { frequency: 'weekly', hour: 14, weekday: 5 } })] }))
-    expect(await screen.findByLabelText('On')).toHaveValue('5')
+    expect(await screen.findByLabelText('On')).toHaveChosen('5')
   })
   test('an app that was never backed up says so, and an unmeasured size is left out (never a made-up number)', async () => {
     section(overview({ apps: [blog({ lastBackupAt: null, sizeBytes: null, volumeCount: 1 })], backups: [] }))
@@ -67,8 +67,8 @@ describe('what it shows', () => {
   })
   test('a number to keep that is not among the usual choices is still shown', async () => {
     section(overview({ apps: [blog({ keep: 4 })] }))
-    expect(await screen.findByLabelText('Keep the newest')).toHaveValue('4')
-    expect([...screen.getByLabelText('Keep the newest').options].map((o) => o.value)).toEqual(['1', '2', '3', '4', '5', '7', '10', '14', '30', '60'])
+    expect(await screen.findByLabelText('Keep the newest')).toHaveChosen('4')
+    expect(await listedValues(screen.getByLabelText('Keep the newest'))).toEqual(['1', '2', '3', '4', '5', '7', '10', '14', '30', '60'])
   })
   test('says plainly when the list cannot be loaded', async () => {
     mockApi({ 'GET /api/backups': answer(500, { error: 'boom' }) })
@@ -80,7 +80,7 @@ describe('what it shows', () => {
 describe('changing how it is backed up', () => {
   test('choosing a frequency sends the whole setting with only that changed, and says so', async () => {
     const api = section(overview({ apps: [blog({ stop: true, keep: 5 })] }), { 'PUT /api/backups/volumes/a1/settings': overview({ apps: [blog({ schedule: { frequency: 'daily', hour: 3, weekday: 1 }, stop: true, keep: 5 })] }) })
-    await userEvent.selectOptions(await screen.findByLabelText('Automatic backups'), 'daily')
+    await pick(await screen.findByLabelText('Automatic backups'), 'daily')
     await waitFor(() => expect(put(api)).toHaveLength(1))
     expect(put(api)[0].body).toEqual({ frequency: 'daily', hour: 3, weekday: 1, stop: true, keep: 5 })
     expect(toasts.success).toHaveBeenCalledWith('Saved')
@@ -89,10 +89,10 @@ describe('changing how it is backed up', () => {
   test('the hour, the weekday, the stop switch and the number to keep each change only themselves', async () => {
     const sched = { frequency: 'weekly', hour: 3, weekday: 1 }
     const api = section(overview({ apps: [blog({ schedule: sched })] }), { 'PUT /api/backups/volumes/a1/settings': overview({ apps: [blog({ schedule: { frequency: 'weekly', hour: 20, weekday: 6 }, stop: true, keep: 14 })] }) })
-    await userEvent.selectOptions(await screen.findByLabelText('At (UTC)'), '20')
+    await pick(await screen.findByLabelText('At (UTC)'), '20')
     await waitFor(() => expect(put(api)).toHaveLength(1))
     expect(put(api)[0].body).toEqual({ frequency: 'weekly', hour: 20, weekday: 1, stop: false, keep: 2 })
-    await userEvent.selectOptions(await screen.findByLabelText('On'), '6')
+    await pick(await screen.findByLabelText('On'), '6')
     await waitFor(() => expect(put(api)).toHaveLength(2))
     expect(put(api)[1].body).toEqual({ frequency: 'weekly', hour: 20, weekday: 6, stop: true, keep: 14 }) // (the answer of the first save is what is shown now)
   })
@@ -101,7 +101,7 @@ describe('changing how it is backed up', () => {
     await userEvent.click(await screen.findByRole('switch', { name: 'Stop the app while copying' }))
     await waitFor(() => expect(put(api)).toHaveLength(1))
     expect(put(api)[0].body).toEqual({ ...OFF, stop: true, keep: 2 })
-    await userEvent.selectOptions(screen.getByLabelText('Keep the newest'), '14')
+    await pick(screen.getByLabelText('Keep the newest'), '14')
     await waitFor(() => expect(put(api)).toHaveLength(2))
     expect(put(api)[1].body).toEqual({ ...OFF, stop: true, keep: 14 })
   })

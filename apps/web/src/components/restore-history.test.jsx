@@ -3,7 +3,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import AppVolumeBackups from './app-volume-backups'
-import { mockApi, answer, renderWithProviders } from '@/test/utils'
+import { mockApi, answer, renderWithProviders, pick } from '@/test/utils'
 
 const toasts = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
 vi.mock('sonner', () => ({ toast: toasts, Toaster: () => null }))
@@ -29,7 +29,7 @@ describe('pages', () => {
     expect(await screen.findByText('(12)')).toBeInTheDocument()
     expect(items()).toHaveLength(5)
     expect(screen.getByText('Page 1 of 3')).toBeInTheDocument()
-    expect(screen.getByLabelText('Per page')).toHaveValue('5')
+    expect(screen.getByLabelText('Per page')).toHaveChosen('5')
   })
   test('Older and Newer move between pages; the first page has no Newer and the last no Older', async () => {
     section(overview({ restores: many(12) }))
@@ -49,7 +49,7 @@ describe('pages', () => {
   test('the page size can be chosen, goes back to the first page, and is remembered by this browser', async () => {
     section(overview({ restores: many(12) }))
     await userEvent.click(await screen.findByRole('button', { name: 'Older' }))
-    await userEvent.selectOptions(screen.getByLabelText('Per page'), '10')
+    await pick(screen.getByLabelText('Per page'), '10')
     expect(items()).toHaveLength(10)
     expect(screen.getByText('Page 1 of 2')).toBeInTheDocument()
     expect(localStorage.getItem('shipdok.restorePageSize')).toBe('10')

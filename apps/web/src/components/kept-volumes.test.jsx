@@ -3,7 +3,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import KeptVolumes from './kept-volumes'
-import { mockApi, answer, renderWithProviders } from '@/test/utils'
+import { mockApi, answer, renderWithProviders, pick, listed } from '@/test/utils'
 
 const toasts = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
 vi.mock('sonner', () => ({ toast: toasts, Toaster: () => null }))
@@ -32,13 +32,13 @@ describe('the reclaim dialog', () => {
     expect(await screen.findByText('Reclaim this volume')).toBeInTheDocument()
     expect(screen.getByText(/Nothing is copied/)).toBeInTheDocument()
     expect(screen.getByText('next deployment')).toBeInTheDocument()
-    expect([...screen.getByLabelText('Attach it to').options].map((o) => o.textContent)).toEqual(['Choose an app…', 'Blog', 'Shop'])
+    expect(await listed(screen.getByLabelText('Attach it to'))).toEqual(['Choose an app…', 'Blog', 'Shop'])
     expect(screen.getByLabelText(/Mount it at/)).toHaveValue('/app/data/whatisthis')
     expect(screen.getByRole('button', { name: 'Reclaim', hidden: false })).toBeDisabled()
   })
   test('sends the app and the path, then says to deploy the app and closes', async () => {
     const api = await open({ [POST]: answer(200, { volume: vol({ state: 'in_use' }) }) })
-    await userEvent.selectOptions(await screen.findByLabelText('Attach it to'), 'a1')
+    await pick(await screen.findByLabelText('Attach it to'), 'a1')
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Reclaim' }))
     await waitFor(() => expect(post(api)).toHaveLength(1))
     expect(post(api)[0].body).toEqual({ appId: 'a1', path: '/app/data/whatisthis' })
@@ -47,7 +47,7 @@ describe('the reclaim dialog', () => {
   })
   test('the path can be changed, and is sent tidied', async () => {
     const api = await open({ [POST]: answer(200, { volume: vol() }) })
-    await userEvent.selectOptions(await screen.findByLabelText('Attach it to'), 'a1')
+    await pick(await screen.findByLabelText('Attach it to'), 'a1')
     await userEvent.clear(screen.getByLabelText(/Mount it at/))
     await userEvent.type(screen.getByLabelText(/Mount it at/), ' //var//lib/files/ ')
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Reclaim' }))
@@ -56,7 +56,7 @@ describe('the reclaim dialog', () => {
   })
   test('a path that is not usable is said at once and cannot be sent', async () => {
     await open()
-    await userEvent.selectOptions(await screen.findByLabelText('Attach it to'), 'a1')
+    await pick(await screen.findByLabelText('Attach it to'), 'a1')
     await userEvent.clear(screen.getByLabelText(/Mount it at/))
     await userEvent.type(screen.getByLabelText(/Mount it at/), 'data')
     expect(await screen.findByText(/is not an absolute path/)).toBeInTheDocument()
@@ -64,7 +64,7 @@ describe('the reclaim dialog', () => {
   })
   test('a path the chosen app already keeps is said, and cannot be sent; a detached one of its own does not count', async () => {
     await open()
-    await userEvent.selectOptions(await screen.findByLabelText('Attach it to'), 'a2')
+    await pick(await screen.findByLabelText('Attach it to'), 'a2')
     await userEvent.clear(screen.getByLabelText(/Mount it at/))
     await userEvent.type(screen.getByLabelText(/Mount it at/), '/data')
     expect(await screen.findByText('Shop already keeps /data. Choose another path.')).toBeInTheDocument()
@@ -76,7 +76,7 @@ describe('the reclaim dialog', () => {
   })
   test('warns about the folder an app\'s code usually lives in, but does not block it', async () => {
     await open()
-    await userEvent.selectOptions(await screen.findByLabelText('Attach it to'), 'a1')
+    await pick(await screen.findByLabelText('Attach it to'), 'a1')
     await userEvent.clear(screen.getByLabelText(/Mount it at/))
     await userEvent.type(screen.getByLabelText(/Mount it at/), '/app')
     expect(await screen.findByRole('status', { name: 'Code folder' })).toHaveTextContent(/probably the folder your app's code lives in/)
@@ -84,7 +84,7 @@ describe('the reclaim dialog', () => {
   })
   test('the server\'s refusal is shown in the dialog, which stays open', async () => {
     await open({ [POST]: answer(409, { error: 'Blog already keeps /x. Choose another path, or remove it from that app first', code: 'path_in_use' }) })
-    await userEvent.selectOptions(await screen.findByLabelText('Attach it to'), 'a1')
+    await pick(await screen.findByLabelText('Attach it to'), 'a1')
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Reclaim' }))
     expect(await screen.findByText(/Blog already keeps \/x/)).toBeInTheDocument()
     expect(screen.getByText('Reclaim this volume')).toBeInTheDocument()

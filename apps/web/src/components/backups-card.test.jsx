@@ -2,7 +2,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import BackupsCard from './backups-card'
-import { mockApi, answer, renderWithProviders } from '@/test/utils'
+import { mockApi, answer, renderWithProviders, pick } from '@/test/utils'
 
 const toasts = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
 vi.mock('sonner', () => ({ toast: toasts, Toaster: () => null }))
@@ -122,8 +122,8 @@ describe('deleting', () => {
 describe('the schedule', () => {
   test('shows the current one, and Save waits for a change', async () => {
     card()
-    expect(await screen.findByLabelText('How often')).toHaveValue('daily')
-    expect(screen.getByLabelText('At (UTC)')).toHaveValue('3')
+    expect(await screen.findByLabelText('How often')).toHaveChosen('daily')
+    expect(screen.getByLabelText('At (UTC)')).toHaveChosen('3')
     expect(screen.getByLabelText('Keep the newest')).toHaveValue('7')
     expect(screen.queryByLabelText('On')).toBeNull()
     expect(screen.getByRole('button', { name: 'Save schedule' })).toBeDisabled()
@@ -135,18 +135,18 @@ describe('the schedule', () => {
   })
   test('weekly adds the day; off hides the hour and the day', async () => {
     card()
-    await userEvent.selectOptions(await screen.findByLabelText('How often'), 'weekly')
-    expect(screen.getByLabelText('On')).toHaveValue('1')
-    await userEvent.selectOptions(screen.getByLabelText('How often'), 'off')
+    await pick(await screen.findByLabelText('How often'), 'weekly')
+    expect(screen.getByLabelText('On')).toHaveChosen('1')
+    await pick(screen.getByLabelText('How often'), 'off')
     expect(screen.queryByLabelText('On')).toBeNull()
     expect(screen.queryByLabelText('At (UTC)')).toBeNull()
   })
   test('saves what was chosen, as numbers, and answers with a toast', async () => {
     const saved = overview({ schedule: { frequency: 'weekly', hour: 5, weekday: 4, keep: 14 } })
     const api = card(overview(), { 'PUT /api/backups/settings': saved })
-    await userEvent.selectOptions(await screen.findByLabelText('How often'), 'weekly')
-    await userEvent.selectOptions(screen.getByLabelText('On'), '4')
-    await userEvent.selectOptions(screen.getByLabelText('At (UTC)'), '5')
+    await pick(await screen.findByLabelText('How often'), 'weekly')
+    await pick(screen.getByLabelText('On'), '4')
+    await pick(screen.getByLabelText('At (UTC)'), '5')
     await userEvent.clear(screen.getByLabelText('Keep the newest'))
     await userEvent.type(screen.getByLabelText('Keep the newest'), '14')
     await userEvent.click(screen.getByRole('button', { name: 'Save schedule' }))
@@ -156,7 +156,7 @@ describe('the schedule', () => {
   })
   test.each(['0', '61', 'abc', '1.5', '', '-3'])('a number to keep of %j is caught before anything is sent', async (text) => {
     const api = card()
-    await userEvent.selectOptions(await screen.findByLabelText('How often'), 'weekly') // a change, so Save is on
+    await pick(await screen.findByLabelText('How often'), 'weekly') // a change, so Save is on
     await userEvent.clear(screen.getByLabelText('Keep the newest'))
     if (text) await userEvent.type(screen.getByLabelText('Keep the newest'), text)
     await userEvent.click(screen.getByRole('button', { name: 'Save schedule' }))

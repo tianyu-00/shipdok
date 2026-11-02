@@ -19,7 +19,7 @@ import { useEnv } from '@/lib/queries'
 import { timeAgo } from '@/lib/format'
 import { SCOPES, BUILD_PASSES, scopeLabel, scopeBadgeClass, reachesBuild, secretMount, buildNameProblem, nameFormatProblem } from '@/lib/env-scope'
 import { Empty, ListSkeleton, LoadError } from '@/components/states'
-import { NativeSelect } from '@/components/native-select'
+import { Select } from '@/components/select'
 
 const enc = encodeURIComponent
 
@@ -32,9 +32,9 @@ const VALUE_FIELD = { type: 'password', autoComplete: 'new-password', ...NO_AUTO
 
 function ScopeSelect({ id, value, onChange, disabled, label, options = SCOPES }) {
   return (
-    <NativeSelect id={id} value={value} onChange={onChange} disabled={disabled} label={label}>
+    <Select id={id} value={value} onChange={onChange} disabled={disabled} label={label}>
       {options.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-    </NativeSelect>
+    </Select>
   )
 }
 

@@ -11,7 +11,7 @@ import { formatBytes, timeAgo } from '@/lib/format'
 import { FREQUENCIES, WEEKDAYS, isAppBusy, isAppRestoring, keepChoices, localHourText, parseRestoreKeep, utcHourText, volumesText } from '@/lib/backups'
 import { Input } from '@/components/ui/input'
 import { Field } from '@/components/field'
-import { NativeSelect } from '@/components/native-select'
+import { Select } from '@/components/select'
 import { LoadError } from '@/components/states'
 import VolumeBackupHistory from '@/components/volume-backup-history'
 
@@ -76,28 +76,28 @@ export default function AppVolumeBackups({ app: shown }) {
 
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Field id={`${id}-frequency`} label="Automatic backups">
-            <NativeSelect id={`${id}-frequency`} value={s.frequency} disabled={save.isPending} onChange={(v) => save.mutate({ frequency: v })}>
+            <Select id={`${id}-frequency`} value={s.frequency} disabled={save.isPending} onChange={(v) => save.mutate({ frequency: v })}>
               {Object.entries(FREQUENCIES).map(([v, name]) => <option key={v} value={v}>{v === 'off' ? 'Off' : name}</option>)}
-            </NativeSelect>
+            </Select>
           </Field>
           {s.frequency === 'weekly' && (
             <Field id={`${id}-weekday`} label="On">
-              <NativeSelect id={`${id}-weekday`} value={String(s.weekday)} disabled={save.isPending} onChange={(v) => save.mutate({ weekday: Number(v) })}>
+              <Select id={`${id}-weekday`} value={String(s.weekday)} disabled={save.isPending} onChange={(v) => save.mutate({ weekday: Number(v) })}>
                 {WEEKDAYS.map((name, i) => <option key={name} value={i}>{name}</option>)}
-              </NativeSelect>
+              </Select>
             </Field>
           )}
           {s.frequency !== 'off' && (
             <Field id={`${id}-hour`} label="At (UTC)" hint={`${localHourText(s.hour)} on your clock today`}>
-              <NativeSelect id={`${id}-hour`} value={String(s.hour)} disabled={save.isPending} onChange={(v) => save.mutate({ hour: Number(v) })}>
+              <Select id={`${id}-hour`} value={String(s.hour)} disabled={save.isPending} onChange={(v) => save.mutate({ hour: Number(v) })}>
                 {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{utcHourText(h)}</option>)}
-              </NativeSelect>
+              </Select>
             </Field>
           )}
           <Field id={`${id}-keep`} label="Keep the newest" hint="Older backups of this app are deleted.">
-            <NativeSelect id={`${id}-keep`} value={String(app.keep)} disabled={save.isPending} onChange={(v) => save.mutate({ keep: Number(v) })}>
+            <Select id={`${id}-keep`} value={String(app.keep)} disabled={save.isPending} onChange={(v) => save.mutate({ keep: Number(v) })}>
               {keepChoices(app.keep).map((n) => <option key={n} value={n}>{n}</option>)}
-            </NativeSelect>
+            </Select>
           </Field>
           <RestoreKeepField id={`${id}-restore-keep`} value={app.restoreKeep} pending={save.isPending} onSave={(restoreKeep) => save.mutate({ restoreKeep })} />
         </div>

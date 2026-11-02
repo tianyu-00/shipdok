@@ -3,7 +3,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Routes, Route } from 'react-router-dom'
 import CreateAppPage from './create-app-page'
-import { mockApi, answer, renderWithProviders } from '@/test/utils'
+import { mockApi, answer, renderWithProviders, pick, listed } from '@/test/utils'
 
 const toasts = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
 vi.mock('sonner', () => ({ toast: toasts, Toaster: () => null }))
@@ -95,7 +95,7 @@ describe('step 1: which GitHub app', () => {
   test('with exactly one connected, it is already chosen: the repositories load and it is sent', async () => {
     const api = mockApi({ ...connected, ...checks(), ...created })
     page()
-    expect(await select()).toHaveValue(APP)
+    expect(await select()).toHaveChosen(APP)
     await toDetails('tianyu-00/site')
     await create()
     expect(await screen.findByText('detail page')).toBeInTheDocument()
@@ -107,25 +107,25 @@ describe('step 1: which GitHub app', () => {
     const api = mockApi({ ...two, ...checks() })
     page()
     const box = await select()
-    expect(box).toHaveValue('__choose')
-    expect(within(box).getAllByRole('option').map((o) => o.textContent)).toEqual(['Choose a GitHub app…', 'Shipdok-ab12 (tianyu-00)', 'Shipdok-cd34 (my-org)', 'None (a public repository, deployed by hand)'])
+    expect(box).toHaveChosen('__choose')
+    expect(await listed(box)).toEqual(['Shipdok-ab12 (tianyu-00)', 'Shipdok-cd34 (my-org)', 'None (a public repository, deployed by hand)'])
     await userEvent.type(await screen.findByPlaceholderText(/owner\/repo/), 'someone/else')
     expect(await screen.findByText('Choose a GitHub app (or None) first.')).toBeInTheDocument()
     expect(continueButton()).toBeDisabled()
     await new Promise((r) => setTimeout(r, 600))
     expect(api.called('GET', '/api/github/repo-check')).toHaveLength(0)
-    await userEvent.selectOptions(box, SECOND)
+    await pick(box, SECOND)
     await waitFor(() => expect(api.called('GET', '/api/github/repo-check')).toHaveLength(1))
   })
 
   test('the repositories listed are the chosen app\'s, and change when another is chosen', async () => {
     const api = mockApi({ ...two })
     page()
-    await userEvent.selectOptions(await select(), APP)
+    await pick(await select(), APP)
     await userEvent.click(await repoBox())
     expect(within(await screen.findByRole('listbox')).getAllByRole('option').map((o) => o.textContent.replace(/private|public/, ''))).toEqual(['tianyu-00/api', 'tianyu-00/site'])
     await userEvent.keyboard('{Escape}')
-    await userEvent.selectOptions(screen.getByLabelText('GitHub app'), SECOND)
+    await pick(screen.getByLabelText('GitHub app'), SECOND)
     await userEvent.click(await repoBox())
     expect(within(await screen.findByRole('listbox')).getAllByRole('option').map((o) => o.textContent.replace(/private|public/, ''))).toEqual(['my-org/tools'])
     expect(api.called('GET', `/api/github/apps/${SECOND}/repos`)).toHaveLength(1)
@@ -134,7 +134,7 @@ describe('step 1: which GitHub app', () => {
   test('the repository is checked through the chosen app, and that app\'s id is what is sent', async () => {
     const api = mockApi({ ...two, ...checks(), ...created })
     page()
-    await userEvent.selectOptions(await select(), SECOND)
+    await pick(await select(), SECOND)
     await toDetails('my-org/tools')
     expect(api.called('GET', '/api/github/repo-check')[0].path).toContain(`app=${SECOND}`)
     await create()
@@ -145,7 +145,7 @@ describe('step 1: which GitHub app', () => {
   test('None: a public repository is typed and checked anonymously (no app in the request), and null is sent', async () => {
     const api = mockApi({ ...two, ...checks({}, found({ via: 'anonymous', appChosen: false, private: false })), ...created })
     page()
-    await userEvent.selectOptions(await select(), '')
+    await pick(await select(), '')
     await userEvent.type(await screen.findByPlaceholderText(/owner\/repo/), 'someone/pub')
     await next()
     await next()
@@ -231,7 +231,7 @@ describe('step 1: Shipdok checks it can see the repository', () => {
   test('with apps connected but None chosen, it points at choosing an app that is installed on it', async () => {
     mockApi({ ...two, ...checks({}, { accessible: false, reason: 'not_found', appChosen: false }) })
     page()
-    await userEvent.selectOptions(await screen.findByLabelText('GitHub app'), '')
+    await pick(await screen.findByLabelText('GitHub app'), '')
     await userEvent.type(await screen.findByPlaceholderText(/owner\/repo/), 'someone/secret')
     expect(await screen.findByRole('alert', {}, { timeout: 3000 })).toHaveTextContent('choose a GitHub app that is installed on it above, or connect another')
   })
@@ -353,13 +353,13 @@ describe('step 1: what is remembered while you connect a GitHub app', () => {
   test('the repository and the app you chose are kept in this tab, and come back', async () => {
     mockApi({ ...two, ...checks() })
     const first = page()
-    await userEvent.selectOptions(await screen.findByLabelText('GitHub app'), SECOND)
+    await pick(await screen.findByLabelText('GitHub app'), SECOND)
     await chooseRepo('my-org/tools')
     await waitFor(() => expect(JSON.parse(sessionStorage.getItem('shipdok.create-app') ?? 'null')).toMatchObject({ repo: 'my-org/tools', githubApp: SECOND }))
     first.unmount()
     mockApi({ ...two, ...checks() })
     page() // (the person went to the GitHub page and came back)
-    expect(await screen.findByLabelText('GitHub app')).toHaveValue(SECOND)
+    expect(await screen.findByLabelText('GitHub app')).toHaveChosen(SECOND)
     expect(await screen.findByRole('combobox', { name: 'GitHub repository' })).toHaveTextContent('my-org/tools')
     await waitFor(() => expect(continueButton()).toBeEnabled(), { timeout: 4000 })
   })
@@ -368,7 +368,7 @@ describe('step 1: what is remembered while you connect a GitHub app', () => {
     sessionStorage.setItem('shipdok.create-app', JSON.stringify({ repo: 'my-org/tools', githubApp: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', at: Date.now() }))
     mockApi({ ...two, ...checks() })
     page()
-    expect(await screen.findByLabelText('GitHub app')).toHaveValue('__choose')
+    expect(await screen.findByLabelText('GitHub app')).toHaveChosen('__choose')
   })
 
   test('creating the app forgets it', async () => {
@@ -548,7 +548,7 @@ describe('step 3: creating an app', () => {
       expect(screen.getByLabelText('Build command')).toHaveValue('npm run build')
       expect(screen.getByLabelText('Output folder')).toHaveValue('dist')
       expect(screen.getByLabelText('Node version')).toHaveValue('')
-      expect(screen.getByLabelText('Web server')).toHaveValue('nginx')
+      expect(screen.getByLabelText('Web server')).toHaveChosen('nginx')
       expect(screen.getByRole('switch', { name: 'Single-page app' })).toBeChecked()
       expect(screen.queryByLabelText('Start command')).toBeNull()
       await userEvent.click(screen.getByText('Limits and clean-up'))
@@ -560,7 +560,7 @@ describe('step 3: creating an app', () => {
       page()
       await toStaticDetails()
       await userEvent.type(screen.getByLabelText('Node version'), ' 20.11 ')
-      await userEvent.selectOptions(screen.getByLabelText('Web server'), 'caddy')
+      await pick(screen.getByLabelText('Web server'), 'caddy')
       await userEvent.click(screen.getByRole('switch', { name: 'Single-page app' }))
       await create()
       expect(await screen.findByText('detail page')).toBeInTheDocument()

@@ -1,6 +1,6 @@
 import { Input } from '@/components/ui/input'
 import { Field } from '@/components/field'
-import { NativeSelect } from '@/components/native-select'
+import { Select } from '@/components/select'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { BUILD_METHOD_NAMES, COMMANDS, STATIC_COMMANDS, STATIC_SERVER_NAMES } from '@/lib/build-method'
@@ -21,9 +21,9 @@ export function BuildMethodFields({ idPrefix = '', values, onChange, errors = {}
           : isStatic
             ? 'Serves files (HTML, CSS, JavaScript) with a small web server, after an optional build. A Dockerfile in the repository is not used.'
             : 'Builds the Dockerfile in the repository. Choose Railpack to deploy code that has none, or to let Railpack build it instead.'}>
-        <NativeSelect id={`${idPrefix}build_method`} value={values.build_method} onChange={(v) => onChange('build_method', v)}>
+        <Select id={`${idPrefix}build_method`} value={values.build_method} onChange={(v) => onChange('build_method', v)}>
           {Object.entries(BUILD_METHOD_NAMES).map(([value, name]) => <option key={value} value={value}>{name}</option>)}
-        </NativeSelect>
+        </Select>
       </Field>}
       {railpack && (
         <>
@@ -52,9 +52,9 @@ export function BuildMethodFields({ idPrefix = '', values, onChange, errors = {}
             <Input id={`${idPrefix}node_version`} placeholder="22" autoComplete="off" spellCheck={false} aria-invalid={errors.node_version ? true : undefined} value={values.node_version} onChange={(e) => onChange('node_version', e.target.value)} />
           </Field>
           <Field id={`${idPrefix}static_server`} label="Web server" hint="Both run as a normal user, not root, and need a port of 1024 or more. Dot files such as .env and .git are never served.">
-            <NativeSelect id={`${idPrefix}static_server`} value={values.static_server} onChange={(v) => onChange('static_server', v)}>
+            <Select id={`${idPrefix}static_server`} value={values.static_server} onChange={(v) => onChange('static_server', v)}>
               {Object.entries(STATIC_SERVER_NAMES).map(([value, name]) => <option key={value} value={value}>{name}</option>)}
-            </NativeSelect>
+            </Select>
           </Field>
           <div className="flex items-start gap-3 sm:col-span-2">
             <Switch id={`${idPrefix}spa_fallback`} className="mt-0.5" checked={values.spa_fallback} onCheckedChange={(v) => onChange('spa_fallback', v)} />

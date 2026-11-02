@@ -3,7 +3,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import KeptBackups from './kept-backups'
-import { mockApi, answer, renderWithProviders } from '@/test/utils'
+import { mockApi, answer, renderWithProviders, pick, listed } from '@/test/utils'
 
 const toasts = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
 vi.mock('sonner', () => ({ toast: toasts, Toaster: () => null }))
@@ -110,35 +110,35 @@ describe('the reclaim dialog', () => {
     await open()
     expect(await screen.findByText('Reclaim the data of Old blog')).toBeInTheDocument()
     expect(screen.getByText('added to the app')).toBeInTheDocument()
-    expect([...screen.getByLabelText('Put it into').options].map((o) => o.textContent)).toEqual(['Choose an app…', 'Blog', 'Shop'])
+    expect(await listed(screen.getByLabelText('Put it into'))).toEqual(['Choose an app…', 'Blog', 'Shop'])
     expect(dialog().getByRole('button', { name: 'Reclaim' })).toBeDisabled()
   })
   test('shows, for the chosen app, which paths will be ADDED and which it already keeps', async () => {
     await open()
-    await userEvent.selectOptions(await screen.findByLabelText('Put it into'), 'a1')
+    await pick(await screen.findByLabelText('Put it into'), 'a1')
     const box = await screen.findByLabelText('What will happen')
     expect(box).toHaveTextContent('Storage paths that will be added to Blog: /data, /app/data/whatisthis')
     expect(box).not.toHaveTextContent('already keeps')
-    await userEvent.selectOptions(screen.getByLabelText('Put it into'), 'a2')
+    await pick(screen.getByLabelText('Put it into'), 'a2')
     await waitFor(() => expect(screen.getByLabelText('What will happen')).toHaveTextContent('Storage paths that will be added to Shop: /app/data/whatisthis'))
     expect(screen.getByLabelText('What will happen')).toHaveTextContent('Paths Shop already keeps, restored into as you choose below: /data')
   })
   test('a backup made before its paths were recorded says it generally', async () => {
     await open(vb({ appId: null, paths: null }))
-    await userEvent.selectOptions(await screen.findByLabelText('Put it into'), 'a1')
+    await pick(await screen.findByLabelText('Put it into'), 'a1')
     expect(await screen.findByLabelText('What will happen')).toHaveTextContent('The storage paths this backup holds that Blog does not keep yet will be added to it')
   })
   test('the safety-backup box is only there when something the app already keeps will be written to', async () => {
     await open()
-    await userEvent.selectOptions(await screen.findByLabelText('Put it into'), 'a1')
+    await pick(await screen.findByLabelText('Put it into'), 'a1')
     await waitFor(() => expect(screen.getByLabelText('What will happen')).toBeInTheDocument())
     expect(screen.queryByRole('checkbox', { name: /Make a backup of the current data first/ })).toBeNull()
-    await userEvent.selectOptions(screen.getByLabelText('Put it into'), 'a2')
+    await pick(screen.getByLabelText('Put it into'), 'a2')
     expect(await screen.findByRole('checkbox', { name: /Make a backup of the current data first/ })).toBeChecked()
   })
   test('sends the app, the mode, the safety choice and the password, then says so and closes', async () => {
     const api = await open(vb({ id: 'k9', appId: null, paths: ['/data'] }), { 'POST /api/backups/k9/reclaim': answer(202, { id: 'r' }) })
-    await userEvent.selectOptions(await screen.findByLabelText('Put it into'), 'a2')
+    await pick(await screen.findByLabelText('Put it into'), 'a2')
     await userEvent.click(screen.getByRole('radio', { name: /Add over/ }))
     await userEvent.click(screen.getByRole('checkbox', { name: /Make a backup of the current data first/ }))
     await userEvent.type(screen.getByLabelText('Your password'), 'pw')
@@ -150,7 +150,7 @@ describe('the reclaim dialog', () => {
   })
   test('the defaults are Replace and a safety backup', async () => {
     const api = await open(vb({ id: 'k9', appId: null, paths: ['/data'] }), { 'POST /api/backups/k9/reclaim': answer(202, { id: 'r' }) })
-    await userEvent.selectOptions(await screen.findByLabelText('Put it into'), 'a2')
+    await pick(await screen.findByLabelText('Put it into'), 'a2')
     await userEvent.type(screen.getByLabelText('Your password'), 'pw')
     await userEvent.click(dialog().getByRole('button', { name: 'Reclaim' }))
     await waitFor(() => expect(post(api, 'k9')).toHaveLength(1))
@@ -162,7 +162,7 @@ describe('the reclaim dialog', () => {
   })
   test('an encrypted one sends the passphrase when typed', async () => {
     const api = await open(vb({ id: 'k8', appId: null, encrypted: true, paths: ['/data'] }), { 'POST /api/backups/k8/reclaim': answer(202, { id: 'r' }) })
-    await userEvent.selectOptions(await screen.findByLabelText('Put it into'), 'a1')
+    await pick(await screen.findByLabelText('Put it into'), 'a1')
     await userEvent.type(screen.getByLabelText(/Passphrase of this backup/), 'old one')
     await userEvent.type(screen.getByLabelText('Your password'), 'pw')
     await userEvent.click(dialog().getByRole('button', { name: 'Reclaim' }))
@@ -173,12 +173,12 @@ describe('the reclaim dialog', () => {
     await open()
     await userEvent.type(screen.getByLabelText('Your password'), 'pw')
     expect(dialog().getByRole('button', { name: 'Reclaim' })).toBeDisabled()
-    await userEvent.selectOptions(screen.getByLabelText('Put it into'), 'a1')
+    await pick(screen.getByLabelText('Put it into'), 'a1')
     expect(dialog().getByRole('button', { name: 'Reclaim' })).toBeEnabled()
   })
   test('a wrong password and another refusal are said in the dialog, which stays open', async () => {
     await open(vb({ id: 'k7', appId: null, paths: ['/data'] }), { 'POST /api/backups/k7/reclaim': answer(403, { error: 'x', code: 'wrong_password' }) })
-    await userEvent.selectOptions(await screen.findByLabelText('Put it into'), 'a1')
+    await pick(await screen.findByLabelText('Put it into'), 'a1')
     await userEvent.type(screen.getByLabelText('Your password'), 'bad')
     await userEvent.click(dialog().getByRole('button', { name: 'Reclaim' }))
     expect(await screen.findByText('That is not your current password')).toBeInTheDocument()
@@ -186,7 +186,7 @@ describe('the reclaim dialog', () => {
   })
   test('the server\'s reason is shown (paths that do not fit)', async () => {
     await open(vb({ id: 'k6', appId: null, paths: ['/data'] }), { 'POST /api/backups/k6/reclaim': answer(400, { error: 'The storage paths of this backup cannot be added to Blog: /data/inner is inside /data', code: 'bad_path' }) })
-    await userEvent.selectOptions(await screen.findByLabelText('Put it into'), 'a1')
+    await pick(await screen.findByLabelText('Put it into'), 'a1')
     await userEvent.type(screen.getByLabelText('Your password'), 'pw')
     await userEvent.click(dialog().getByRole('button', { name: 'Reclaim' }))
     expect(await screen.findByText(/cannot be added to Blog/)).toBeInTheDocument()
