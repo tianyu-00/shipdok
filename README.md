@@ -1,12 +1,15 @@
-# Shipdok
+<div align="center">
+<h1> Shipdok </h1>
+A self-hosted platform for running your own apps, built with React, Vite, Node.js, Express, BullMQ, Dockerode, PostgreSQL and Redis. Point it at a GitHub repository and it builds the app into a Docker container and runs it; every push deploys the new version, checks that it is healthy before switching to it, and keeps the old version running if anything goes wrong. Made for one administrator on one machine (a Raspberry Pi, a home server or a small VPS) and managed from a web dashboard. The dashboard talks to a REST API, which queues jobs for a separate worker that is the only part that touches Docker.
+<br><br>
 
-Shipdok is a small, self-hosted platform for running your own apps. Point it at a GitHub repository and it builds the
-app into a Docker container and runs it. Every time you push, it deploys the new version, checks that it is healthy
-before switching to it, and keeps the old version running if anything goes wrong.
+[![madewithlove](https://img.shields.io/badge/made_with-❤-red?style=for-the-badge&labelColor=orange)](https://github.com/Tianyu-00)
 
-It is made for **one administrator on one machine**: a Raspberry Pi, a home server or a small VPS. There is no
-multi-user system, no cluster and no hosted service. It is meant to be installed with Docker Compose and then managed from a web
-dashboard.
+[Install](https://github.com/tianyu-00/shipdok?tab=readme-ov-file#install) | [Backend](https://github.com/tianyu-00/shipdok?tab=readme-ov-file#backend) | [Frontend](https://github.com/tianyu-00/shipdok?tab=readme-ov-file#frontend)
+
+</div>
+
+There is no multi-user system, no cluster and no hosted service. It is installed with Docker Compose and then managed from the dashboard.
 
 - Deploys any repository that has a `Dockerfile` (or, with Railpack, code that has none), from GitHub (private repositories too), with a GitHub App that you create from the dashboard in one click. Connect one for each GitHub account or organisation, and choose which one each app uses.
 - Every push to the tracked branch builds and deploys automatically. The newest push wins.
@@ -16,7 +19,9 @@ dashboard.
 - Runs on **ARM64 (Raspberry Pi 4/5)** and **x86-64**. Ready-made images for both.
 - Nothing is exposed to the internet unless you choose to ([public access](docs/public-access.md)).
 
-## What you need
+## Getting Started
+
+### What you need
 
 - A Linux machine with **Docker Engine** and the **Docker Compose** plugin (`docker compose version` should work).
 - A GitHub account that owns, or can read, the repositories you want to deploy.
@@ -25,7 +30,7 @@ dashboard.
 
 Shipdok was developed for a Raspberry Pi 4 (8 GB) and tested on x86-64 Linux.
 
-## Install
+### Install
 
 Pick a folder and keep using it: Docker Compose names its storage after the folder, so running it from somewhere else later would start
 with an empty installation.
@@ -55,7 +60,7 @@ docker compose logs api
 Open the dashboard at `http://localhost:8080` and create the administrator account with that token. To open it from another
 device on your network, see [Reaching the dashboard](#reaching-the-dashboard-from-another-device).
 
-### Save your recovery codes
+#### Save your recovery codes
 
 When the account is created Shipdok shows ten **recovery codes**. Save them somewhere safe (a password manager is ideal). If you forget
 your password, a recovery code is how you get back in without touching the server. Each code works once, and anyone who holds the codes can
@@ -129,8 +134,48 @@ MIT, see [LICENSE](LICENSE).
 
 ## Developing Shipdok
 
-See [CLAUDE.md](CLAUDE.md) for how the code is laid out and how to run it with npm and the test suites, and [SPEC.md](SPEC.md) for the
-full design.
+Run these from a checkout. The full layout, the test suites and the rules for changes are in [CLAUDE.md](CLAUDE.md); the design is in [SPEC.md](SPEC.md).
+
+### Backend
+
+Create `infrastructure/.env` (never commit it) with the settings the API and worker need:
+
+``` env
+POSTGRES_PASSWORD=PASSWORD
+REDIS_PASSWORD=PASSWORD
+SESSION_SECRET=64_HEX_CHARACTERS
+APP_SECRETS_KEY=64_HEX_CHARACTERS
+```
+
+Keep `APP_SECRETS_KEY`: losing it makes the stored secrets unrecoverable. Every other setting is optional, see [`.env.example`](.env.example).
+
+``` bash
+npm install
+docker compose -f infrastructure/compose.yaml -f infrastructure/compose.dev.yaml --env-file infrastructure/.env up -d postgres redis
+npm run migrate -w apps/api
+```
+
+``` bash
+npm run dev -w apps/api
+```
+
+``` bash
+npm start -w apps/worker
+```
+
+### Frontend
+
+``` bash
+npm run dev -w apps/web
+```
+
+The dashboard opens at `http://localhost:5173` and Vite forwards `/api` to the API on port 4000.
+
+### Tests
+
+``` bash
+npm test
+```
 
 To build the images from this checkout instead of pulling the published ones:
 
