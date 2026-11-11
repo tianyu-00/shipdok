@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { toast } from 'sonner'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -10,8 +9,9 @@ import {
 } from '@/components/ui/alert-dialog'
 import { api } from '@/lib/api'
 import { timeAgo } from '@/lib/format'
-import { RESTORE_PAGE_SIZES, isAppBusy, isAppRestoring, pageOf, restoreModeLabel, savedRestorePageSize, saveRestorePageSize, volumeBackups, volumesText } from '@/lib/backups'
-import { Select } from '@/components/select'
+import { isAppBusy, isAppRestoring, restoreModeLabel, volumeBackups, volumesText } from '@/lib/backups'
+import { pageOf, savedPageSize, savePageSize } from '@/lib/paging'
+import { Pager } from '@/components/pager'
 import { DownloadDialog, RestoreDialog } from '@/components/backup-dialogs'
 import { BackupTable, DeleteBackupDialog } from '@/components/backup-table'
 
@@ -53,8 +53,12 @@ function ClearRestores({ appId, finished }) {
   )
 }
 
+// The restores list starts at 5 a page (the administrator's decision) and remembers its own choice; the other paged lists start at 10.
+const RESTORE_SIZE_KEY = 'shipdok.restorePageSize'
+const RESTORE_SIZE_DEFAULT = 5
+
 function Restores({ restores, appId }) {
-  const [size, setSize] = useState(savedRestorePageSize)
+  const [size, setSize] = useState(() => savedPageSize(RESTORE_SIZE_KEY, RESTORE_SIZE_DEFAULT))
   const [at, setAt] = useState(0)
   const { items, page, pages } = pageOf(restores, at, size)
   const finished = restores.filter((r) => r.status === 'ok' || r.status === 'failed').length
@@ -84,21 +88,7 @@ function Restores({ restores, appId }) {
           )
         })}
       </ul>
-      {(pages > 1 || restores.length > RESTORE_PAGE_SIZES[0]) && (
-        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-          <div className="flex items-center gap-2">
-            <label htmlFor={`restore-page-size-${appId}`} className="text-xs text-muted-foreground">Per page</label>
-            <div className="w-24"><Select id={`restore-page-size-${appId}`} value={String(size)} onChange={(v) => { setSize(Number(v)); saveRestorePageSize(Number(v)); setAt(0) }}>
-              {RESTORE_PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
-            </Select></div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="icon-sm" aria-label="Newer" title="Newer" disabled={page === 0} onClick={() => setAt(page - 1)}><ChevronLeft className="size-4" /></Button>
-            <span className="text-xs text-muted-foreground" aria-live="polite">Page {page + 1} of {pages}</span>
-            <Button variant="outline" size="icon-sm" aria-label="Older" title="Older" disabled={page >= pages - 1} onClick={() => setAt(page + 1)}><ChevronRight className="size-4" /></Button>
-          </div>
-        </div>
-      )}
+      <Pager id={`restore-page-size-${appId}`} count={restores.length} page={page} pages={pages} size={size} onPage={setAt} onSize={(n) => { setSize(n); savePageSize(RESTORE_SIZE_KEY, n); setAt(0) }} />
     </div>
   )
 }

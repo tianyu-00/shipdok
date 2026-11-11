@@ -57,26 +57,6 @@ export const restoreModeLabel = (mode) => RESTORE_MODES.find((m) => m.value === 
 export const KEEP_CHOICES = [1, 2, 3, 5, 7, 10, 14, 30, 60]
 export const keepChoices = (current) => (KEEP_CHOICES.includes(current) ? KEEP_CHOICES : [...KEEP_CHOICES, current].sort((a, b) => a - b))
 
-/** How many restores a page of the history shows: the choices, and the one this browser remembers (5 until it is changed). */
-export const RESTORE_PAGE_SIZES = [5, 10, 25, 50]
-const PAGE_SIZE_KEY = 'shipdok.restorePageSize'
-export function savedRestorePageSize() {
-  try {
-    const n = Number(localStorage.getItem(PAGE_SIZE_KEY))
-    return RESTORE_PAGE_SIZES.includes(n) ? n : RESTORE_PAGE_SIZES[0]
-  } catch { return RESTORE_PAGE_SIZES[0] }
-}
-export function saveRestorePageSize(n) {
-  try { localStorage.setItem(PAGE_SIZE_KEY, String(n)) } catch { /* private window or blocked storage: it is only a convenience */ }
-}
-
-/** One page (0-based) of a list; a page past the end is the last one. Says how many pages there are and which one it really is. */
-export function pageOf(items, page, size) {
-  const pages = Math.max(1, Math.ceil(items.length / size))
-  const at = Math.min(Math.max(0, page), pages - 1)
-  return { items: items.slice(at * size, (at + 1) * size), page: at, pages }
-}
-
 /** The text of the restore-history field to the number it means: empty = every restore is kept (null); otherwise a whole number from 1; anything else is undefined. */
 export function parseRestoreKeep(text) {
   const t = String(text).trim()

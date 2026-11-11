@@ -6,7 +6,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as db from '../src/db.js';
-import { backupEntry, crashEntry, restoreEntry } from '../src/audit.js';
+import { backupEntry, crashEntry, deployEntry, restoreEntry } from '../src/audit.js';
 import { answerBackup, answerRestore } from '../src/backuprunner.js';
 import { KEY, ready, reset, makeApp, pool } from './helpers.js';
 
@@ -95,6 +95,45 @@ describe('the entry for a restore', () => {
   test('a failed one says why', () => {
     const e = restoreEntry(restore, { ok: false, error: 'The files may be only partly restored' });
     assert.deepEqual([e.action, e.summary, detail(e, 'Why').value], ['restore_failed', 'Restore of Blog failed', 'The files may be only partly restored']);
+  });
+});
+
+describe('the entry for a deployment that ended', () => {
+  const row = { id: 'abcdef12-0000-4000-8000-000000000000', app_id: app.id, name: 'Blog', trigger: 'manual', commit_sha: 'a1b2c3d4e5f6'.repeat(3), rollback_of: null,
+    started_at: '2026-11-01T10:00:00Z', finished_at: '2026-11-01T10:02:05Z', error_summary: 'Health check failed' };
+
+  test('each outcome has its own action and words', () => {
+    const got = ['successful', 'failed', 'cancelled', 'superseded', 'interrupted'].map((o) => { const e = deployEntry(row, o); return [e.action, e.summary]; });
+    assert.deepEqual(got, [
+      ['deploy_succeeded', 'Deployment of Blog succeeded'], ['deploy_failed', 'Deployment of Blog failed'], ['deploy_stopped', 'Deployment of Blog was cancelled'],
+      ['deploy_superseded', 'Deployment of Blog was replaced by a newer one'], ['deploy_interrupted', 'Deployment of Blog was interrupted: the worker stopped'],
+    ]);
+  });
+  test('it is the machine\'s, of the app, in the deployments category', () => {
+    const e = deployEntry(row, 'successful');
+    assert.deepEqual([e.category, e.source, e.actor, e.address, e.appId, e.appName], ['deployments', 'system', 'Shipdok', 'worker', app.id, 'Blog']);
+  });
+  test('the facts: the deployment and the commit (8 characters), who started it, how long it took; the reason only for a failure', () => {
+    const ok = deployEntry(row, 'successful');
+    assert.equal(detail(ok, 'Deployment').value, 'abcdef12');
+    assert.equal(detail(ok, 'Commit').value, 'a1b2c3d4');
+    assert.equal(detail(ok, 'Started').value, 'by hand');
+    assert.equal(detail(ok, 'Took').value, '2 min 5 s');
+    assert.equal(detail(ok, 'Why'), undefined);
+    assert.equal(detail(deployEntry(row, 'failed'), 'Why').value, 'Health check failed');
+    assert.equal(detail(deployEntry(row, 'cancelled'), 'Why'), undefined);
+  });
+  test('a push says so, a rollback is worded as one, a short time is in seconds, and what is not known is left out', () => {
+    assert.equal(detail(deployEntry({ ...row, trigger: 'webhook' }, 'successful'), 'Started').value, 'by a push to GitHub');
+    const back = deployEntry({ ...row, trigger: 'rollback', commit_sha: null, started_at: null }, 'successful');
+    assert.equal(back.summary, 'Rollback of Blog finished');
+    assert.equal(deployEntry({ ...row, trigger: 'rollback' }, 'failed').summary, 'Rollback of Blog failed');
+    assert.equal(detail(back, 'Commit'), undefined);
+    assert.equal(detail(back, 'Took'), undefined);
+    assert.equal(detail(deployEntry({ ...row, finished_at: '2026-11-01T10:00:09Z' }, 'successful'), 'Took').value, '9 s');
+  });
+  test('an outcome that does not exist is refused', () => {
+    assert.throws(() => deployEntry(row, 'exploded'), /Unknown deployment outcome/);
   });
 });
 
@@ -189,5 +228,65 @@ describe('written to the database', () => {
     const [row] = await rows();
     assert.deepEqual([row.category, row.action, row.source, row.summary, row.app_id], ['backups', 'restore_failed', 'system', 'Restore of Blog failed', appId]);
     assert.match(row.details.find((d) => d.label === 'Why').value, /no longer exists/);
+  });
+
+  const aDeployment = async (status = 'building', over = {}) => (await pool.query(
+    `INSERT INTO deployments (app_id, trigger, status, commit_sha, config_snapshot, started_at) VALUES ($1, $2, $3, $4, '{}', now() - interval '30 seconds') RETURNING id`,
+    [appId, over.trigger ?? 'webhook', status, over.sha ?? 'f'.repeat(40)])).rows[0].id;
+  const deployRows = async () => (await rows()).filter((r) => r.category === 'deployments');
+
+  test('a deployment that succeeds, fails, is cancelled or is replaced is an entry of the app, written when the status is', async () => {
+    await db.markSucceeded(await aDeployment(), 'img:1', 100);
+    await db.markFailed(await aDeployment(), 'Build failed: exit 2');
+    await db.markStopped(await aDeployment('queued'), 'cancelled');
+    await db.markStopped(await aDeployment('queued'), 'superseded');
+    const got = await deployRows();
+    assert.deepEqual(got.map((r) => r.action), ['deploy_succeeded', 'deploy_failed', 'deploy_stopped', 'deploy_superseded']);
+    assert.ok(got.every((r) => r.app_id === appId && r.source === 'system'));
+    assert.equal(got[0].details.find((d) => d.label === 'Started').value, 'by a push to GitHub');
+    assert.equal(got[0].details.find((d) => d.label === 'Took').value, '30 s');
+    assert.equal(got[1].details.find((d) => d.label === 'Why').value, 'Build failed: exit 2');
+  });
+  test('an update that does not end anything (a late or repeated one) adds nothing', async () => {
+    const id = await aDeployment();
+    await db.markSucceeded(id, 'img:1', 1);
+    await db.markFailed(id, 'too late');
+    await db.markSucceeded(id, 'img:2', 1);
+    await db.markStopped(id, 'cancelled');
+    assert.deepEqual((await deployRows()).map((r) => r.action), ['deploy_succeeded']);
+  });
+  test('a deployment the worker left mid-flight is an interrupted entry; a waiting one is not touched', async () => {
+    await aDeployment('building');
+    await aDeployment('starting');
+    await aDeployment('queued');
+    assert.equal(await db.interruptActive(), 2);
+    assert.deepEqual((await deployRows()).map((r) => r.action), ['deploy_interrupted', 'deploy_interrupted']);
+  });
+  test('an entry that cannot be written does not stop the deployment from ending', async () => {
+    const id = await aDeployment();
+    await pool.query('ALTER TABLE audit_log RENAME TO audit_log_gone');
+    const was = console.error;
+    console.error = () => {};
+    try {
+      const r = await db.markSucceeded(id, 'img:1', 1);
+      assert.equal(r.rowCount, 1);
+    } finally {
+      console.error = was;
+      await pool.query('ALTER TABLE audit_log_gone RENAME TO audit_log');
+    }
+    assert.equal((await pool.query('SELECT status FROM deployments WHERE id = $1', [id])).rows[0].status, 'successful');
+  });
+  test('a backup and a restore the worker stopped in the middle of are failed entries; a safety backup made for a restore is not one of its own', async () => {
+    const other = await makeApp(); // (only one backup of an app may run at a time)
+    await pool.query(`INSERT INTO backups (status, trigger, kind, app_id, app_name) VALUES ('running', 'scheduled', 'volumes', $1, 'Blog'), ('running', 'before_restore', 'volumes', $2, 'Other')`, [appId, other]);
+    await pool.query(`INSERT INTO volume_restores (app_id, app_name, mode, safety_backup, status) VALUES ($1, 'Blog', 'replace', true, 'running')`, [appId]);
+    assert.equal((await db.interruptRunningBackups()).length, 2);
+    assert.equal((await db.interruptRunningRestores()).length, 1);
+    const got = (await rows()).map((r) => [r.action, r.source, r.summary]);
+    assert.deepEqual(got, [
+      ['backup_failed', 'schedule', "Scheduled backup of Blog's data failed"],
+      ['restore_failed', 'system', 'Restore of Blog failed'],
+    ]);
+    assert.match((await rows())[0].details.find((d) => d.label === 'Why').value, /^Interrupted: the worker stopped/);
   });
 });

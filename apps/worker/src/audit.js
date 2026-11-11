@@ -69,4 +69,34 @@ export function restoreEntry(restore, outcome) {
   };
 }
 
+const took = (ms) => {
+  const seconds = Math.round(ms / 1000);
+  return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
+};
+const STARTED_BY = { manual: 'by hand', webhook: 'by a push to GitHub', rollback: 'as a rollback' };
+const DEPLOY_OUTCOMES = {
+  successful: { action: 'deploy_succeeded', say: (n, rollback) => (rollback ? `Rollback of ${n} finished` : `Deployment of ${n} succeeded`) },
+  failed: { action: 'deploy_failed', say: (n, rollback) => (rollback ? `Rollback of ${n} failed` : `Deployment of ${n} failed`) },
+  cancelled: { action: 'deploy_stopped', say: (n) => `Deployment of ${n} was cancelled` },
+  superseded: { action: 'deploy_superseded', say: (n) => `Deployment of ${n} was replaced by a newer one` },
+  interrupted: { action: 'deploy_interrupted', say: (n) => `Deployment of ${n} was interrupted: the worker stopped` },
+};
+
+/**
+ * The entry for a deployment that reached its end. `row` is the deployment with its app's name (trigger, commit_sha, rollback_of, started_at,
+ * finished_at, error_summary); `outcome` is successful | failed | cancelled | superseded | interrupted.
+ */
+export function deployEntry(row, outcome) {
+  const o = DEPLOY_OUTCOMES[outcome];
+  if (!o) throw new Error(`Unknown deployment outcome: ${outcome}`);
+  const rollback = row.trigger === 'rollback' || Boolean(row.rollback_of);
+  const ms = row.started_at && row.finished_at ? new Date(row.finished_at) - new Date(row.started_at) : null;
+  return {
+    category: 'deployments', source: 'system', action: o.action, summary: o.say(row.name, rollback), appId: row.app_id, appName: row.name, ...WORKER,
+    details: [fact('App', row.name), fact('Deployment', String(row.id).slice(0, 8)), ...(row.commit_sha ? [fact('Commit', String(row.commit_sha).slice(0, 8))] : []),
+      fact('Started', STARTED_BY[row.trigger] ?? row.trigger), ...(ms !== null && ms >= 0 ? [fact('Took', took(ms))] : []),
+      ...(outcome === 'failed' && row.error_summary ? [fact('Why', row.error_summary)] : [])],
+  };
+}
+
 export { change };

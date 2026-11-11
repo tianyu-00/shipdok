@@ -3,7 +3,7 @@ import './loadsecrets.js';
 // so a late or duplicate update can never overwrite a final status.
 import pg from 'pg';
 import { recordAudit } from '@shipdok/shared';
-import { crashEntry } from './audit.js';
+import { backupEntry, crashEntry, deployEntry, restoreEntry } from './audit.js';
 
 export const pool = new pg.Pool({
   host: process.env.POSTGRES_HOST ?? '127.0.0.1',
@@ -14,6 +14,20 @@ export const pool = new pg.Pool({
 });
 
 const ACTIVE = `('queued','building','starting','validating')`;
+
+/** The end of a deployment as an entry of the activity log. Never throws. */
+async function recordDeploymentEnd(id, outcome) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT d.id, d.app_id, a.name, d.trigger, d.commit_sha, d.rollback_of, d.started_at, d.finished_at, d.error_summary
+         FROM deployments d JOIN apps a ON a.id = d.app_id WHERE d.id = $1`, [id]);
+    if (rows[0]) await recordAutomatic(deployEntry(rows[0], outcome));
+  } catch (err) {
+    console.error('Activity log entry not written:', err.message);
+  }
+}
+// The entry is written only when this update really ended the deployment (they are guarded by "still active"), so a late or repeated one adds nothing.
+const ended = async (result, id, outcome) => { if (result.rowCount === 1) await recordDeploymentEnd(id, outcome); return result; };
 
 /** One entry of the activity log about something Shipdok did by itself (see audit.js). It never throws: a log entry must not break the work it is about. */
 export async function recordAutomatic(entry) {
@@ -72,12 +86,12 @@ export const markSucceeded = (id, image, imageBytes = null) =>
               WHEN 'superseded' THEN 'Superseded too late: the swap had already begun'
               ELSE error_summary END,
             cancel_status = NULL
-      WHERE id = $1 AND status IN ${ACTIVE}`, [id, image, imageBytes]);
+      WHERE id = $1 AND status IN ${ACTIVE}`, [id, image, imageBytes]).then((r) => ended(r, id, 'successful'));
 
 export const markFailed = (id, error) =>
   pool.query(
     `UPDATE deployments SET status = 'failed', error_summary = $2, finished_at = now()
-     WHERE id = $1 AND status IN ${ACTIVE}`, [id, String(error).slice(0, 500)]);
+     WHERE id = $1 AND status IN ${ACTIVE}`, [id, String(error).slice(0, 500)]).then((r) => ended(r, id, 'failed'));
 
 // The deployment stopped on request (outcome: 'cancelled' | 'superseded') after cleaning up.
 export const markStopped = (id, outcome, supersededBy = null) =>
@@ -87,7 +101,7 @@ export const markStopped = (id, outcome, supersededBy = null) =>
             error_summary = CASE WHEN $2::text = 'cancelled' THEN 'Cancelled by the administrator'
                                  ELSE 'Superseded by a newer deployment' END,
             superseded_by = COALESCE($3::uuid, superseded_by)
-      WHERE id = $1 AND status IN ${ACTIVE}`, [id, outcome, supersededBy]);
+      WHERE id = $1 AND status IN ${ACTIVE}`, [id, outcome, supersededBy]).then((r) => ended(r, id, outcome));
 
 // Remember which GitHub App installation covers an app's repository (found at deploy time).
 export const setInstallationId = (appId, installationId) =>
@@ -97,10 +111,11 @@ export const setInstallationId = (appId, installationId) =>
 
 // At worker startup nothing can legitimately be mid-flight (one worker, one job at a time).
 export async function interruptActive() {
-  const { rowCount } = await pool.query(
+  const { rows, rowCount } = await pool.query(
     `UPDATE deployments SET status = 'interrupted', finished_at = now(),
             error_summary = 'The worker stopped while this deployment was in progress'
-     WHERE status IN ('building','starting','validating')`);
+     WHERE status IN ('building','starting','validating') RETURNING id`);
+  for (const r of rows) await recordDeploymentEnd(r.id, 'interrupted');
   return rowCount;
 }
 
@@ -452,8 +467,12 @@ export const markBackupFailed = (id, error) =>
 
 /** A backup that was running when the worker stopped can never finish: say so. Returns the rows (kind, app_id) so an app stopped for its copy can be started again. */
 export const interruptRunningBackups = () =>
-  pool.query(`UPDATE backups SET status = 'failed', finished_at = now(), error = 'Interrupted: the worker stopped while it was running' WHERE status = 'running' RETURNING kind, app_id`)
-    .then((r) => r.rows);
+  pool.query(`UPDATE backups SET status = 'failed', finished_at = now(), error = 'Interrupted: the worker stopped while it was running' WHERE status = 'running' RETURNING kind, app_id, app_name, trigger, error`)
+    .then(async (r) => {
+      // A safety backup made for a restore (trigger before_restore) is part of that restore: the restore's own entry says what happened.
+      for (const b of r.rows) if (b.trigger !== 'before_restore') await recordAutomatic(backupEntry(b, { ok: false, error: b.error }));
+      return r.rows;
+    });
 
 /** When the latest backup of Shipdok itself was asked for or started (the volume backups of apps have their own times). */
 export async function lastBackupAt() {
@@ -571,8 +590,12 @@ export const pruneRestores = () =>
 export const interruptRunningRestores = () =>
   pool.query(
     `UPDATE volume_restores SET status = 'failed', finished_at = now(), passphrase_enc = NULL,
-            error = 'Interrupted: the worker stopped while it was running. The files of the app may be only partly restored' WHERE status = 'running' RETURNING app_id`)
-    .then((r) => r.rows);
+            error = 'Interrupted: the worker stopped while it was running. The files of the app may be only partly restored' WHERE status = 'running'
+      RETURNING app_id, app_name, mode, safety_backup, reclaim, backup_app_name, error`)
+    .then(async (r) => {
+      for (const x of r.rows) await recordAutomatic(restoreEntry(x, { ok: false, error: x.error }));
+      return r.rows;
+    });
 
 /**
  * Adds storage paths to an app (a reclaim): one new in-use volume row each, in one transaction. Throws when a path is taken meanwhile (the unique index says so)

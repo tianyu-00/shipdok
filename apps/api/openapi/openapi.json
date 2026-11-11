@@ -2152,7 +2152,7 @@
           "Account"
         ],
         "summary": "The activity log",
-        "description": "What the administrator did with the password and, as more is recorded, other things (apps, deployments, variables, storage), newest first, each with what changed. `details` lists the facts: a change has `from` and `to`. A secret is never recorded. Entries are kept for `keepDays` days. By default only what the administrator did is listed; `automatic=1` adds what Shipdok did by itself: a push that deployed an app (`webhook`), a scheduled backup (`schedule`), and what the worker saw or finished (`system`): a crash, an app stopped or removed outside Shipdok, a backup or a restore that finished or failed.",
+        "description": "What the administrator did with the password and, as more is recorded, other things (apps, deployments, variables, storage), newest first, each with what changed. `details` lists the facts: a change has `from` and `to`. A secret is never recorded. Entries are kept for `keepDays` days. By default only what the administrator did is listed; `automatic=1` adds what Shipdok did by itself: a push that deployed an app (`webhook`), a scheduled backup (`schedule`), and what the worker saw or finished (`system`): a crash, an app stopped or removed outside Shipdok, a deployment that succeeded, failed, was cancelled, replaced or interrupted, and a backup or a restore that finished, failed or was interrupted by the worker stopping.",
         "parameters": [
           {
             "name": "limit",
