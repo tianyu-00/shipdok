@@ -83,8 +83,9 @@ GitHub page; see "What is built").
 
 ## Testing notes
 
-- A throwaway database for the tests (the name must end in `_test`, the suites create it): `docker run -d --name shipdok-testdb -e POSTGRES_USER=shipdok -e POSTGRES_DB=shipdok -e POSTGRES_PASSWORD=testdb-password-only -p 55432:5432 postgres:16`,
-  then `env POSTGRES_PASSWORD=testdb-password-only POSTGRES_PORT=55432 npm test`. Never pipe the whole run through `head` (it cuts the later suites off).
+- A throwaway database for the tests (the name must end in `_test`, the suites create it): `docker run -d --name shipdok-testdb -e POSTGRES_USER=shipdok -e POSTGRES_DB=shipdok -e POSTGRES_PASSWORD=testdb-password-only -p 55432:5432 --tmpfs /var/lib/postgresql/data postgres:16 -c fsync=off -c synchronous_commit=off -c full_page_writes=off`,
+  then `env POSTGRES_PASSWORD=testdb-password-only POSTGRES_PORT=55432 npm test`. **Keep the `--tmpfs` and the three `-c` settings** (safe: this database holds nothing worth keeping, and the suites recreate it): every test empties about 30 tables, and with the disk flush on that took ~240 ms per test (the API suite ~17 minutes); with them it is ~17 ms (API ~3.5 minutes, worker ~40 seconds). A stopped container (`docker start shipdok-testdb`) comes back EMPTY: the first API run recreates and migrates the `_test` database.
+- A worker test app is made with `auto_prune` OFF (`tests/helpers.js` `makeApp`): a new app starts with it on, and a successful deployment would then run the REAL image clean-up against this machine's Docker (~8 s each). A test about the clean-up turns it on itself and passes its own `pruneFn`. Never pipe the whole run through `head` (it cuts the later suites off).
 - Real-Docker and browser checks run in an isolated compose project (`COMPOSE_PROJECT_NAME=...`, `--env-file /dev/null`, `env -u POSTGRES_PASSWORD`, other ports,
   images renamed with an override so the administrator's own `latest` tags and stack are never touched; anything that needs a Docker daemon the tests may wipe goes to a
   throwaway docker:dind). Compose's build override re-tags the published image names: never run it unprotected on this machine.

@@ -30,8 +30,10 @@ let n = 0;
 export async function makeApp() {
   n += 1;
   const { rows } = await pool.query(
-    `INSERT INTO apps (name, slug, repo, container_port, host_port)
-     VALUES ($1, $1, 'o/r', 3000, $2) RETURNING id`,
+    // auto_prune is OFF for a test app: a new app starts with it on, and then every successful deployment in a test would run the REAL image clean-up
+    // against this machine's Docker (about 8 seconds each). A test that is about the clean-up turns it on itself.
+    `INSERT INTO apps (name, slug, repo, container_port, host_port, auto_prune)
+     VALUES ($1, $1, 'o/r', 3000, $2, false) RETURNING id`,
     [`app-${n}`, 30000 + n],
   );
   return rows[0].id;
