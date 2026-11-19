@@ -75,7 +75,7 @@ test projects do): `POSTGRES_USER`/`POSTGRES_DB` (default `shipdok`), `API_HOST_
 requests from whatever address it is opened at), `MONITOR_INTERVAL_MS`, `STATS_INTERVAL_MS`, and the four secrets below (your value wins).
 `LOG_DIR` is set by compose to the `shipdok_logs` volume (outside Docker it defaults to `~/.shipdok/logs`); `BACKUP_DIR` likewise to the `shipdok_backups` volume (default `~/.shipdok/backups`), and `BACKUP_POSTGRES_CONTAINER` names Shipdok's own Postgres container when the worker cannot find it itself. **`DOCKER_GID` is gone.**
 
-Tests (last COMPLETE run, version 0.1.29): API 1586, worker 940, shared 298, web 1401 (about 3.5 minutes, 40 seconds, 3 seconds and 50 seconds with the fast test database below). Worker tests reuse the `_test` database the API tests create and
+Tests (last COMPLETE run, version 0.1.30): API 1588, worker 940, shared 298, web 1402 (about 3.5 minutes, 40 seconds, 3 seconds and 50 seconds with the fast test database below). Worker tests reuse the `_test` database the API tests create and
 migrate, so run the API tests first on a fresh machine. Tests refuse to touch any DB not ending in `_test`.
 `infrastructure/.env` is now needed only for development with npm (`POSTGRES_*`, `REDIS_PASSWORD`, `SESSION_SECRET`, `APP_SECRETS_KEY`: 64 hex, losing
 it makes stored secrets unrecoverable) and for the optional settings above. **The GitHub App is NOT configured here any more** (dashboard,
@@ -126,7 +126,7 @@ feature. Below: what exists, the administrator's decisions (do not re-litigate),
   validation, 503 until an app is connected. A Cloudflare tunnel on the administrator's machine forwards only that path.
 
 **Apps, deployments and the worker**
-- **Apps/deployments API:** `repo` is `owner/repo` (clone URL built server-side, repo cannot be edited, nor the slug). Settings are snapshotted per deployment; an edit never touches
+- **Apps/deployments API:** `repo` is `owner/repo` (clone URL built server-side, repo cannot be edited, nor the slug). **The slug is random (`app-` + 8 hex digits, made once at creation, shown in the Settings tab) and never comes from the name, so a rename never blocks a name; the NAME stays unique; apps made before keep their old slugs.** Settings are snapshotted per deployment; an edit never touches
   what runs (`running_settings`, `settings_pending`); a deployment or rollback uses the CURRENT settings. Host port empty = lowest free in `PORT_RANGE` (default 20000-20999).
 - **Deploy engine:** clone -> build -> candidate on a temp port -> health check -> swap -> retire; a failure leaves the running version untouched. Ownership labels
   `shipdok.managed/app-id/deployment-id/role`. Containers: memory and CPU limits, `PidsLimit: 512`, **deliberately NO `no-new-privileges` and no capability drop**, no host mounts,

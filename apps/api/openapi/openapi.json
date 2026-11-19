@@ -7050,7 +7050,7 @@
           },
           "slug": {
             "type": "string",
-            "description": "Normalised name; names the images and containers and never changes."
+            "description": "A random name (`app-` and 8 hex digits) made when the app is created; names the images and containers and never changes, so renaming the app does not touch it."
           },
           "repo": {
             "type": "string",

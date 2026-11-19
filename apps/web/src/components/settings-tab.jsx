@@ -103,6 +103,10 @@ export default function SettingsTab({ app }) {
             Repository: <RepoLink repo={app.repo} />. It cannot be changed: to use a different repository, delete this app and create a new one.
             Changes reach the running app with the next deployment, except the name and the restart limit.
           </CardDescription>
+          <p className="text-sm text-muted-foreground">
+            Internal name: <code className="font-mono" data-testid="app-slug">{app.slug}</code>. Its images are tagged <code className="font-mono">shipdok/{app.slug}:…</code> and
+            its containers are named <code className="font-mono">shipdok-{app.slug}-…</code> in Docker. It is made once and never changes, not even when you rename the app.
+          </p>
         </CardHeader>
         <CardContent>
           {/* A new form (fresh values) whenever the server's copy changes, for example after saving. */}

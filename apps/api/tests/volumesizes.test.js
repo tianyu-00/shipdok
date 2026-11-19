@@ -135,7 +135,8 @@ describe('where the sizes appear', () => {
     await volume(); // not measured
     await volume({ app_id: null, app_name: 'Gone', state: 'orphaned', size: 50, measured: true });
     const { body } = await agent.get('/api/storage');
-    expect(body.volumes.apps).toEqual([{ appId, slug: 'app-a', count: 3, measured: 2, bytes: 1200 }]);
+    const { slug } = (await agent.get(`/api/apps/${appId}`)).body;
+    expect(body.volumes.apps).toEqual([{ appId, slug, count: 3, measured: 2, bytes: 1200 }]);
     expect(body.volumes.totalBytes).toBe(1250);
     expect(typeof body.volumes.measuredAt).toBe('string');
   });

@@ -44,6 +44,15 @@ describe('the data backups section on the settings tab', () => {
   })
 })
 
+describe('the internal name', () => {
+  test('shows the slug and what it names, and keeps showing the same one after a rename', () => {
+    tab(makeApp({ name: 'A2', slug: 'app-3f9a1c2b' }))
+    expect(screen.getByTestId('app-slug')).toHaveTextContent('app-3f9a1c2b')
+    expect(screen.getByText(/shipdok\/app-3f9a1c2b:/)).toBeInTheDocument()
+    expect(screen.getByText(/shipdok-app-3f9a1c2b-/)).toBeInTheDocument()
+  })
+})
+
 describe('the build method', () => {
   const put = () => `/api/apps/${APP_ID}`
 

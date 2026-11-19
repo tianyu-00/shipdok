@@ -69,7 +69,7 @@ export const schemas = {
     type: 'object',
     description: 'An app.',
     properties: {
-      id: uuid('The app\'s id.'), name: str('Display name (editable).'), slug: str('Normalised name; names the images and containers and never changes.'),
+      id: uuid('The app\'s id.'), name: str('Display name (editable).'), slug: str('A random name (`app-` and 8 hex digits) made when the app is created; names the images and containers and never changes, so renaming the app does not touch it.'),
       repo: str('GitHub `owner/repo`.'), github_installation_id: { type: 'integer', nullable: true, description: 'The GitHub App installation remembered for this repository (`null` until found).' },
       github_app_id: { type: 'string', format: 'uuid', nullable: true, description: 'The connected GitHub App this project uses to list and clone its repository and whose webhooks deploy it (`null`: none, for a public repository deployed by hand).' },
       branch: str('The branch deployed on push.'), root_dir: str('Where the app is inside the repository (where the Dockerfile is, for a Dockerfile app).'),

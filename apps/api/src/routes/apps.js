@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { randomBytes } from 'node:crypto';
 import { changesOf, fact, recordAuditFor } from '../audit.js';
 import { z } from 'zod';
 import { requestDeployment, cancelDeployment } from '../deployments.js';
@@ -12,8 +13,10 @@ import { mountedVolumes } from '../volumes.js';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (s) => typeof s === 'string' && UUID_RE.test(s);
 
-export const slugify = (name) =>
-  name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+// The slug names an app's images and containers and never changes, so it does not come from the name (a rename would leave it
+// misleading, and the old name could never be used again): it is random, made once when the app is created.
+export const newSlug = () => `app-${randomBytes(4).toString('hex')}`;
+const hasLetterOrNumber = (name) => /[a-z0-9]/i.test(name);
 
 // Root directory: relative, no traversal. (deploy() re-checks this defensively.)
 const rootDir = z.string().trim().min(1).max(200)
@@ -106,7 +109,6 @@ const DELETING = { error: 'This app is being deleted', code: 'deleting' };
 
 const UNIQUE_MESSAGES = {
   apps_name_key: 'An app with this name already exists',
-  apps_slug_key: 'An app with a matching name already exists',
   apps_host_port_key: 'That host port is already assigned to another app',
 };
 
@@ -196,8 +198,7 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
         return res.status(400).json({ error: 'Invalid app settings', details: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) });
       }
       const a = parsed.data;
-      const slug = slugify(a.name);
-      if (!slug) return res.status(400).json({ error: 'Name must contain letters or numbers' });
+      if (!hasLetterOrNumber(a.name)) return res.status(400).json({ error: 'Name must contain letters or numbers' });
       const portProblem = staticPortProblem(a.build_method, a.container_port);
       if (portProblem) return res.status(400).json({ error: 'Invalid app settings', details: [`container_port: ${portProblem}`] });
       if (a.github_app_id && !(await githubAppExists(a.github_app_id))) return res.status(400).json(NO_GITHUB_APP);
@@ -207,6 +208,7 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
         // the unique index decides, and the loser simply picks again.
         let rows;
         for (let attempt = 0; ; attempt += 1) {
+          const slug = newSlug();
           const hostPort = a.host_port ?? await nextFreePort(db, portRange);
           if (hostPort === null) {
             return res.status(409).json({ error: `Every port from ${portRange.min} to ${portRange.max} is taken. Choose a host port yourself, or widen PORT_RANGE.`, code: 'no_free_port' });
@@ -219,7 +221,9 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
             ));
             break;
           } catch (err) {
-            if (!(err.code === '23505' && err.constraint === 'apps_host_port_key' && a.host_port === undefined && attempt < 20)) throw err;
+            const samePort = err.constraint === 'apps_host_port_key' && a.host_port === undefined;
+            const sameSlug = err.constraint === 'apps_slug_key'; // 8 random hex digits: a clash is rare, and the next try picks another
+            if (!(err.code === '23505' && (samePort || sameSlug) && attempt < 20)) throw err;
           }
         }
         const created = rows[0];
@@ -298,7 +302,7 @@ export function appsRouter({ db, queue, github = null, logDir = '', diskUsage = 
         return res.status(400).json({ error: 'Invalid app settings', details: parsed.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`) });
       }
       const v = parsed.data;
-      if (v.name !== undefined && !slugify(v.name)) return res.status(400).json({ error: 'Name must contain letters or numbers' });
+      if (v.name !== undefined && !hasLetterOrNumber(v.name)) return res.status(400).json({ error: 'Name must contain letters or numbers' });
       const { rows: found } = await db.query('SELECT * FROM apps WHERE id = $1', [req.params.id]);
       if (!found[0]) return res.status(404).json({ error: 'App not found' });
       if (found[0].deleting_at) return res.status(409).json(DELETING);

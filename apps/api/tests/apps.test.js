@@ -45,7 +45,6 @@ describe("creating apps", () => {
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({
       name: "My Cool App!",
-      slug: "my-cool-app",
       repo: "tianyu-00/shipdok-test-app",
       branch: "main",
       root_dir: ".",
@@ -54,6 +53,7 @@ describe("creating apps", () => {
     });
     expect(Number(res.body.cpus)).toBe(1);
     expect(res.body.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(res.body.slug).toMatch(/^app-[0-9a-f]{8}$/); // random, not made from the name
   });
 
   test.each([
@@ -86,10 +86,28 @@ describe("creating apps", () => {
     expect(res.status).toBe(409);
   });
 
-  test("names that normalise to the same slug collide", async () => {
+  test("the same name cannot be used twice", async () => {
     await createApp({ name: "My App" });
-    const res = await createApp({ name: "my-app", host_port: 8081 });
+    const res = await createApp({ name: "My App", host_port: 8081 });
     expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/name/i);
+  });
+
+  test("names that only look alike are different apps, each with its own slug", async () => {
+    const first = await createApp({ name: "My App" });
+    const second = await createApp({ name: "my-app", host_port: 8081 });
+    expect(second.status).toBe(201);
+    expect(second.body.slug).not.toBe(first.body.slug);
+  });
+
+  test("a renamed app frees its old name, and the new app gets a slug of its own", async () => {
+    const old = await createApp({ name: "A1" });
+    const renamed = await agent.put(`/api/apps/${old.body.id}`).send({ name: "A2" });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.slug).toBe(old.body.slug);
+    const again = await createApp({ name: "A1", host_port: 8081 });
+    expect(again.status).toBe(201);
+    expect(again.body.slug).not.toBe(old.body.slug);
   });
 
   test("a host port can only belong to one app", async () => {
@@ -168,7 +186,7 @@ describe("requesting a deployment", () => {
     expect(data).toMatchObject({
       deploymentId: res.body.id,
       appId: created.id,
-      slug: "my-app",
+      slug: created.slug, // the slug the app got when it was made, not one built from its name
       repo: "https://github.com/tianyu-00/shipdok-test-app.git", // built by the server, never taken from the client
       ref: "main",
       dir: ".",

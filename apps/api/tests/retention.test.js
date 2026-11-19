@@ -604,7 +604,8 @@ describe('GET /api/storage with images', () => {
     await version({ status: 'failed' });
     const { body } = await agent.get('/api/storage');
     expect(body.images.totalBytes).toBe(140 * MB);
-    expect(body.images.apps).toEqual([{ appId, slug: 'app-a', images: 2, bytes: 140 * MB }]);
+    const { slug } = (await agent.get(`/api/apps/${appId}`)).body;
+    expect(body.images.apps).toEqual([{ appId, slug, images: 2, bytes: 140 * MB }]);
   });
 
   test('with no images: zero', async () => {

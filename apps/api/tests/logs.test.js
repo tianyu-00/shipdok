@@ -415,10 +415,10 @@ describe('GET /api/storage', () => {
     await writeLog(other, d3, 'c'.repeat(3000));
     const { body } = await agent.get('/api/storage');
     expect(body.logs.totalBytes).toBe(4500);
-    const byApp = Object.fromEntries(body.logs.apps.map((a) => [a.slug, a]));
-    expect(byApp['app-a']).toMatchObject({ appId, bytes: 1500, files: 2 });
-    expect(byApp['app-b']).toMatchObject({ bytes: 3000, files: 1 });
-    expect(body.logs.apps.map((a) => a.slug)).toEqual(['app-b', 'app-a']); // biggest first, although app B was written last
+    const byApp = Object.fromEntries(body.logs.apps.map((a) => [a.appId, a]));
+    expect(byApp[appId]).toMatchObject({ bytes: 1500, files: 2 });
+    expect(byApp[other]).toMatchObject({ bytes: 3000, files: 1 });
+    expect(body.logs.apps.map((a) => a.appId)).toEqual([other, appId]); // biggest first, although app B was written last
   });
 
   test('a log still being written counts by its size on disk, not by the zero in its record', async () => {

@@ -281,7 +281,8 @@ describe('push handling', () => {
     expect(res.status).toBe(202);
     expect(res.body.deployments).toHaveLength(1);
     const [d] = await rows('webhook_deliveries');
-    expect(d.details.find((x) => x.app === 'stopped')).toMatchObject({ result: 'skipped', reason: 'The app is stopped' });
+    const { slug } = (await testPool.query('SELECT slug FROM apps WHERE id = $1', [stopped])).rows[0];
+    expect(d.details.find((x) => x.app === slug)).toMatchObject({ result: 'skipped', reason: 'The app is stopped' });
     expect((await deployments()).every((x) => x.app_id !== stopped)).toBe(true);
   });
 
